@@ -318,3 +318,29 @@ def test_age_graph_repository_graph_exists_checks_if_graph_exists():
     connection = MockConnection(has_graph=False)
     repository = AgeGraphRepository(connection)
     assert repository.graph_exists("nonexistent_graph") is False
+
+
+def test_age_graph_repository_delete_graph_drops_graph():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    class MockCursor:
+        def __init__(self):
+            self.last_query = None
+
+        def execute(self, query):
+            self.last_query = query
+
+    class MockConnection:
+        def __init__(self):
+            self.cursor_obj = MockCursor()
+
+        def cursor(self):
+            return self.cursor_obj
+
+    connection = MockConnection()
+    repository = AgeGraphRepository(connection)
+    query = repository.delete_graph("demo_graph")
+
+    assert "drop_graph" in query.lower()
+    assert "demo_graph" in query
+    assert "drop_graph" in connection.cursor_obj.last_query.lower()

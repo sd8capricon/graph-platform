@@ -6,15 +6,41 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 
 class Base(DeclarativeBase):
+    """SQLAlchemy declarative base for all ORM models."""
+
     pass
 
 
 class SchemaType(str, Enum):
+    """Enumeration of valid schema types in the graph registry.
+
+    Attributes:
+        NODE: Represents a node/vertex type in the knowledge graph.
+        RELATIONSHIP: Represents a relationship/edge type in the knowledge graph.
+    """
+
     NODE = "node"
     RELATIONSHIP = "relationship"
 
 
 class GraphSchemaRegistry(Base):
+    """SQLAlchemy ORM model for storing graph schema definitions in the database.
+
+    Tracks and manages metadata about entity types (nodes) and relationship types
+    in Apache Age graphs, including their properties, aliases, and interconnections.
+
+    Attributes:
+        id: Primary key, auto-incrementing integer identifier.
+        graph_name: Name of the Apache Age graph this schema belongs to (indexed for fast lookup).
+        type: Schema type ('node' or 'relationship'). Enforced by CheckConstraint.
+        name: Name/label of the entity or relationship type (e.g., 'Person', 'knows').
+        description: Human-readable description of the schema type.
+        aliases: List of alternative names/aliases for this schema type.
+        properties: List of property names associated with this schema type.
+        source_label: For relationship types, the label of the source node type.
+        target_label: For relationship types, the label of the target node type.
+    """
+
     __tablename__ = "graph_registry"
     __table_args__ = (
         CheckConstraint(
@@ -36,6 +62,20 @@ class GraphSchemaRegistry(Base):
     def upsert_records(
         cls, session: Session, records: Iterable[GraphSchemaRegistry]
     ) -> list[GraphSchemaRegistry]:
+        """Upsert (insert or update) schema registry records into the database.
+
+        For each record, checks if it already exists based on (graph_name, type, name).
+        - If not found: inserts the new record.
+        - If found: merges the data by combining aliases and properties (deduped and sorted),
+          and preserving source/target labels if not already set.
+
+        Args:
+            session: SQLAlchemy database session for executing queries.
+            records: An iterable of GraphSchemaRegistry records to upsert.
+
+        Returns:
+            A list of persisted GraphSchemaRegistry instances (newly inserted or updated).
+        """
         persisted: list[GraphSchemaRegistry] = []
 
         for record in records:
@@ -70,6 +110,11 @@ class GraphSchemaRegistry(Base):
         return persisted
 
     def __repr__(self) -> str:
+        """Return a developer-friendly string representation of the schema registry record.
+
+        Returns:
+            A string showing the key identifying fields: id, graph_name, type, and name.
+        """
         return (
             f"GraphRegistry(id={self.id!r}, graph_name={self.graph_name!r}, "
             f"type={self.type.value if isinstance(self.type, SchemaType) else self.type!r}, "
