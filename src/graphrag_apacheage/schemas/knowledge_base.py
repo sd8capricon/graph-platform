@@ -58,15 +58,17 @@ class KnowledgeBase(BaseModel):
     def from_json_file(cls, file_path: str | Path) -> "KnowledgeBase":
         return cls.model_validate_json(Path(file_path).read_text())
 
-    def get_graph_schem_registry_records(self) -> list[GraphSchemaRegistry]:
+    def get_graph_schema_registry_records(
+        self, graph_name: str
+    ) -> list[GraphSchemaRegistry]:
         grouped: dict[tuple[str, str, str], GraphSchemaRegistry] = {}
 
         for node in self.nodes:
-            key = (self.name, SchemaType.NODE.value, node.label)
+            key = (graph_name, SchemaType.NODE.value, node.label)
             row = grouped.setdefault(
                 key,
                 GraphSchemaRegistry(
-                    graph_name=self.name,
+                    graph_name=graph_name,
                     type=SchemaType.NODE,
                     name=node.label,
                     description="",
@@ -96,11 +98,11 @@ class KnowledgeBase(BaseModel):
                 ),
                 None,
             )
-            key = (self.name, SchemaType.RELATIONSHIP.value, relationship.label)
+            key = (graph_name, SchemaType.RELATIONSHIP.value, relationship.label)
             row = grouped.setdefault(
                 key,
                 GraphSchemaRegistry(
-                    graph_name=self.name,
+                    graph_name=graph_name,
                     type=SchemaType.RELATIONSHIP,
                     name=relationship.label,
                     description="",
@@ -119,20 +121,9 @@ class KnowledgeBase(BaseModel):
 
         return list(grouped.values())
 
-    def upsert_graph_schema_registry(self, session) -> list[GraphSchemaRegistry]:
-        records = self.get_graph_schem_registry_records()
-        return GraphSchemaRegistry.upsert_records(session, records)
-
-
-def upsert_knowledge_base(
-    session, knowledge_base: KnowledgeBase
-) -> list[GraphSchemaRegistry]:
-    return knowledge_base.upsert_graph_schema_registry(session)
-
 
 __all__ = [
     "KnowledgeBase",
     "KnowledgeNode",
     "KnowledgeRelationship",
-    "upsert_knowledge_base",
 ]
