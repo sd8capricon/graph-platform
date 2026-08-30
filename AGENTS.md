@@ -25,12 +25,19 @@
 
 3. **Agents** (`src/graphrag_apacheage/agent/`)
    - `tools.py` - placeholder for agent tool implementations (currently empty)
+   - Intended for: LLM-based agent tools that interact with the knowledge graph
+
+4. **Services** (`src/graphrag_apacheage/services/`)
+   - `KnowledgeBaseService`: High-level service for knowledge base operations
+
+5. **Repositories** (`src/graphrag_apacheage/repositories/`)
+   - `AgeGraphRepository`: Data access layer for Apache Age graph operations
 
 ### Data Flow
 
 ```
-JSON File → KnowledgeBase → get_graph_schem_registry_records() → 
-  → GraphSchemaRegistry list → upsert_records() → Database
+JSON File → KnowledgeBase.from_json_file() → get_graph_schema_registry_records(graph_name) → 
+  → GraphSchemaRegistry list → GraphSchemaRegistry.upsert_records() → Database
 ```
 
 ## Key Patterns & Conventions
@@ -46,7 +53,10 @@ JSON File → KnowledgeBase → get_graph_schem_registry_records() →
   - Merges aliases: `existing.aliases = sorted(set(existing.aliases) | set(record.aliases))`
   - Merges properties: `existing.properties = sorted(set(existing.properties) | set(record.properties))`
   - Preserves source/target labels if not yet set
-- See: `src/graphrag_apacheage/models/graph_schema_regsitry.py` lines 36-72
+- `KnowledgeBase.get_graph_schema_registry_records(graph_name)` extracts schema records
+  - Requires `graph_name` parameter (not stored on model, passed to method)
+  - Returns list of `GraphSchemaRegistry` records for nodes and relationships
+- See: `src/graphrag_apacheage/models/graph_schema_regsitry.py` and `src/graphrag_apacheage/schemas/knowledge_base.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -61,9 +71,14 @@ JSON File → KnowledgeBase → get_graph_schem_registry_records() →
 
 ### Loading and Registering a Knowledge Base
 ```python
+from sqlalchemy.orm import Session
+
 kb = KnowledgeBase.from_json_file("path/to/kb.json")
-schema_records = kb.get_graph_schem_registry_records()
+schema_records = kb.get_graph_schema_registry_records("my_age_graph")  # graph_name required
 # Insert to database via GraphSchemaRegistry.upsert_records(session, schema_records)
+with Session(engine) as session:
+    GraphSchemaRegistry.upsert_records(session, schema_records)
+    session.commit()
 ```
 
 ### Testing New Features
@@ -96,14 +111,15 @@ pytest tests/
 
 ## Important Notes
 
-### Naming Quirks
-- File: `graph_schema_regsitry.py` (note: "regsitry" not "registry" - appears to be intentional)
-- When referencing this module, preserve the exact spelling
 
 ### Testing Strategy
-- Tests use SQLite in-memory databases (no PostgreSQL required)
+- Tests use SQLite in-memory databases (no PostgreSQL required for unit tests)
 - Tests validate schema structure, constraints, and upsert logic
-- Example: `test_knowledge_base_parses_json_and_upserts_registry_rows()` uses `dummy_data/f1_kb.json`
+- Key tests:
+  - `test_knowledge_base_parses_json_and_upserts_registry_rows()` - end-to-end JSON→DB flow
+  - `test_graph_registry_type_accepts_only_node_or_relationship()` - constraint validation
+  - `test_knowledge_base_graph_name_is_provided_to_service_not_stored()` - graph_name parameter pattern
+- Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base)
 
 ### Type System
 - Uses Python 3.10+ type hints throughout (e.g., `list[str]`, `dict[str, Any]`, `str | None`)
