@@ -1,0 +1,26 @@
+[project]
+name = "graphrag-apacheage"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Siddharth Dhaigude", email = "sd8capricon@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "psycopg2-binary>=2.9.12",
+    "pydantic>=2.13.5",
+    "sqlalchemy>=2.0.42",
+]
+
+[project.scripts]
+graphrag-apacheage = "graphrag_apacheage:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

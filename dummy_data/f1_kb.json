@@ -1,0 +1,708 @@
+{
+  "name": "F1 kb",
+  "nodes": [
+    {
+      "id": "9f1c3d72-5a84-4b16-8e29-1c6d7f0a3b55",
+      "label": "Driver",
+      "properties": {
+        "name": "Max Verstappen",
+        "nationality": "Dutch"
+      }
+    },
+    {
+      "id": "2a7e4f91-c638-47bd-9a05-8d1f2e6b4c77",
+      "label": "Driver",
+      "properties": {
+        "name": "Sergio Perez",
+        "nationality": "Mexican"
+      }
+    },
+    {
+      "id": "7b3d8a20-e514-4f69-b827-0c5a1d9e6f42",
+      "label": "Driver",
+      "properties": {
+        "name": "Liam Lawson",
+        "nationality": "New Zealander"
+      }
+    },
+    {
+      "id": "4e8a1c63-2f75-4d90-a136-7b5e9c2a0f84",
+      "label": "Driver",
+      "properties": {
+        "name": "Yuki Tsunoda",
+        "nationality": "Japanese"
+      }
+    },
+    {
+      "id": "8c2f5a17-d904-46be-93a1-6e7b0d3c9f25",
+      "label": "Driver",
+      "properties": {
+        "name": "Lando Norris",
+        "nationality": "British"
+      }
+    },
+    {
+      "id": "1d6b9e42-8f30-4ca7-b561-2e7a4d0c9b83",
+      "label": "Driver",
+      "properties": {
+        "name": "Oscar Piastri",
+        "nationality": "Australian"
+      }
+    },
+    {
+      "id": "5a0e7c31-b694-4f28-8d17-3c9e2b6a0f45",
+      "label": "Driver",
+      "properties": {
+        "name": "Charles Leclerc",
+        "nationality": "Monegasque"
+      }
+    },
+    {
+      "id": "3f8b2d60-a517-4e93-9c26-0d7a5b1e4f82",
+      "label": "Driver",
+      "properties": {
+        "name": "Carlos Sainz",
+        "nationality": "Spanish"
+      }
+    },
+    {
+      "id": "6c1a4e85-9b27-43d0-a618-5f2e7c0b9d34",
+      "label": "Driver",
+      "properties": {
+        "name": "Lewis Hamilton",
+        "nationality": "British"
+      }
+    },
+    {
+      "id": "0b5d8f24-6e31-4a97-bc50-2d7c1e9a4f68",
+      "label": "Driver",
+      "properties": {
+        "name": "George Russell",
+        "nationality": "British"
+      }
+    },
+    {
+      "id": "a7e2c591-3d48-4f06-8b72-1c9e5a0d6f34",
+      "label": "Driver",
+      "properties": {
+        "name": "Andrea Kimi Antonelli",
+        "nationality": "Italian"
+      }
+    },
+    {
+      "id": "4c9f1a73-8e25-46bd-a607-3f2c5d9b0e81",
+      "label": "Driver",
+      "properties": {
+        "name": "Fernando Alonso",
+        "nationality": "Spanish"
+      }
+    },
+    {
+      "id": "8e0b3d62-5a19-4fc7-9274-1d6e9b2a0c53",
+      "label": "Driver",
+      "properties": {
+        "name": "Lance Stroll",
+        "nationality": "Canadian"
+      }
+    },
+    {
+      "id": "2f6a9c04-b731-4de8-85c2-7a1e0d5b9f46",
+      "label": "Driver",
+      "properties": {
+        "name": "Pierre Gasly",
+        "nationality": "French"
+      }
+    },
+    {
+      "id": "b4d8e170-6c23-4f95-a801-3e7b2a0d9c56",
+      "label": "Driver",
+      "properties": {
+        "name": "Esteban Ocon",
+        "nationality": "French"
+      }
+    },
+    {
+      "id": "1e7c5a93-0b46-4d82-9f15-6a3b8e0c2d74",
+      "label": "Driver",
+      "properties": {
+        "name": "Franco Colapinto",
+        "nationality": "Argentine"
+      }
+    },
+    {
+      "id": "7d2a0f58-4e91-43bc-a675-1c8b5e3d9a20",
+      "label": "Driver",
+      "properties": {
+        "name": "Jack Doohan",
+        "nationality": "Australian"
+      }
+    },
+    {
+      "id": "9a3e6c10-7b52-4f84-8d29-0e5c1a6b3f97",
+      "label": "Driver",
+      "properties": {
+        "name": "Alexander Albon",
+        "nationality": "Thai"
+      }
+    },
+    {
+      "id": "5e1b8d47-2c60-49af-b735-0a9d4f6e8c21",
+      "label": "Driver",
+      "properties": {
+        "name": "Logan Sargeant",
+        "nationality": "American"
+      }
+    },
+    {
+      "id": "c8f0a624-1d75-4b93-9e38-6a2c5f0d7b41",
+      "label": "Driver",
+      "properties": {
+        "name": "Nico Hulkenberg",
+        "nationality": "German"
+      }
+    },
+    {
+      "id": "0d4a7e96-3b18-4fc5-8251-9e6c2a0f7d43",
+      "label": "Driver",
+      "properties": {
+        "name": "Kevin Magnussen",
+        "nationality": "Danish"
+      }
+    },
+    {
+      "id": "6f2c9b51-a804-47de-8a36-1e5d0c7b4f92",
+      "label": "Driver",
+      "properties": {
+        "name": "Oliver Bearman",
+        "nationality": "British"
+      }
+    },
+    {
+      "id": "3a7d1e80-5c29-4f64-b918-0e6a2d9c7f45",
+      "label": "Driver",
+      "properties": {
+        "name": "Valtteri Bottas",
+        "nationality": "Finnish"
+      }
+    },
+    {
+      "id": "8b5e2c14-0f73-4a96-9d28-6c1e7b3a5f40",
+      "label": "Driver",
+      "properties": {
+        "name": "Zhou Guanyu",
+        "nationality": "Chinese"
+      }
+    },
+    {
+      "id": "2c9a6e70-4b15-43f8-a621-0d7e5c3b9f84",
+      "label": "Driver",
+      "properties": {
+        "name": "Gabriel Bortoleto",
+        "nationality": "Brazilian"
+      }
+    },
+    {
+      "id": "5f0d3b82-7a46-4e19-9c65-1b8e2d0a6f73",
+      "label": "Driver",
+      "properties": {
+        "name": "Daniel Ricciardo",
+        "nationality": "Australian"
+      }
+    },
+    {
+      "id": "9c4e1a76-2b80-4f35-a917-6d0e5b3c8f42",
+      "label": "Driver",
+      "properties": {
+        "name": "Isack Hadjar",
+        "nationality": "French"
+      }
+    },
+    {
+      "id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "label": "Team",
+      "properties": {
+        "name": "Red Bull Racing",
+        "country": "Austria"
+      }
+    },
+    {
+      "id": "1f8b6d30-4a27-49ce-b512-0e7c3d9a5f86",
+      "label": "Team",
+      "properties": {
+        "name": "McLaren",
+        "country": "United Kingdom"
+      }
+    },
+    {
+      "id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "label": "Team",
+      "properties": {
+        "name": "Ferrari",
+        "country": "Italy"
+      }
+    },
+    {
+      "id": "4d9a2f61-8b35-47e0-ac72-5c1f6d0e3b98",
+      "label": "Team",
+      "properties": {
+        "name": "Mercedes",
+        "country": "Germany"
+      }
+    },
+    {
+      "id": "9e3c7a05-1b64-4f92-8d30-6a5c0e2b7f18",
+      "label": "Team",
+      "properties": {
+        "name": "Aston Martin",
+        "country": "United Kingdom"
+      }
+    },
+    {
+      "id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "label": "Team",
+      "properties": {
+        "name": "Alpine",
+        "country": "France"
+      }
+    },
+    {
+      "id": "6c1e8a43-0f75-4d29-b6a1-3e9c5b7d2f80",
+      "label": "Team",
+      "properties": {
+        "name": "RB",
+        "country": "Italy"
+      }
+    },
+    {
+      "id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "label": "Team",
+      "properties": {
+        "name": "Williams",
+        "country": "United Kingdom"
+      }
+    },
+    {
+      "id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "label": "Team",
+      "properties": {
+        "name": "Haas",
+        "country": "United States"
+      }
+    },
+    {
+      "id": "3e7a1d59-8c24-4f60-b935-2a0e6d7b1c48",
+      "label": "Team",
+      "properties": {
+        "name": "Sauber",
+        "country": "Switzerland"
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "source_id": "9f1c3d72-5a84-4b16-8e29-1c6d7f0a3b55",
+      "target_id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "properties": {
+        "relationship_id": "c82405f0-9562-4f79-9448-7d9a65cf32c0",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "2a7e4f91-c638-47bd-9a05-8d1f2e6b4c77",
+      "target_id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "properties": {
+        "relationship_id": "f4648fb1-995a-4d0b-b578-c3e3cc34c7ae",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "8c2f5a17-d904-46be-93a1-6e7b0d3c9f25",
+      "target_id": "1f8b6d30-4a27-49ce-b512-0e7c3d9a5f86",
+      "properties": {
+        "relationship_id": "fc4492bc-e8ac-45b1-94ec-8c4ca8f0823c",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "1d6b9e42-8f30-4ca7-b561-2e7a4d0c9b83",
+      "target_id": "1f8b6d30-4a27-49ce-b512-0e7c3d9a5f86",
+      "properties": {
+        "relationship_id": "9dbec7c9-db6b-4207-84f8-94fc95df93fe",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "5a0e7c31-b694-4f28-8d17-3c9e2b6a0f45",
+      "target_id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "properties": {
+        "relationship_id": "f4f9e71f-d2b3-4963-a0ad-94631b2435be",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "3f8b2d60-a517-4e93-9c26-0d7a5b1e4f82",
+      "target_id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "properties": {
+        "relationship_id": "d4cbccd7-eec7-441b-a65c-141622def27b",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "6c1a4e85-9b27-43d0-a618-5f2e7c0b9d34",
+      "target_id": "4d9a2f61-8b35-47e0-ac72-5c1f6d0e3b98",
+      "properties": {
+        "relationship_id": "bd47d27b-859b-47ee-a1e2-a269b2d3f49e",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "0b5d8f24-6e31-4a97-bc50-2d7c1e9a4f68",
+      "target_id": "4d9a2f61-8b35-47e0-ac72-5c1f6d0e3b98",
+      "properties": {
+        "relationship_id": "7b983360-c9c5-4145-a866-bc8819461549",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "4c9f1a73-8e25-46bd-a607-3f2c5d9b0e81",
+      "target_id": "9e3c7a05-1b64-4f92-8d30-6a5c0e2b7f18",
+      "properties": {
+        "relationship_id": "300b3bf1-6725-4a7f-9614-a82301ccfb56",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "8e0b3d62-5a19-4fc7-9274-1d6e9b2a0c53",
+      "target_id": "9e3c7a05-1b64-4f92-8d30-6a5c0e2b7f18",
+      "properties": {
+        "relationship_id": "330ea3d6-e9a4-480a-aed2-d81675cc0fd2",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "2f6a9c04-b731-4de8-85c2-7a1e0d5b9f46",
+      "target_id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "properties": {
+        "relationship_id": "76f7504a-339c-465f-b377-5a9c838cba59",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "b4d8e170-6c23-4f95-a801-3e7b2a0d9c56",
+      "target_id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "properties": {
+        "relationship_id": "fcb087a1-9748-4ecf-8748-175048852c17",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "4e8a1c63-2f75-4d90-a136-7b5e9c2a0f84",
+      "target_id": "6c1e8a43-0f75-4d29-b6a1-3e9c5b7d2f80",
+      "properties": {
+        "relationship_id": "c23094d1-336f-4ea9-b29d-f4f9142b8260",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "5f0d3b82-7a46-4e19-9c65-1b8e2d0a6f73",
+      "target_id": "6c1e8a43-0f75-4d29-b6a1-3e9c5b7d2f80",
+      "properties": {
+        "relationship_id": "8ccc93d1-eb40-4694-9ca3-7c42653a71c8",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "7b3d8a20-e514-4f69-b827-0c5a1d9e6f42",
+      "target_id": "6c1e8a43-0f75-4d29-b6a1-3e9c5b7d2f80",
+      "properties": {
+        "relationship_id": "013f7242-9025-495d-9838-c8f8df7f0f76",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "9a3e6c10-7b52-4f84-8d29-0e5c1a6b3f97",
+      "target_id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "properties": {
+        "relationship_id": "1424af19-6dff-4e9f-9285-47b3320a3a1f",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "5e1b8d47-2c60-49af-b735-0a9d4f6e8c21",
+      "target_id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "properties": {
+        "relationship_id": "78058f59-760f-49c1-b732-d35207422b80",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "1e7c5a93-0b46-4d82-9f15-6a3b8e0c2d74",
+      "target_id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "properties": {
+        "relationship_id": "ddf61d1f-b7af-4583-bf79-4df5f3af2982",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "c8f0a624-1d75-4b93-9e38-6a2c5f0d7b41",
+      "target_id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "properties": {
+        "relationship_id": "06dcd9a1-2645-4782-8824-6f9154c23b05",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "0d4a7e96-3b18-4fc5-8251-9e6c2a0f7d43",
+      "target_id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "properties": {
+        "relationship_id": "5dbbd0a2-069c-4bd8-8f9a-33745561a7a1",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "6f2c9b51-a804-47de-8a36-1e5d0c7b4f92",
+      "target_id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "properties": {
+        "relationship_id": "735d43d9-bc2a-47ca-a438-2f0d69309893",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "6f2c9b51-a804-47de-8a36-1e5d0c7b4f92",
+      "target_id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "properties": {
+        "relationship_id": "74097ffe-f260-4f9d-83c1-1b0e92ed321b",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "3a7d1e80-5c29-4f64-b918-0e6a2d9c7f45",
+      "target_id": "3e7a1d59-8c24-4f60-b935-2a0e6d7b1c48",
+      "properties": {
+        "relationship_id": "4c6b3c4a-1b55-4634-960f-999a5b0d5ecf",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "8b5e2c14-0f73-4a96-9d28-6c1e7b3a5f40",
+      "target_id": "3e7a1d59-8c24-4f60-b935-2a0e6d7b1c48",
+      "properties": {
+        "relationship_id": "c06f5a34-56b7-422b-b391-bfc7701b2733",
+        "season": 2024
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "9f1c3d72-5a84-4b16-8e29-1c6d7f0a3b55",
+      "target_id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "properties": {
+        "relationship_id": "8bf0fd06-22c7-4225-8925-cde06bab3739",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "7b3d8a20-e514-4f69-b827-0c5a1d9e6f42",
+      "target_id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "properties": {
+        "relationship_id": "b7cd4553-2ca0-435e-931f-c7bb13ee467e",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "4e8a1c63-2f75-4d90-a136-7b5e9c2a0f84",
+      "target_id": "7a2e4c91-0f63-4bd8-9561-3c8e5b0d2f74",
+      "properties": {
+        "relationship_id": "9850badd-27b5-46fc-847a-5607fff9bf6b",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "8c2f5a17-d904-46be-93a1-6e7b0d3c9f25",
+      "target_id": "1f8b6d30-4a27-49ce-b512-0e7c3d9a5f86",
+      "properties": {
+        "relationship_id": "633dd774-19f8-4890-80b1-268211640639",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "1d6b9e42-8f30-4ca7-b561-2e7a4d0c9b83",
+      "target_id": "1f8b6d30-4a27-49ce-b512-0e7c3d9a5f86",
+      "properties": {
+        "relationship_id": "9aa292fa-4cc6-48ae-8cb9-5932e634e774",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "5a0e7c31-b694-4f28-8d17-3c9e2b6a0f45",
+      "target_id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "properties": {
+        "relationship_id": "66764552-c3ba-48be-b4d2-a5edd9f932d9",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "6c1a4e85-9b27-43d0-a618-5f2e7c0b9d34",
+      "target_id": "b5c0e972-6d41-4f83-8a25-1e7d3b9c0f64",
+      "properties": {
+        "relationship_id": "1f94298b-3c7c-4923-b775-4d7d31d68f2e",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "0b5d8f24-6e31-4a97-bc50-2d7c1e9a4f68",
+      "target_id": "4d9a2f61-8b35-47e0-ac72-5c1f6d0e3b98",
+      "properties": {
+        "relationship_id": "f2a6d2bc-c7f7-4c17-8a97-3adc73ca1060",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "a7e2c591-3d48-4f06-8b72-1c9e5a0d6f34",
+      "target_id": "4d9a2f61-8b35-47e0-ac72-5c1f6d0e3b98",
+      "properties": {
+        "relationship_id": "07014f8e-c128-441f-9523-92d322af6380",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "4c9f1a73-8e25-46bd-a607-3f2c5d9b0e81",
+      "target_id": "9e3c7a05-1b64-4f92-8d30-6a5c0e2b7f18",
+      "properties": {
+        "relationship_id": "17a29770-61f9-43ec-a169-4b9b272cede3",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "8e0b3d62-5a19-4fc7-9274-1d6e9b2a0c53",
+      "target_id": "9e3c7a05-1b64-4f92-8d30-6a5c0e2b7f18",
+      "properties": {
+        "relationship_id": "60954620-3b14-49f4-8f92-c9de88d00ff9",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "2f6a9c04-b731-4de8-85c2-7a1e0d5b9f46",
+      "target_id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "properties": {
+        "relationship_id": "bbd64c71-6ee1-42b3-aca4-920a81282c7c",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "7d2a0f58-4e91-43bc-a675-1c8b5e3d9a20",
+      "target_id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "properties": {
+        "relationship_id": "de642885-fcf2-47a7-9fef-405c535ead30",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "1e7c5a93-0b46-4d82-9f15-6a3b8e0c2d74",
+      "target_id": "2b7f0d84-5e31-4c96-a218-9d6a3f0b7e52",
+      "properties": {
+        "relationship_id": "ba2f3cf4-4ffd-4f9e-8710-45225c93aae0",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "9c4e1a76-2b80-4f35-a917-6d0e5b3c8f42",
+      "target_id": "6c1e8a43-0f75-4d29-b6a1-3e9c5b7d2f80",
+      "properties": {
+        "relationship_id": "1476ec23-f8eb-441d-9f02-bb2661ebe610",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "9a3e6c10-7b52-4f84-8d29-0e5c1a6b3f97",
+      "target_id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "properties": {
+        "relationship_id": "72e10236-2c4c-4cac-9647-42ba14152d2d",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "3f8b2d60-a517-4e93-9c26-0d7a5b1e4f82",
+      "target_id": "0a5d9c72-3e18-4fb6-8b41-6d2f7a0c9e35",
+      "properties": {
+        "relationship_id": "ef78cac3-4764-4fb3-96fd-be3677723dbe",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "b4d8e170-6c23-4f95-a801-3e7b2a0d9c56",
+      "target_id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "properties": {
+        "relationship_id": "15c5ffc0-c1e9-46fc-badd-da26e5c66cb8",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "6f2c9b51-a804-47de-8a36-1e5d0c7b4f92",
+      "target_id": "8f2c6b10-4a93-45de-9c71-0e5d3b7a1f86",
+      "properties": {
+        "relationship_id": "3dfb9c32-4765-41c8-8f99-68ee11a32772",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "c8f0a624-1d75-4b93-9e38-6a2c5f0d7b41",
+      "target_id": "3e7a1d59-8c24-4f60-b935-2a0e6d7b1c48",
+      "properties": {
+        "relationship_id": "d2243e18-5ebd-4a36-8033-5f5e84fd9db0",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    },
+    {
+      "source_id": "2c9a6e70-4b15-43f8-a621-0d7e5c3b9f84",
+      "target_id": "3e7a1d59-8c24-4f60-b935-2a0e6d7b1c48",
+      "properties": {
+        "relationship_id": "f6d850af-1d6a-4359-90e7-51940c921c7e",
+        "season": 2025
+      },
+      "label": "RACED_FOR"
+    }
+  ]
+}
