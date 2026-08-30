@@ -1,3 +1,5 @@
+from psycopg2.extensions import connection
+
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
 
@@ -45,8 +47,10 @@ class KnowledgeBaseService:
 
 
 def upsert_knowledge_base_to_age_graph(
-    connection, knowledge_base: KnowledgeBase, graph_name: str | None = None
+    pg_connection: connection,
+    knowledge_base: KnowledgeBase,
+    graph_name: str | None = None,
 ) -> list[str]:
-    repository = AgeGraphRepository(connection)
+    repository = AgeGraphRepository(pg_connection)
     service = KnowledgeBaseService(repository)
     return service.upsert_knowledge_base(knowledge_base, graph_name=graph_name)
