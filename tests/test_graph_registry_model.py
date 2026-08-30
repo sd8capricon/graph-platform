@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from graphrag_apacheage.models.graph_schema_regsitry import (
+from graphrag_apacheage.models.graph_schema_registry import (
     Base,
     GraphSchemaRegistry,
     SchemaType,
