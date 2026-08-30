@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from graphrag_apacheage.models.graph_schema_regsitry import (
     GraphSchemaRegistry,
@@ -10,22 +11,48 @@ from graphrag_apacheage.models.graph_schema_regsitry import (
 
 
 class KnowledgeNode(BaseModel):
-    id: str
+    id: str | None = None
     label: str
     properties: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def ensure_id(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("id", str(uuid4()))
+        return data
 
 
 class KnowledgeRelationship(BaseModel):
-    source_id: str
-    target_id: str
+    source_id: str | None = None
+    target_id: str | None = None
     label: str
     properties: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def ensure_related_ids(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("source_id", str(uuid4()))
+            data.setdefault("target_id", str(uuid4()))
+        return data
+
 
 class KnowledgeBase(BaseModel):
+    id: str | None = None
     name: str
     nodes: list[KnowledgeNode] = Field(default_factory=list)
     relationships: list[KnowledgeRelationship] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def ensure_knowledge_base_id(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("id", str(uuid4()))
+        return data
 
     @classmethod
     def from_json_file(cls, file_path: str | Path) -> "KnowledgeBase":
@@ -92,7 +119,7 @@ class KnowledgeBase(BaseModel):
 
         return list(grouped.values())
 
-    def upsert_graph_registry(self, session) -> list[GraphSchemaRegistry]:
+    def upsert_graph_schema_registry(self, session) -> list[GraphSchemaRegistry]:
         records = self.get_graph_schem_registry_records()
         return GraphSchemaRegistry.upsert_records(session, records)
 
@@ -100,7 +127,7 @@ class KnowledgeBase(BaseModel):
 def upsert_knowledge_base(
     session, knowledge_base: KnowledgeBase
 ) -> list[GraphSchemaRegistry]:
-    return knowledge_base.upsert_graph_registry(session)
+    return knowledge_base.upsert_graph_schema_registry(session)
 
 
 __all__ = [

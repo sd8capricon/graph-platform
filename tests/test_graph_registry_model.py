@@ -57,14 +57,32 @@ def test_graph_registry_type_accepts_only_node_or_relationship():
             )
 
 
+def test_missing_ids_are_uuid_generated_and_existing_ids_are_preserved():
+    node = KnowledgeBase.model_validate(
+        {
+            "name": "demo",
+            "nodes": [{"label": "Driver", "properties": {"name": "Alice"}}],
+            "relationships": [{"label": "RACED_FOR", "properties": {"season": 2025}}],
+        }
+    ).nodes[0]
+    assert node.id is not None
+    assert len(node.id) > 0
+
+    relationship = KnowledgeBase.model_validate(
+        {
+            "name": "demo",
+            "nodes": [{"id": "node-1", "label": "Driver"}],
+            "relationships": [
+                {"source_id": "node-1", "target_id": "node-2", "label": "RACED_FOR"}
+            ],
+        }
+    ).relationships[0]
+    assert relationship.source_id == "node-1"
+    assert relationship.target_id == "node-2"
+
+
 def test_knowledge_base_parses_json_and_upserts_registry_rows():
-    payload_path = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "graphrag_apacheage"
-        / "dummy_data"
-        / "f1_kb.json"
-    )
+    payload_path = Path(__file__).resolve().parents[1] / "dummy_data" / "f1_kb.json"
     knowledge_base = KnowledgeBase.model_validate_json(payload_path.read_text())
 
     node_records = knowledge_base.get_graph_schem_registry_records()
