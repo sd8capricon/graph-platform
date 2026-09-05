@@ -71,30 +71,3 @@ class KnowledgeBaseService:
 
         self.repository.commit()
         return queries
-
-
-def upsert_knowledge_base_to_age_graph(
-    pg_connection: connection,
-    knowledge_base: KnowledgeBase,
-    graph_name: str | None = None,
-) -> list[str]:
-    """Upsert a knowledge base to an Apache Age graph using a PostgreSQL connection.
-
-    Convenience function that creates a KnowledgeBaseService instance and
-    performs an upsert operation in a single call.
-
-    Args:
-        pg_connection: A psycopg2 PostgreSQL database connection.
-        knowledge_base: The KnowledgeBase instance containing nodes and relationships.
-        graph_name: The name of the target Apache Age graph. Required.
-
-    Returns:
-        A list of SQL queries that were executed during the upsert operation.
-
-    Raises:
-        ValueError: If graph_name is not provided or if the graph does not exist
-            in the database.
-    """
-    repository = AgeGraphRepository(pg_connection)
-    service = KnowledgeBaseService(repository)
-    return service.upsert_knowledge_base(knowledge_base, graph_name=graph_name)
