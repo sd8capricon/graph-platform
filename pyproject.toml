@@ -9,11 +9,12 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "fastapi[standard]>=0.141.1",
+    "litellm>=1.99.0",
     "pgvector>=0.5.0",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
-    "sqlalchemy>=2.0.42",
+    "sqlalchemy[asyncio]>=2.0.42",
 ]
 
 [project.scripts]
@@ -25,5 +26,10 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.22.1",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
