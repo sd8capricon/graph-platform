@@ -3,8 +3,6 @@ from typing import Any
 
 from psycopg2.extensions import connection
 
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
-
 
 class AgeGraphRepository:
     """Repository for Apache Age graph operations.
