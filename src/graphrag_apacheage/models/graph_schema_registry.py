@@ -1,11 +1,36 @@
+import os
 from collections.abc import Iterable
 from enum import Enum
 
+import litellm
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBEDDING_DIM = 1536
+EMBEDDING_MODEL_ENV_VAR = "EMBEDDING_MODEL"
+
+
+async def _compute_embeddings(texts: list[str]) -> list[list[float]] | None:
+    """Compute embeddings for a batch of texts via litellm.
+
+    Reads the model name from the EMBEDDING_MODEL env var (e.g. "openai/text-embedding-3-small",
+    "azure/...", "huggingface/..."). If unset, embedding is skipped so callers without an
+    embedding provider configured are unaffected.
+
+    Args:
+        texts: Batch of texts to embed, one per record.
+
+    Returns:
+        One embedding vector per input text, or None if EMBEDDING_MODEL is not set.
+    """
+    model = os.getenv(EMBEDDING_MODEL_ENV_VAR)
+    if not model or not texts:
+        return None
+
+    response = await litellm.aembedding(model=model, input=texts)
+    return [item["embedding"] for item in response.data]
 
 
 class Base(DeclarativeBase):
@@ -66,9 +91,18 @@ class GraphSchemaRegistry(Base):
         Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite"), nullable=True
     )
 
+    def embedding_text(self) -> str:
+        """Build the text embedded for this schema registry record.
+
+        Returns:
+            Name, description, and aliases joined into one string.
+        """
+        parts = [self.name, self.description, *self.aliases]
+        return " ".join(part for part in parts if part)
+
     @classmethod
-    def upsert_records(
-        cls, session: Session, records: Iterable[GraphSchemaRegistry]
+    async def upsert_records(
+        cls, session: AsyncSession, records: Iterable[GraphSchemaRegistry]
     ) -> list[GraphSchemaRegistry]:
         """Upsert (insert or update) schema registry records into the database.
 
@@ -76,6 +110,9 @@ class GraphSchemaRegistry(Base):
         - If not found: inserts the new record.
         - If found: merges the data by combining aliases and properties (deduped and sorted),
           and preserving source/target labels if not already set.
+        Also (re)computes each persisted record's embedding from its post-merge
+        name/description/aliases via litellm, provided the EMBEDDING_MODEL env var
+        is set; otherwise embeddings are left untouched.
 
         Args:
             session: SQLAlchemy database session for executing queries.
@@ -87,16 +124,18 @@ class GraphSchemaRegistry(Base):
         persisted: list[GraphSchemaRegistry] = []
 
         for record in records:
-            existing = session.execute(
-                select(cls).where(
-                    cls.graph_name == record.graph_name,
-                    cls.type
-                    == (
-                        record.type.value
-                        if isinstance(record.type, SchemaType)
-                        else record.type
-                    ),
-                    cls.name == record.name,
+            existing = (
+                await session.execute(
+                    select(cls).where(
+                        cls.graph_name == record.graph_name,
+                        cls.type
+                        == (
+                            record.type.value
+                            if isinstance(record.type, SchemaType)
+                            else record.type
+                        ),
+                        cls.name == record.name,
+                    )
                 )
             ).scalar_one_or_none()
 
@@ -114,44 +153,63 @@ class GraphSchemaRegistry(Base):
             existing.target_label = record.target_label or existing.target_label
             persisted.append(existing)
 
-        session.flush()
+        embeddings = await _compute_embeddings(
+            [record.embedding_text() for record in persisted]
+        )
+        if embeddings is not None:
+            for record, embedding in zip(persisted, embeddings):
+                record.embedding = embedding
+
+        await session.flush()
         return persisted
 
     @classmethod
-    def vector_search(
+    async def vector_search(
         cls,
-        session: Session,
-        embedding: list[float],
+        session: AsyncSession,
+        query: str,
         graph_name: str,
         type: SchemaType | None = None,
         limit: int = 5,
     ) -> list[GraphSchemaRegistry]:
-        """Find the schema registry records whose embedding is closest to the query vector.
+        """Find the schema registry records whose embedding is closest to a text query.
 
-        Uses pgvector's cosine distance operator, so this requires a PostgreSQL
+        Embeds the query text via litellm (see `_compute_embeddings`) and orders stored
+        records by pgvector's cosine distance operator, so this requires a PostgreSQL
         database with the pgvector extension installed and records that already
         have an `embedding` set (via upsert or direct assignment).
 
         Args:
             session: SQLAlchemy database session for executing the query.
-            embedding: The query embedding to compare stored records against.
+            query: Free-text query to embed and compare stored records against.
             graph_name: Restrict the search to records belonging to this graph.
             type: Optional schema type ('node' or 'relationship') to filter by.
             limit: Maximum number of records to return, ordered by similarity.
 
         Returns:
             A list of GraphSchemaRegistry records ordered from most to least similar.
+
+        Raises:
+            ValueError: If the EMBEDDING_MODEL env var is not set, since no embedding
+                provider is configured to embed the query.
         """
-        query = (
+        embeddings = await _compute_embeddings([query])
+        if embeddings is None:
+            raise ValueError(
+                f"{EMBEDDING_MODEL_ENV_VAR} env var must be set to perform vector_search"
+            )
+        embedding = embeddings[0]
+
+        stmt = (
             select(cls)
             .where(cls.graph_name == graph_name, cls.embedding.is_not(None))
             .order_by(cls.embedding.cosine_distance(embedding))
             .limit(limit)
         )
         if type is not None:
-            query = query.where(cls.type == (type.value if isinstance(type, SchemaType) else type))
+            stmt = stmt.where(cls.type == (type.value if isinstance(type, SchemaType) else type))
 
-        return list(session.execute(query).scalars().all())
+        return list((await session.execute(stmt)).scalars().all())
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the schema registry record.

@@ -4,6 +4,8 @@ import pytest
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from graphrag_apacheage.models.graph_schema_registry import (
@@ -64,24 +66,122 @@ def test_graph_registry_embedding_round_trips_on_sqlite():
     assert stored.embedding == [0.1, 0.2, 0.3]
 
 
-def test_graph_registry_vector_search_compiles_cosine_distance_query():
-    # vector_search relies on pgvector's `<=>` cosine distance operator, which
-    # only exists on PostgreSQL, so we verify the generated SQL rather than
-    # executing it against SQLite.
-    q = (
-        select(GraphSchemaRegistry)
-        .where(
-            GraphSchemaRegistry.graph_name == "demo",
-            GraphSchemaRegistry.embedding.is_not(None),
-        )
-        .order_by(GraphSchemaRegistry.embedding.cosine_distance([0.1, 0.2, 0.3]))
-        .limit(3)
-    )
-    compiled = str(q.compile(dialect=postgresql.dialect()))
+async def test_upsert_records_skips_embedding_when_env_var_unset(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
 
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    record = GraphSchemaRegistry(
+        graph_name="demo",
+        type=SchemaType.NODE,
+        name="Driver",
+        description="A racer",
+        aliases=[],
+        properties=[],
+    )
+
+    async with AsyncSession(engine) as session:
+        persisted = await GraphSchemaRegistry.upsert_records(session, [record])
+        embedding = persisted[0].embedding
+        await session.commit()
+
+    assert embedding is None
+
+
+async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
+    import graphrag_apacheage.models.graph_schema_registry as graph_schema_registry
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+
+    captured = {}
+
+    class FakeResponse:
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
+
+    async def fake_aembedding(model, input):
+        captured["model"] = model
+        captured["input"] = input
+        return FakeResponse()
+
+    monkeypatch.setattr(graph_schema_registry.litellm, "aembedding", fake_aembedding)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    record = GraphSchemaRegistry(
+        graph_name="demo",
+        type=SchemaType.NODE,
+        name="Driver",
+        description="A racer",
+        aliases=["Racer"],
+        properties=[],
+    )
+
+    async with AsyncSession(engine) as session:
+        persisted = await GraphSchemaRegistry.upsert_records(session, [record])
+        embedding = persisted[0].embedding
+        await session.commit()
+
+    assert embedding == [0.1, 0.2, 0.3]
+    assert captured["model"] == "openai/text-embedding-3-small"
+    assert captured["input"] == ["Driver A racer Racer"]
+
+
+async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(monkeypatch):
+    # vector_search relies on pgvector's `<=>` cosine distance operator, which
+    # only exists on PostgreSQL, so we capture the statement it builds via a
+    # fake session instead of executing it against SQLite.
+    import graphrag_apacheage.models.graph_schema_registry as graph_schema_registry
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
+
+    class FakeResponse:
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
+
+    async def fake_aembedding(model, input):
+        return FakeResponse()
+
+    monkeypatch.setattr(graph_schema_registry.litellm, "aembedding", fake_aembedding)
+
+    captured = {}
+
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class FakeSession:
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+    results = await GraphSchemaRegistry.vector_search(
+        FakeSession(), query="fast driver", graph_name="demo", type=SchemaType.NODE, limit=3
+    )
+
+    assert results == []
+    compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
     assert "<=>" in compiled
     assert "graph_registry.graph_name" in compiled
     assert "LIMIT" in compiled
+
+
+async def test_vector_search_raises_when_embedding_model_unset(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+
+    class FakeSession:
+        async def execute(self, stmt):
+            raise AssertionError("should not query the database without an embedding")
+
+    with pytest.raises(ValueError, match="EMBEDDING_MODEL"):
+        await GraphSchemaRegistry.vector_search(
+            FakeSession(), query="fast driver", graph_name="demo"
+        )
 
 
 def test_graph_registry_type_accepts_only_node_or_relationship():
@@ -130,7 +230,7 @@ def test_missing_ids_are_uuid_generated_and_existing_ids_are_preserved():
     assert relationship.target_id == "node-2"
 
 
-def test_knowledge_base_parses_json_and_upserts_registry_rows():
+async def test_knowledge_base_parses_json_and_upserts_registry_rows():
     payload_path = Path(__file__).resolve().parents[1] / "dummy_data" / "f1_kb.json"
     knowledge_base = KnowledgeBase.model_validate_json(payload_path.read_text())
 
@@ -145,17 +245,20 @@ def test_knowledge_base_parses_json_and_upserts_registry_rows():
         for record in node_records
     )
 
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-    with Session(engine) as session:
-        GraphSchemaRegistry.upsert_records(session, node_records)
-        session.commit()
+    async with AsyncSession(engine) as session:
+        await GraphSchemaRegistry.upsert_records(session, node_records)
+        await session.commit()
 
         rows = (
-            session.execute(
-                select(GraphSchemaRegistry).where(
-                    GraphSchemaRegistry.graph_name == "F1 kb"
+            (
+                await session.execute(
+                    select(GraphSchemaRegistry).where(
+                        GraphSchemaRegistry.graph_name == "F1 kb"
+                    )
                 )
             )
             .scalars()
