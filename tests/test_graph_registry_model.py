@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -31,8 +32,56 @@ def test_graph_registry_table_exists_and_tracks_graph_name():
         "properties",
         "source_label",
         "target_label",
+        "embedding",
     }
     assert expected.issubset(columns)
+
+
+def test_graph_registry_embedding_round_trips_on_sqlite():
+    # The embedding column uses a JSON fallback on SQLite (via with_variant),
+    # since pgvector's Vector type only compiles on PostgreSQL.
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    record = GraphSchemaRegistry(
+        graph_name="demo",
+        type=SchemaType.NODE,
+        name="Driver",
+        description="A racer",
+        aliases=[],
+        properties=[],
+        embedding=[0.1, 0.2, 0.3],
+    )
+
+    with Session(engine) as session:
+        session.add(record)
+        session.commit()
+
+        stored = session.execute(
+            select(GraphSchemaRegistry).where(GraphSchemaRegistry.name == "Driver")
+        ).scalar_one()
+
+    assert stored.embedding == [0.1, 0.2, 0.3]
+
+
+def test_graph_registry_vector_search_compiles_cosine_distance_query():
+    # vector_search relies on pgvector's `<=>` cosine distance operator, which
+    # only exists on PostgreSQL, so we verify the generated SQL rather than
+    # executing it against SQLite.
+    q = (
+        select(GraphSchemaRegistry)
+        .where(
+            GraphSchemaRegistry.graph_name == "demo",
+            GraphSchemaRegistry.embedding.is_not(None),
+        )
+        .order_by(GraphSchemaRegistry.embedding.cosine_distance([0.1, 0.2, 0.3]))
+        .limit(3)
+    )
+    compiled = str(q.compile(dialect=postgresql.dialect()))
+
+    assert "<=>" in compiled
+    assert "graph_registry.graph_name" in compiled
+    assert "LIMIT" in compiled
 
 
 def test_graph_registry_type_accepts_only_node_or_relationship():

@@ -1,8 +1,11 @@
 from collections.abc import Iterable
 from enum import Enum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+EMBEDDING_DIM = 1536
 
 
 class Base(DeclarativeBase):
@@ -39,6 +42,8 @@ class GraphSchemaRegistry(Base):
         properties: List of property names associated with this schema type.
         source_label: For relationship types, the label of the source node type.
         target_label: For relationship types, the label of the target node type.
+        embedding: Optional vector embedding of the schema type (e.g. derived from
+            name/description/aliases) used for similarity search via `vector_search()`.
     """
 
     __tablename__ = "graph_registry"
@@ -57,6 +62,9 @@ class GraphSchemaRegistry(Base):
     properties: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     source_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite"), nullable=True
+    )
 
     @classmethod
     def upsert_records(
@@ -108,6 +116,42 @@ class GraphSchemaRegistry(Base):
 
         session.flush()
         return persisted
+
+    @classmethod
+    def vector_search(
+        cls,
+        session: Session,
+        embedding: list[float],
+        graph_name: str,
+        type: SchemaType | None = None,
+        limit: int = 5,
+    ) -> list[GraphSchemaRegistry]:
+        """Find the schema registry records whose embedding is closest to the query vector.
+
+        Uses pgvector's cosine distance operator, so this requires a PostgreSQL
+        database with the pgvector extension installed and records that already
+        have an `embedding` set (via upsert or direct assignment).
+
+        Args:
+            session: SQLAlchemy database session for executing the query.
+            embedding: The query embedding to compare stored records against.
+            graph_name: Restrict the search to records belonging to this graph.
+            type: Optional schema type ('node' or 'relationship') to filter by.
+            limit: Maximum number of records to return, ordered by similarity.
+
+        Returns:
+            A list of GraphSchemaRegistry records ordered from most to least similar.
+        """
+        query = (
+            select(cls)
+            .where(cls.graph_name == graph_name, cls.embedding.is_not(None))
+            .order_by(cls.embedding.cosine_distance(embedding))
+            .limit(limit)
+        )
+        if type is not None:
+            query = query.where(cls.type == (type.value if isinstance(type, SchemaType) else type))
+
+        return list(session.execute(query).scalars().all())
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the schema registry record.
