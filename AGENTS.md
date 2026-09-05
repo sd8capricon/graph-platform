@@ -1,5 +1,8 @@
 # Agent Customization for graphrag-apacheage
 
+> **Sync note:** This file and `CLAUDE.md` must stay identical. Edit one, copy change to other, same commit.
+> **Keep current:** When you learn new patterns, conventions, or gotchas during work, add them to both files, same commit. Don't let docs drift from code.
+
 ## Project Overview
 
 **graphrag-apacheage** is a Python library that bridges Microsoft's GraphRAG framework with Apache Age, a graph database extension for PostgreSQL. It provides data models, schema registry, and utilities for managing knowledge graphs in a relational database with graph capabilities.
