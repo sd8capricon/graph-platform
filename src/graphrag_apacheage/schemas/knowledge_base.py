@@ -8,6 +8,7 @@ from graphrag_apacheage.models.graph_schema_registry import (
     GraphSchemaRegistry,
     SchemaType,
 )
+from graphrag_apacheage.models.node_embedding import NodeEmbedding
 
 
 class KnowledgeNode(BaseModel):
@@ -205,6 +206,28 @@ class KnowledgeBase(BaseModel):
             row.target_label = target_label or row.target_label
 
         return list(grouped.values())
+
+    def get_node_embedding_records(self, graph_name: str) -> list[NodeEmbedding]:
+        """Extract node embedding records from the knowledge base.
+
+        Builds one NodeEmbedding record per node, capturing its label and properties
+        so an embedding can be computed and stored for similarity search.
+
+        Args:
+            graph_name: The name of the Apache Age graph these nodes belong to.
+
+        Returns:
+            A list of NodeEmbedding records, one per node in the knowledge base.
+        """
+        return [
+            NodeEmbedding(
+                graph_name=graph_name,
+                node_id=node.id,
+                label=node.label,
+                properties=dict(node.properties),
+            )
+            for node in self.nodes
+        ]
 
 
 __all__ = [

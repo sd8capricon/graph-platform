@@ -1,42 +1,17 @@
-import os
 from collections.abc import Iterable
 from enum import Enum
 
-import litellm
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
-EMBEDDING_DIM = 1536
-EMBEDDING_MODEL_ENV_VAR = "EMBEDDING_MODEL"
-
-
-async def _compute_embeddings(texts: list[str]) -> list[list[float]] | None:
-    """Compute embeddings for a batch of texts via litellm.
-
-    Reads the model name from the EMBEDDING_MODEL env var (e.g. "openai/text-embedding-3-small",
-    "azure/...", "huggingface/..."). If unset, embedding is skipped so callers without an
-    embedding provider configured are unaffected.
-
-    Args:
-        texts: Batch of texts to embed, one per record.
-
-    Returns:
-        One embedding vector per input text, or None if EMBEDDING_MODEL is not set.
-    """
-    model = os.getenv(EMBEDDING_MODEL_ENV_VAR)
-    if not model or not texts:
-        return None
-
-    response = await litellm.aembedding(model=model, input=texts)
-    return [item["embedding"] for item in response.data]
-
-
-class Base(DeclarativeBase):
-    """SQLAlchemy declarative base for all ORM models."""
-
-    pass
+from graphrag_apacheage.models.base import Base
+from graphrag_apacheage.services.embedding_service import (
+    EMBEDDING_DIM,
+    EMBEDDING_MODEL_ENV_VAR,
+    EmbeddingService,
+)
 
 
 class SchemaType(str, Enum):
@@ -153,7 +128,7 @@ class GraphSchemaRegistry(Base):
             existing.target_label = record.target_label or existing.target_label
             persisted.append(existing)
 
-        embeddings = await _compute_embeddings(
+        embeddings = await EmbeddingService.compute_embeddings(
             [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
@@ -174,7 +149,7 @@ class GraphSchemaRegistry(Base):
     ) -> list[GraphSchemaRegistry]:
         """Find the schema registry records whose embedding is closest to a text query.
 
-        Embeds the query text via litellm (see `_compute_embeddings`) and orders stored
+        Embeds the query text via litellm (see `EmbeddingService.compute_embeddings`) and orders stored
         records by pgvector's cosine distance operator, so this requires a PostgreSQL
         database with the pgvector extension installed and records that already
         have an `embedding` set (via upsert or direct assignment).
@@ -193,7 +168,7 @@ class GraphSchemaRegistry(Base):
             ValueError: If the EMBEDDING_MODEL env var is not set, since no embedding
                 provider is configured to embed the query.
         """
-        embeddings = await _compute_embeddings([query])
+        embeddings = await EmbeddingService.compute_embeddings([query])
         if embeddings is None:
             raise ValueError(
                 f"{EMBEDDING_MODEL_ENV_VAR} env var must be set to perform vector_search"

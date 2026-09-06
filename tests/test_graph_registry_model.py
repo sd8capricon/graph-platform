@@ -8,11 +8,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from graphrag_apacheage.models.graph_schema_registry import (
-    Base,
-    GraphSchemaRegistry,
-    SchemaType,
-)
+from graphrag_apacheage.models.base import Base
+from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
 
 
@@ -91,7 +88,7 @@ async def test_upsert_records_skips_embedding_when_env_var_unset(monkeypatch):
 
 
 async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
-    import graphrag_apacheage.models.graph_schema_registry as graph_schema_registry
+    import graphrag_apacheage.services.embedding_service as embedding_service
 
     monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 
@@ -105,7 +102,7 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
         captured["input"] = input
         return FakeResponse()
 
-    monkeypatch.setattr(graph_schema_registry.litellm, "aembedding", fake_aembedding)
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -134,7 +131,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     # vector_search relies on pgvector's `<=>` cosine distance operator, which
     # only exists on PostgreSQL, so we capture the statement it builds via a
     # fake session instead of executing it against SQLite.
-    import graphrag_apacheage.models.graph_schema_registry as graph_schema_registry
+    import graphrag_apacheage.services.embedding_service as embedding_service
 
     monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
 
@@ -144,7 +141,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     async def fake_aembedding(model, input):
         return FakeResponse()
 
-    monkeypatch.setattr(graph_schema_registry.litellm, "aembedding", fake_aembedding)
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
 
     captured = {}
 

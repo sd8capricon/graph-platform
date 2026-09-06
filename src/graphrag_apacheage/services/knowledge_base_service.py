@@ -1,5 +1,7 @@
 from psycopg2.extensions import connection
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
 
@@ -71,3 +73,54 @@ class KnowledgeBaseService:
 
         self.repository.commit()
         return queries
+
+    async def upsert_node_embeddings(
+        self,
+        session: AsyncSession,
+        knowledge_base: KnowledgeBase,
+        graph_name: str,
+    ) -> list[NodeEmbedding]:
+        """Compute and store vector embeddings for a knowledge base's nodes.
+
+        Args:
+            session: SQLAlchemy async session used to persist node embeddings.
+            knowledge_base: The KnowledgeBase whose nodes should be embedded.
+            graph_name: The name of the Apache Age graph these nodes belong to. Required.
+
+        Returns:
+            A list of persisted NodeEmbedding records (newly inserted or updated).
+
+        Raises:
+            ValueError: If graph_name is not provided.
+        """
+        if not graph_name:
+            raise ValueError(
+                "graph_name is required when upserting node embeddings"
+            )
+
+        records = knowledge_base.get_node_embedding_records(graph_name)
+        return await NodeEmbedding.upsert_records(session, records)
+
+    async def search_nodes(
+        self,
+        session: AsyncSession,
+        query: str,
+        graph_name: str,
+        label: str | None = None,
+        limit: int = 5,
+    ) -> list[NodeEmbedding]:
+        """Find knowledge base nodes whose embedding is closest to a text query.
+
+        Args:
+            session: SQLAlchemy async session used to execute the search.
+            query: Free-text query to embed and compare stored node embeddings against.
+            graph_name: Restrict the search to nodes belonging to this graph.
+            label: Optional node label to filter by.
+            limit: Maximum number of nodes to return, ordered by similarity.
+
+        Returns:
+            A list of NodeEmbedding records ordered from most to least similar.
+        """
+        return await NodeEmbedding.vector_search(
+            session, query, graph_name, label=label, limit=limit
+        )

@@ -1,6 +1,4 @@
-from .knowledge_base_service import (
-    KnowledgeBaseService,
-    upsert_knowledge_base_to_age_graph,
-)
+from .embedding_service import EmbeddingService
+from .knowledge_base_service import KnowledgeBaseService
 
-__all__ = ["KnowledgeBaseService", "upsert_knowledge_base_to_age_graph"]
+__all__ = ["EmbeddingService", "KnowledgeBaseService"]
