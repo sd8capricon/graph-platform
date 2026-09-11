@@ -1,7 +1,44 @@
+import asyncio
+import os
+
+from dotenv import load_dotenv
+from psycopg import AsyncConnection
+
 from graphrag_apacheage.config import load_config
+from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
+from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+
+async def create_connection() -> AsyncConnection:
+    connection = await AsyncConnection.connect(
+        host=os.environ["PGHOST"],
+        port=os.environ["PGPORT"],
+        dbname=os.environ["PGDATABASE"],
+        user=os.environ["PGUSER"],
+        password=os.environ["PGPASSWORD"],
+    )
+    async with connection.cursor() as cursor:
+        await cursor.execute('SET search_path = ag_catalog, "$user", public;')
+    return connection
+
+
+async def create_knowledge_base(repository: AgeGraphRepository):
+    if not await repository.graph_exists("kb_graph"):
+        await repository.create_graph("kb_graph")
+    knowledge_base = KnowledgeBase.from_json_file("dummy_data/f1_kb.json")
+    knowledge_base_service = KnowledgeBaseService(repository)
+    await knowledge_base_service.upsert_knowledge_base(knowledge_base, "kb_graph")
+
+
+async def run():
+    pg_connection = await create_connection()
+    age_repository = AgeGraphRepository(pg_connection)
+    await age_repository.delete_graph("kb_graph")
+    await create_knowledge_base(age_repository)
 
 
 def main() -> None:
-    settings = load_config()
-    print(settings.embedding_dimension)
-    print("Hello from graphrag-apacheage!")
+    load_dotenv()
+    load_config()
+    asyncio.run(run())
