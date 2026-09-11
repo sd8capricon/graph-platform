@@ -146,7 +146,17 @@ class KnowledgeBase(BaseModel):
         Returns:
             A list of GraphSchemaRegistry records representing node and relationship
             type definitions extracted from the knowledge base.
+
+        Raises:
+            ValueError: If this knowledge base has no id.
         """
+        if not self.id:
+            raise ValueError(
+                "id is required on the knowledge base when building graph schema "
+                "registry records"
+            )
+        knowledge_base_id = self.id
+
         grouped: dict[tuple[str, str, str], GraphSchemaRegistry] = {}
 
         for node in self.nodes:
@@ -155,6 +165,7 @@ class KnowledgeBase(BaseModel):
                 key,
                 GraphSchemaRegistry(
                     graph_name=graph_name,
+                    knowledge_base_ids=[knowledge_base_id],
                     type=SchemaType.NODE,
                     name=node.label,
                     description="",
@@ -189,6 +200,7 @@ class KnowledgeBase(BaseModel):
                 key,
                 GraphSchemaRegistry(
                     graph_name=graph_name,
+                    knowledge_base_ids=[knowledge_base_id],
                     type=SchemaType.RELATIONSHIP,
                     name=relationship.label,
                     description="",
@@ -218,10 +230,21 @@ class KnowledgeBase(BaseModel):
 
         Returns:
             A list of NodeEmbedding records, one per node in the knowledge base.
+
+        Raises:
+            ValueError: If this knowledge base has no id.
         """
+        if not self.id:
+            raise ValueError(
+                "id is required on the knowledge base when building node embedding "
+                "records"
+            )
+        knowledge_base_id = self.id
+
         return [
             NodeEmbedding(
                 graph_name=graph_name,
+                knowledge_base_id=knowledge_base_id,
                 node_id=node.id,
                 label=node.label,
                 properties=dict(node.properties),

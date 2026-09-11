@@ -95,7 +95,8 @@ class KnowledgeBaseService:
             A list of persisted NodeEmbedding records (newly inserted or updated).
 
         Raises:
-            ValueError: If graph_name is not provided.
+            ValueError: If graph_name is not provided, or if the knowledge base has
+                no id.
         """
         if not graph_name:
             raise ValueError(
@@ -112,6 +113,7 @@ class KnowledgeBaseService:
         graph_name: str,
         model: Model,
         label: str | None = None,
+        knowledge_base_id: str | None = None,
         limit: int = 5,
     ) -> list[NodeEmbedding]:
         """Find knowledge base nodes whose embedding is closest to a text query.
@@ -122,11 +124,18 @@ class KnowledgeBaseService:
             graph_name: Restrict the search to nodes belonging to this graph.
             model: The embedding provider configuration used to embed `query`.
             label: Optional node label to filter by.
+            knowledge_base_id: Optional KnowledgeBase id to restrict the search to.
             limit: Maximum number of nodes to return, ordered by similarity.
 
         Returns:
             A list of NodeEmbedding records ordered from most to least similar.
         """
         return await NodeEmbedding.vector_search(
-            session, query, graph_name, model, label=label, limit=limit
+            session,
+            query,
+            graph_name,
+            model,
+            label=label,
+            knowledge_base_id=knowledge_base_id,
+            limit=limit,
         )

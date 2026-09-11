@@ -15,13 +15,17 @@ from graphrag_apacheage.services.embedding_service import EmbeddingService
 class NodeEmbedding(Base):
     """SQLAlchemy ORM model for storing vector embeddings of knowledge base nodes.
 
-    Tracks one embedding per knowledge graph node (keyed by graph_name + node_id),
-    computed from the node's label and properties, so nodes can be found via
-    similarity search (see `vector_search()`) independent of Apache Age's own storage.
+    Tracks one embedding per knowledge graph node (keyed by graph_name +
+    knowledge_base_id + node_id), computed from the node's label and properties, so
+    nodes can be found via similarity search (see `vector_search()`) independent of
+    Apache Age's own storage. The same node_id may appear once per knowledge base
+    feeding the graph.
 
     Attributes:
         id: Primary key, auto-incrementing integer identifier.
         graph_name: Name of the Apache Age graph this node belongs to (indexed for fast lookup).
+        knowledge_base_id: Identifier of the KnowledgeBase this node came from, part of
+            the row's identity.
         node_id: The node's identifier, matching `KnowledgeNode.id` in the Apache Age graph.
         label: The semantic label/type of the node (e.g., 'Driver').
         properties: Snapshot of the node's properties used to build the embedding text.
@@ -31,11 +35,19 @@ class NodeEmbedding(Base):
 
     __tablename__ = "node_embedding"
     __table_args__ = (
-        UniqueConstraint("graph_name", "node_id", name="uq_node_embedding_graph_node"),
+        UniqueConstraint(
+            "graph_name",
+            "knowledge_base_id",
+            "node_id",
+            name="uq_node_embedding_graph_kb_node",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     graph_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
     node_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     properties: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -64,7 +76,8 @@ class NodeEmbedding(Base):
     ) -> list["NodeEmbedding"]:
         """Upsert node embedding records into the database.
 
-        For each record, checks if it already exists based on (graph_name, node_id).
+        For each record, checks if it already exists based on
+        (graph_name, knowledge_base_id, node_id).
         - If not found: inserts the new record.
         - If found: updates its label and properties.
         Also (re)computes each persisted record's embedding from its post-merge
@@ -87,6 +100,7 @@ class NodeEmbedding(Base):
                 await session.execute(
                     select(cls).where(
                         cls.graph_name == record.graph_name,
+                        cls.knowledge_base_id == record.knowledge_base_id,
                         cls.node_id == record.node_id,
                     )
                 )
@@ -119,6 +133,7 @@ class NodeEmbedding(Base):
         graph_name: str,
         model: Model,
         label: str | None = None,
+        knowledge_base_id: str | None = None,
         limit: int = 5,
     ) -> list["NodeEmbedding"]:
         """Find the node embedding records whose embedding is closest to a text query.
@@ -134,6 +149,8 @@ class NodeEmbedding(Base):
             graph_name: Restrict the search to nodes belonging to this graph.
             model: The embedding provider configuration used to embed `query`.
             label: Optional node label to filter by.
+            knowledge_base_id: Optional KnowledgeBase id to restrict the search to, so a
+                graph fed by several knowledge bases can be searched one base at a time.
             limit: Maximum number of records to return, ordered by similarity.
 
         Returns:
@@ -156,6 +173,8 @@ class NodeEmbedding(Base):
         )
         if label is not None:
             stmt = stmt.where(cls.label == label)
+        if knowledge_base_id is not None:
+            stmt = stmt.where(cls.knowledge_base_id == knowledge_base_id)
 
         return list((await session.execute(stmt)).scalars().all())
 
@@ -163,10 +182,12 @@ class NodeEmbedding(Base):
         """Return a developer-friendly string representation of the node embedding record.
 
         Returns:
-            A string showing the key identifying fields: id, graph_name, node_id, and label.
+            A string showing the key identifying fields: id, graph_name,
+            knowledge_base_id, node_id, and label.
         """
         return (
             f"NodeEmbedding(id={self.id!r}, graph_name={self.graph_name!r}, "
+            f"knowledge_base_id={self.knowledge_base_id!r}, "
             f"node_id={self.node_id!r}, label={self.label!r})"
         )
 

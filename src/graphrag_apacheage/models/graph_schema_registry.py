@@ -33,6 +33,10 @@ class GraphSchemaRegistry(Base):
     Attributes:
         id: Primary key, auto-incrementing integer identifier.
         graph_name: Name of the Apache Age graph this schema belongs to (indexed for fast lookup).
+        knowledge_base_ids: Ids of every KnowledgeBase that contributed this schema
+            type. The same label (e.g. 'Driver') may legitimately be defined by more
+            than one knowledge base feeding the same graph, so this row is shared and
+            accumulates every contributing knowledge base's id on upsert.
         type: Schema type ('node' or 'relationship'). Enforced by CheckConstraint.
         name: Name/label of the entity or relationship type (e.g., 'Person', 'knows').
         description: Human-readable description of the schema type.
@@ -53,6 +57,9 @@ class GraphSchemaRegistry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     graph_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    knowledge_base_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     type: Mapped[SchemaType] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -84,8 +91,9 @@ class GraphSchemaRegistry(Base):
 
         For each record, checks if it already exists based on (graph_name, type, name).
         - If not found: inserts the new record.
-        - If found: merges the data by combining aliases and properties (deduped and sorted),
-          and preserving source/target labels if not already set.
+        - If found: merges the data by combining aliases, properties, and
+          knowledge_base_ids (each deduped and sorted), and preserving source/target
+          labels if not already set.
         Also (re)computes each persisted record's embedding from its post-merge
         name/description/aliases via litellm, provided an embedding `model` is
         passed; otherwise embeddings are left untouched.
@@ -126,6 +134,9 @@ class GraphSchemaRegistry(Base):
             existing.aliases = sorted(set(existing.aliases) | set(record.aliases))
             existing.properties = sorted(
                 set(existing.properties) | set(record.properties)
+            )
+            existing.knowledge_base_ids = sorted(
+                set(existing.knowledge_base_ids) | set(record.knowledge_base_ids)
             )
             existing.source_label = record.source_label or existing.source_label
             existing.target_label = record.target_label or existing.target_label

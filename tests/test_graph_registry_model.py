@@ -40,6 +40,7 @@ def test_graph_registry_table_exists_and_tracks_graph_name():
     expected = {
         "id",
         "graph_name",
+        "knowledge_base_ids",
         "type",
         "name",
         "description",
@@ -60,6 +61,7 @@ def test_graph_registry_embedding_round_trips_on_sqlite():
 
     record = GraphSchemaRegistry(
         graph_name="demo",
+        knowledge_base_ids=["kb-1"],
         type=SchemaType.NODE,
         name="Driver",
         description="A racer",
@@ -86,6 +88,7 @@ async def test_upsert_records_skips_embedding_when_model_not_provided():
 
     record = GraphSchemaRegistry(
         graph_name="demo",
+        knowledge_base_ids=["kb-1"],
         type=SchemaType.NODE,
         name="Driver",
         description="A racer",
@@ -121,6 +124,7 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
 
     record = GraphSchemaRegistry(
         graph_name="demo",
+        knowledge_base_ids=["kb-1"],
         type=SchemaType.NODE,
         name="Driver",
         description="A racer",
@@ -202,17 +206,19 @@ def test_graph_registry_type_accepts_only_node_or_relationship():
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO graph_registry (graph_name, type, name, description, aliases, properties) "
-                "VALUES ('demo', 'node', 'Demo Node', 'Example', '[]', '[]')"
+                "INSERT INTO graph_registry "
+                "(graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
+                "VALUES ('demo', '[\"kb-1\"]', 'node', 'Demo Node', 'Example', '[]', '[]')"
             )
         )
 
     with engine.begin() as conn:
-        with pytest.raises(IntegrityError):
+        with pytest.raises(IntegrityError, match="ck_graph_registry_type"):
             conn.execute(
                 text(
-                    "INSERT INTO graph_registry (graph_name, type, name, description, aliases, properties) "
-                    "VALUES ('demo', 'edge', 'Bad Node', 'Example', '[]', '[]')"
+                    "INSERT INTO graph_registry "
+                    "(graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
+                    "VALUES ('demo', '[\"kb-1\"]', 'edge', 'Bad Node', 'Example', '[]', '[]')"
                 )
             )
 
@@ -281,6 +287,11 @@ async def test_knowledge_base_parses_json_and_upserts_registry_rows():
         row.type == SchemaType.RELATIONSHIP and row.name == "RACED_FOR" for row in rows
     )
 
+    driver_row = next(
+        row for row in rows if row.type == SchemaType.NODE and row.name == "Driver"
+    )
+    assert driver_row.knowledge_base_ids == [knowledge_base.id]
+
 
 def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
     knowledge_base = KnowledgeBase.model_validate(
@@ -295,6 +306,7 @@ def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
 
     records = knowledge_base.get_graph_schema_registry_records("shared_age_graph")
     assert records[0].graph_name == "shared_age_graph"
+    assert records[0].knowledge_base_ids == [knowledge_base.id]
 
 
 def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
@@ -507,3 +519,52 @@ def test_age_graph_repository_delete_graph_drops_graph():
     assert "drop_graph" in query.lower()
     assert "demo_graph" in query
     assert "drop_graph" in connection.cursor_obj.last_query.lower()
+
+
+async def test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases():
+    # The same label (e.g. "Driver") may be defined by more than one knowledge base
+    # feeding the same graph; the registry keeps a single shared row and accumulates
+    # every contributing knowledge base's id instead of splitting into separate rows.
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    def _driver(knowledge_base_id: str) -> GraphSchemaRegistry:
+        return GraphSchemaRegistry(
+            graph_name="shared_graph",
+            knowledge_base_ids=[knowledge_base_id],
+            type=SchemaType.NODE,
+            name="Driver",
+            description="A racer",
+            aliases=[],
+            properties=[],
+        )
+
+    async with AsyncSession(engine) as session:
+        await GraphSchemaRegistry.upsert_records(session, [_driver("kb-b")])
+        await session.commit()
+
+        await GraphSchemaRegistry.upsert_records(session, [_driver("kb-a")])
+        await session.commit()
+
+        rows = (
+            (
+                await session.execute(
+                    select(GraphSchemaRegistry).where(GraphSchemaRegistry.name == "Driver")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].knowledge_base_ids == ["kb-a", "kb-b"]
+
+
+def test_get_graph_schema_registry_records_requires_knowledge_base_id():
+    knowledge_base = KnowledgeBase.model_validate(
+        {"id": None, "name": "demo", "nodes": [{"label": "Driver"}]}
+    )
+
+    with pytest.raises(ValueError, match="id is required"):
+        knowledge_base.get_graph_schema_registry_records("demo")
