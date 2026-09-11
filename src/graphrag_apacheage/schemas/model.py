@@ -1,10 +1,8 @@
 import os
 from enum import Enum
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
@@ -76,6 +74,27 @@ class Model(BaseModel):
             data.setdefault("id", str(uuid4()))
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_api_key_env(cls, data: Any) -> Any:
+        """Resolve the `api_key_env` config indirection into an actual `api_key` value.
+
+        Config files name an environment variable rather than inlining the secret
+        (see `configs/local.yaml`), so entries can validate straight into a Model.
+
+        Args:
+            data: The raw data dictionary before model instantiation.
+
+        Returns:
+            The data dictionary with `api_key_env` replaced by `api_key`.
+        """
+        if isinstance(data, dict) and "api_key_env" in data:
+            data = dict(data)
+            env_name = data.pop("api_key_env")
+            if env_name:
+                data.setdefault("api_key", os.environ.get(env_name))
+        return data
+
     @model_validator(mode="after")
     def ensure_api_key_matches_auth_mode(self) -> "Model":
         """Ensure api_key is provided only when it's required by auth_mode.
@@ -105,34 +124,6 @@ class Model(BaseModel):
                 "embedding_dimension is required when 'embedding' is in type"
             )
         return self
-
-    @classmethod
-    def from_config(cls, path: str | Path) -> list["Model"]:
-        """Load Models from a YAML config file (see `configs/local.yaml`).
-
-        The file has a top-level `models` list; each entry matches Model's fields
-        except `api_key_env` replaces `api_key` — it names the environment variable
-        to read the actual API key value from at load time.
-
-        Args:
-            path: Path to the YAML config file.
-
-        Returns:
-            A list of Model instances, one per entry in the config's `models` list.
-
-        Raises:
-            pydantic.ValidationError: If an entry is missing required fields or invalid.
-        """
-        data = yaml.safe_load(Path(path).read_text())
-
-        models = []
-        for entry in data.get("models", []):
-            entry = dict(entry)
-            api_key_env = entry.pop("api_key_env", None)
-            if api_key_env:
-                entry["api_key"] = os.environ.get(api_key_env)
-            models.append(cls(**entry))
-        return models
 
 
 __all__ = ["Model", "AuthMode", "ModelType"]

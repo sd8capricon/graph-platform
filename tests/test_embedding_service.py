@@ -4,6 +4,7 @@ from graphrag_apacheage.services.embedding_service import EmbeddingService
 
 def _embedding_model(**overrides) -> Model:
     fields = {
+        "display_name": "Text Embedding 3 Small",
         "name": "text-embedding-3-small",
         "provider": "openai",
         "connection_string": "https://api.openai.com/v1",

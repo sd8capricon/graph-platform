@@ -20,11 +20,15 @@
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
    - Schema extraction to `GraphSchemaRegistry` for database storage
-   - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (name, provider,
-     connection_string, auth_mode, type capabilities, api_key, embedding_dimension) —
+   - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (display_name, name,
+     provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension) —
      validates that `api_key` is set when `auth_mode` is `api_key` and `embedding_dimension`
      is set when `embedding` is in `type`. Passed into `EmbeddingService.compute_embeddings()`
      to describe which provider/model to call.
+   - Config entries name a secret indirectly via `api_key_env`; a `@model_validator(mode="before")`
+     (`resolve_api_key_env`) pops it and reads that environment variable into `api_key`, so raw YAML
+     entries validate straight into `Model`. There is no `Model.from_config()` — `AppSettings`
+     (`config.py`) owns file reading, and the config file is parsed exactly once.
 
 2. **Models** (`src/graphrag_apacheage/models/`)
    - `Base` (`models/base.py`): shared SQLAlchemy `DeclarativeBase` for all ORM models
@@ -80,8 +84,10 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 
 ### Vector Embedding & Search Pattern
 - Both `GraphSchemaRegistry` and `NodeEmbedding` (`models/node_embedding.py`) store a pgvector `embedding` column (`Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`), sized from the `settings` singleton (`config.py`, `AppSettings.embedding_dimension`, default `1536`) — both ORM models import `settings` directly from `config.py` (not from `embedding_service.py`, and not from an env var) so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
-  - `AppSettings` (`config.py`) is a pydantic `BaseModel` holding app config, and loads YAML in its constructor: `AppSettings(path)` reads `embedding_dimensions` from the file (see `configs/local.yaml`) into `embedding_dimension`, `AppSettings()` uses field defaults, and explicit kwargs (`AppSettings(path, embedding_dimension=768)`) win over the file
-  - The module-level `config.load_config(path)` function constructs `AppSettings(path)` and reassigns the `settings` singleton — call it before `models/graph_schema_registry.py` or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time
+  - `AppSettings` (`config.py`) is a pydantic `BaseModel` holding all app config, and loads YAML in its constructor: `AppSettings(path)` reads `embedding_dimensions` into `embedding_dimension` and the top-level `models:` list into `models: list[Model]`, so the config file is parsed exactly once at startup. `AppSettings()` (no path) touches no disk and uses field defaults; explicit kwargs (`AppSettings(path, embedding_dimension=768)`) win over the file
+  - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from graphrag_apacheage.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
+  - Ordering gotcha: `load_config()` must run before `models/graph_schema_registry.py` or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time; a later reload cannot resize an already-defined column
+  - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
   - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `f"{model.provider}/{model.name}"`, passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
@@ -133,6 +139,7 @@ async with AsyncSession(engine) as session:
 3. Implement `embedding_text()` to build the text that gets embedded
 4. Implement `upsert_records(session, records, model=None)` and `vector_search(session, query, graph_name, model, ...)` following the `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from `services/embedding_service.py` — don't duplicate the litellm call)
 5. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session)
+6. Ensure `config.load_config()` runs before the new model module is first imported, otherwise the column is sized from `AppSettings`' default rather than the config file
 
 ### Testing New Features
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`

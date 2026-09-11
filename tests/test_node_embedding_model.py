@@ -15,6 +15,7 @@ from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseServ
 
 def _embedding_model(**overrides) -> Model:
     fields = {
+        "display_name": "Text Embedding 3 Small",
         "name": "text-embedding-3-small",
         "provider": "openai",
         "connection_string": "https://api.openai.com/v1",
