@@ -67,8 +67,7 @@ class AgeGraphRepository:
         if not properties:
             return ""
         entries = [
-            f"{json.dumps(key)}: {cls._age_literal(value)}"
-            for key, value in properties.items()
+            f"{key}: {cls._age_literal(value)}" for key, value in properties.items()
         ]
         return " {" + ", ".join(entries) + "}"
 
@@ -207,7 +206,7 @@ class AgeGraphRepository:
         """
         props = self._age_properties_literal(properties)
         query = (
-            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{"id":"{node_id}"}}) '
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{id:"{node_id}"}}) '
             f"SET n = n + {props} RETURN n $$) AS (v agtype);"
         )
         cursor = self.pg_connection.cursor()
@@ -227,7 +226,7 @@ class AgeGraphRepository:
             The SQL query string that was executed.
         """
         query = (
-            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{"id":"{node_id}"}}) '
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{id:"{node_id}"}}) '
             "DETACH DELETE n RETURN count(n) $$) AS (count agtype);"
         )
         cursor = self.pg_connection.cursor()
@@ -397,9 +396,9 @@ class AgeGraphRepository:
         """
         properties_literal = self._age_properties_literal(properties or {})
         query = (
-            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}}), '
-            f'(b {{"id":"{target_node_id}"}}) CREATE (a)-[:{label}{properties_literal}]->(b) '
-            "RETURN a, b $$) AS (v agtype);"
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}}), '
+            f'(b {{id:"{target_node_id}"}}) CREATE (a)-[:{label}{properties_literal}]->(b) '
+            "RETURN a, b $$) AS (a agtype, b agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -429,8 +428,8 @@ class AgeGraphRepository:
         """
         props = self._age_properties_literal(properties)
         query = (
-            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}})-[r:{label}]->'
-            f'(b {{"id":"{target_node_id}"}}) SET r = r + {props} RETURN r $$) AS (v agtype);'
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}})-[r:{label}]->'
+            f'(b {{id:"{target_node_id}"}}) SET r = r + {props} RETURN r $$) AS (v agtype);'
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -451,8 +450,8 @@ class AgeGraphRepository:
             The SQL query string that was executed.
         """
         query = (
-            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}})-[r:{label}]->'
-            f'(b {{"id":"{target_node_id}"}}) DELETE r RETURN count(r) $$) AS (count agtype);'
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}})-[r:{label}]->'
+            f'(b {{id:"{target_node_id}"}}) DELETE r RETURN count(r) $$) AS (count agtype);'
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)

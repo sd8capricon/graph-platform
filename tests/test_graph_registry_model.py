@@ -375,8 +375,8 @@ async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
     service = KnowledgeBaseService(DummyRepository())
 
     with pytest.raises(ValueError, match="graph_name is required"):
-        # Calling without graph_name should raise ValueError
-        await service.upsert_knowledge_base(knowledge_base)
+        # graph_name is a mandatory parameter; an empty value should still raise ValueError
+        await service.upsert_knowledge_base(knowledge_base, "")
 
 
 async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
@@ -638,7 +638,7 @@ async def test_age_graph_repository_get_node_neighbours_matches_node_by_id_prope
 
     query = connection.cursor_obj.last_query
     assert "demo_graph" in query
-    assert 'MATCH (a {"id": \'driver-1\'})-[r]-(b)' in query
+    assert "MATCH (a {id: 'driver-1'})-[r]-(b)" in query
     assert "RETURN a, r, b" in query
 
 
@@ -800,8 +800,8 @@ async def test_age_graph_repository_get_node_schema_queries_both_directions_by_i
     await repository.get_node_schema("demo_graph", "driver-1")
 
     outgoing, incoming = connection.cursor_obj.queries
-    assert 'MATCH (a {"id": \'driver-1\'})-[r]->(b)' in outgoing
-    assert 'MATCH (a {"id": \'driver-1\'})<-[r]-(b)' in incoming
+    assert "MATCH (a {id: 'driver-1'})-[r]->(b)" in outgoing
+    assert "MATCH (a {id: 'driver-1'})<-[r]-(b)" in incoming
     for query in (outgoing, incoming):
         assert "demo_graph" in query
         assert "RETURN type(r), label(b), count(*)" in query
