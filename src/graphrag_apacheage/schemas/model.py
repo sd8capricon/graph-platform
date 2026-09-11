@@ -1,7 +1,10 @@
+import os
 from enum import Enum
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
@@ -36,6 +39,7 @@ class Model(BaseModel):
 
     Attributes:
         id: Unique identifier for the model. Auto-generated as UUID if not provided.
+        display_name: A human-friendly name for this configured model (e.g., 'Chat GPT-4o').
         name: The name of the model (e.g., 'gpt-4o', 'text-embedding-3-small').
         provider: The provider serving the model (e.g., 'openai', 'azure').
         connection_string: The connection string/endpoint used to reach the provider.
@@ -47,6 +51,7 @@ class Model(BaseModel):
     """
 
     id: str | None = None
+    display_name: str
     name: str
     provider: str
     connection_string: str
@@ -100,6 +105,34 @@ class Model(BaseModel):
                 "embedding_dimension is required when 'embedding' is in type"
             )
         return self
+
+    @classmethod
+    def from_config(cls, path: str | Path) -> list["Model"]:
+        """Load Models from a YAML config file (see `configs/local.yaml`).
+
+        The file has a top-level `models` list; each entry matches Model's fields
+        except `api_key_env` replaces `api_key` — it names the environment variable
+        to read the actual API key value from at load time.
+
+        Args:
+            path: Path to the YAML config file.
+
+        Returns:
+            A list of Model instances, one per entry in the config's `models` list.
+
+        Raises:
+            pydantic.ValidationError: If an entry is missing required fields or invalid.
+        """
+        data = yaml.safe_load(Path(path).read_text())
+
+        models = []
+        for entry in data.get("models", []):
+            entry = dict(entry)
+            api_key_env = entry.pop("api_key_env", None)
+            if api_key_env:
+                entry["api_key"] = os.environ.get(api_key_env)
+            models.append(cls(**entry))
+        return models
 
 
 __all__ = ["Model", "AuthMode", "ModelType"]
