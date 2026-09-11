@@ -11,14 +11,19 @@ from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseServ
 
 
 async def create_connection() -> AsyncConnection:
+    host = os.environ["PGHOST"]
     connection = await AsyncConnection.connect(
-        host=os.environ["PGHOST"],
+        host=host,
         port=os.environ["PGPORT"],
         dbname=os.environ["PGDATABASE"],
         user=os.environ["PGUSER"],
         password=os.environ["PGPASSWORD"],
     )
     async with connection.cursor() as cursor:
+        # Azure Postgres has AGE pre-loaded via server config; skip LOAD for Azure hosts
+        is_azure = "database.azure.com" in host
+        if not is_azure:
+            await cursor.execute("LOAD 'age';")
         await cursor.execute('SET search_path = ag_catalog, "$user", public;')
     return connection
 
