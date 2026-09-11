@@ -20,6 +20,11 @@
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
    - Schema extraction to `GraphSchemaRegistry` for database storage
+   - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (name, provider,
+     connection_string, auth_mode, type capabilities, api_key, embedding_dimension) —
+     validates that `api_key` is set when `auth_mode` is `api_key` and `embedding_dimension`
+     is set when `embedding` is in `type`. Passed into `EmbeddingService.compute_embeddings()`
+     to describe which provider/model to call.
 
 2. **Models** (`src/graphrag_apacheage/models/`)
    - `Base` (`models/base.py`): shared SQLAlchemy `DeclarativeBase` for all ORM models
@@ -75,14 +80,14 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 
 ### Vector Embedding & Search Pattern
 - Both `GraphSchemaRegistry` and `NodeEmbedding` (`models/node_embedding.py`) store a pgvector `embedding` column (`Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite")`, `EMBEDDING_DIM = 1536`), so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
-- Embeddings are computed by `EmbeddingService.compute_embeddings()` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EMBEDDING_DIM`, `EMBEDDING_MODEL_ENV_VAR`, and `EmbeddingService` from there instead of defining their own copies
-  - Reads the model name from the `EMBEDDING_MODEL` env var (e.g. `"openai/text-embedding-3-small"`)
-  - If `EMBEDDING_MODEL` is unset, embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected
-- Each model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records()` after merging/updating fields, by calling `EmbeddingService.compute_embeddings()`
-- `vector_search(session, query, graph_name, ..., limit=5)` embeds the query text, then orders rows with pgvector's cosine distance operator: `cls.embedding.cosine_distance(embedding)` — requires PostgreSQL, raises `ValueError` if `EMBEDDING_MODEL` is unset
-- `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node (keyed by `graph_name` + `node_id`); `KnowledgeBaseService.upsert_node_embeddings()` / `.search_nodes()` wrap the upsert/search calls and require `graph_name`
-- Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) to avoid real API calls
-- See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
+- Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EMBEDDING_DIM` and `EmbeddingService` from there instead of defining their own copies
+  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `f"{model.provider}/{model.name}"`, passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
+  - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
+- Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)`
+- `vector_search(session, query, graph_name, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator: `cls.embedding.cosine_distance(embedding)` — requires PostgreSQL, raises `ValueError` if `model` is `None`
+- `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node (keyed by `graph_name` + `node_id`); `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`)
+- Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
+- See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -103,10 +108,20 @@ kb = KnowledgeBase.from_json_file("path/to/kb.json")
 schema_records = kb.get_graph_schema_registry_records("my_age_graph")  # graph_name required
 node_records = kb.get_node_embedding_records("my_age_graph")
 
+embedding_model = Model(
+    name="text-embedding-3-small",
+    provider="openai",
+    connection_string="https://api.openai.com/v1",
+    auth_mode=AuthMode.API_KEY,
+    api_key="...",
+    type=[ModelType.EMBEDDING],
+    embedding_dimension=1536,
+)
+
 # upsert_records() is async (litellm embedding calls are awaited internally)
 async with AsyncSession(engine) as session:
-    await GraphSchemaRegistry.upsert_records(session, schema_records)
-    await NodeEmbedding.upsert_records(session, node_records)  # requires EMBEDDING_MODEL env var to embed
+    await GraphSchemaRegistry.upsert_records(session, schema_records, model=embedding_model)
+    await NodeEmbedding.upsert_records(session, node_records, model=embedding_model)
     await session.commit()
 ```
 
@@ -114,8 +129,8 @@ async with AsyncSession(engine) as session:
 1. Subclass `Base` from `models/base.py` (don't redefine a new declarative base)
 2. Add an `embedding` column: `Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite")` (import `EMBEDDING_DIM` from `services/embedding_service.py`)
 3. Implement `embedding_text()` to build the text that gets embedded
-4. Implement `upsert_records()` and `vector_search()` following the `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings()` from `services/embedding_service.py` — don't duplicate the litellm call)
-5. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-unset, litellm-mocked upsert, cosine-distance statement via a fake async session)
+4. Implement `upsert_records(session, records, model=None)` and `vector_search(session, query, graph_name, model, ...)` following the `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from `services/embedding_service.py` — don't duplicate the litellm call)
+5. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session)
 
 ### Testing New Features
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`
@@ -147,7 +162,7 @@ pytest tests/
 - **sqlalchemy[asyncio]** (>=2.0.42): ORM and database abstraction (async engine/session)
 - **psycopg2-binary** (>=2.9.12): PostgreSQL/Apache Age connection
 - **pgvector** (>=0.5.0): `Vector` column type for embedding storage/cosine search
-- **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); active only when `EMBEDDING_MODEL` env var is set
+- **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); called only when a `Model` is passed to `EmbeddingService.compute_embeddings()`
 - Dev-only: **aiosqlite** for async SQLite tests
 
 ## Important Notes
@@ -160,7 +175,7 @@ pytest tests/
   - `test_knowledge_base_parses_json_and_upserts_registry_rows()` - end-to-end JSON→DB flow
   - `test_graph_registry_type_accepts_only_node_or_relationship()` - constraint validation
   - `test_knowledge_base_graph_name_is_provided_to_service_not_stored()` - graph_name parameter pattern
-  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) to avoid real API calls
+  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls
   - `test_vector_search_embeds_query_and_builds_cosine_distance_statement()` - asserts on the compiled `postgresql` dialect SQL (via a fake async session) since pgvector's `<=>` operator can't run on SQLite
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base)
 

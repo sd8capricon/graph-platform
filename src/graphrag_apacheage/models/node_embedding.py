@@ -7,11 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.services.embedding_service import (
-    EMBEDDING_DIM,
-    EMBEDDING_MODEL_ENV_VAR,
-    EmbeddingService,
-)
+from graphrag_apacheage.schemas.model import Model
+from graphrag_apacheage.services.embedding_service import EMBEDDING_DIM, EmbeddingService
 
 
 class NodeEmbedding(Base):
@@ -59,7 +56,10 @@ class NodeEmbedding(Base):
 
     @classmethod
     async def upsert_records(
-        cls, session: AsyncSession, records: Iterable["NodeEmbedding"]
+        cls,
+        session: AsyncSession,
+        records: Iterable["NodeEmbedding"],
+        model: Model | None = None,
     ) -> list["NodeEmbedding"]:
         """Upsert node embedding records into the database.
 
@@ -67,12 +67,14 @@ class NodeEmbedding(Base):
         - If not found: inserts the new record.
         - If found: updates its label and properties.
         Also (re)computes each persisted record's embedding from its post-merge
-        label/properties via litellm, provided the EMBEDDING_MODEL env var is set;
+        label/properties via litellm, provided an embedding `model` is passed;
         otherwise embeddings are left untouched.
 
         Args:
             session: SQLAlchemy database session for executing queries.
             records: An iterable of NodeEmbedding records to upsert.
+            model: The embedding provider configuration to use. If None, embedding
+                computation is skipped and existing embeddings are left untouched.
 
         Returns:
             A list of persisted NodeEmbedding instances (newly inserted or updated).
@@ -99,7 +101,7 @@ class NodeEmbedding(Base):
             persisted.append(existing)
 
         embeddings = await EmbeddingService.compute_embeddings(
-            [record.embedding_text() for record in persisted]
+            model, [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
             for record, embedding in zip(persisted, embeddings):
@@ -114,6 +116,7 @@ class NodeEmbedding(Base):
         session: AsyncSession,
         query: str,
         graph_name: str,
+        model: Model,
         label: str | None = None,
         limit: int = 5,
     ) -> list["NodeEmbedding"]:
@@ -128,6 +131,7 @@ class NodeEmbedding(Base):
             session: SQLAlchemy database session for executing the query.
             query: Free-text query to embed and compare stored records against.
             graph_name: Restrict the search to nodes belonging to this graph.
+            model: The embedding provider configuration used to embed `query`.
             label: Optional node label to filter by.
             limit: Maximum number of records to return, ordered by similarity.
 
@@ -135,14 +139,12 @@ class NodeEmbedding(Base):
             A list of NodeEmbedding records ordered from most to least similar.
 
         Raises:
-            ValueError: If the EMBEDDING_MODEL env var is not set, since no embedding
-                provider is configured to embed the query.
+            ValueError: If `model` is None, since no embedding provider is configured
+                to embed the query.
         """
-        embeddings = await EmbeddingService.compute_embeddings([query])
+        embeddings = await EmbeddingService.compute_embeddings(model, [query])
         if embeddings is None:
-            raise ValueError(
-                f"{EMBEDDING_MODEL_ENV_VAR} env var must be set to perform vector_search"
-            )
+            raise ValueError("model is required to perform vector_search")
         embedding = embeddings[0]
 
         stmt = (

@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
+from graphrag_apacheage.schemas.model import Model
 
 
 class KnowledgeBaseService:
@@ -79,6 +80,7 @@ class KnowledgeBaseService:
         session: AsyncSession,
         knowledge_base: KnowledgeBase,
         graph_name: str,
+        model: Model | None = None,
     ) -> list[NodeEmbedding]:
         """Compute and store vector embeddings for a knowledge base's nodes.
 
@@ -86,6 +88,8 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to persist node embeddings.
             knowledge_base: The KnowledgeBase whose nodes should be embedded.
             graph_name: The name of the Apache Age graph these nodes belong to. Required.
+            model: The embedding provider configuration to use. If None, embedding
+                computation is skipped and nodes are stored without an embedding.
 
         Returns:
             A list of persisted NodeEmbedding records (newly inserted or updated).
@@ -99,13 +103,14 @@ class KnowledgeBaseService:
             )
 
         records = knowledge_base.get_node_embedding_records(graph_name)
-        return await NodeEmbedding.upsert_records(session, records)
+        return await NodeEmbedding.upsert_records(session, records, model=model)
 
     async def search_nodes(
         self,
         session: AsyncSession,
         query: str,
         graph_name: str,
+        model: Model,
         label: str | None = None,
         limit: int = 5,
     ) -> list[NodeEmbedding]:
@@ -115,6 +120,7 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to execute the search.
             query: Free-text query to embed and compare stored node embeddings against.
             graph_name: Restrict the search to nodes belonging to this graph.
+            model: The embedding provider configuration used to embed `query`.
             label: Optional node label to filter by.
             limit: Maximum number of nodes to return, ordered by similarity.
 
@@ -122,5 +128,5 @@ class KnowledgeBaseService:
             A list of NodeEmbedding records ordered from most to least similar.
         """
         return await NodeEmbedding.vector_search(
-            session, query, graph_name, label=label, limit=limit
+            session, query, graph_name, model, label=label, limit=limit
         )

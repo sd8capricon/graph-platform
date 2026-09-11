@@ -7,11 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.services.embedding_service import (
-    EMBEDDING_DIM,
-    EMBEDDING_MODEL_ENV_VAR,
-    EmbeddingService,
-)
+from graphrag_apacheage.schemas.model import Model
+from graphrag_apacheage.services.embedding_service import EMBEDDING_DIM, EmbeddingService
 
 
 class SchemaType(str, Enum):
@@ -77,7 +74,10 @@ class GraphSchemaRegistry(Base):
 
     @classmethod
     async def upsert_records(
-        cls, session: AsyncSession, records: Iterable[GraphSchemaRegistry]
+        cls,
+        session: AsyncSession,
+        records: Iterable[GraphSchemaRegistry],
+        model: Model | None = None,
     ) -> list[GraphSchemaRegistry]:
         """Upsert (insert or update) schema registry records into the database.
 
@@ -86,12 +86,14 @@ class GraphSchemaRegistry(Base):
         - If found: merges the data by combining aliases and properties (deduped and sorted),
           and preserving source/target labels if not already set.
         Also (re)computes each persisted record's embedding from its post-merge
-        name/description/aliases via litellm, provided the EMBEDDING_MODEL env var
-        is set; otherwise embeddings are left untouched.
+        name/description/aliases via litellm, provided an embedding `model` is
+        passed; otherwise embeddings are left untouched.
 
         Args:
             session: SQLAlchemy database session for executing queries.
             records: An iterable of GraphSchemaRegistry records to upsert.
+            model: The embedding provider configuration to use. If None, embedding
+                computation is skipped and existing embeddings are left untouched.
 
         Returns:
             A list of persisted GraphSchemaRegistry instances (newly inserted or updated).
@@ -129,7 +131,7 @@ class GraphSchemaRegistry(Base):
             persisted.append(existing)
 
         embeddings = await EmbeddingService.compute_embeddings(
-            [record.embedding_text() for record in persisted]
+            model, [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
             for record, embedding in zip(persisted, embeddings):
@@ -144,6 +146,7 @@ class GraphSchemaRegistry(Base):
         session: AsyncSession,
         query: str,
         graph_name: str,
+        model: Model,
         type: SchemaType | None = None,
         limit: int = 5,
     ) -> list[GraphSchemaRegistry]:
@@ -158,6 +161,7 @@ class GraphSchemaRegistry(Base):
             session: SQLAlchemy database session for executing the query.
             query: Free-text query to embed and compare stored records against.
             graph_name: Restrict the search to records belonging to this graph.
+            model: The embedding provider configuration used to embed `query`.
             type: Optional schema type ('node' or 'relationship') to filter by.
             limit: Maximum number of records to return, ordered by similarity.
 
@@ -165,14 +169,12 @@ class GraphSchemaRegistry(Base):
             A list of GraphSchemaRegistry records ordered from most to least similar.
 
         Raises:
-            ValueError: If the EMBEDDING_MODEL env var is not set, since no embedding
-                provider is configured to embed the query.
+            ValueError: If `model` is None, since no embedding provider is configured
+                to embed the query.
         """
-        embeddings = await EmbeddingService.compute_embeddings([query])
+        embeddings = await EmbeddingService.compute_embeddings(model, [query])
         if embeddings is None:
-            raise ValueError(
-                f"{EMBEDDING_MODEL_ENV_VAR} env var must be set to perform vector_search"
-            )
+            raise ValueError("model is required to perform vector_search")
         embedding = embeddings[0]
 
         stmt = (

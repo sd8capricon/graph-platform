@@ -11,6 +11,21 @@ from sqlalchemy.orm import Session
 from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
+from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
+
+
+def _embedding_model(**overrides) -> Model:
+    fields = {
+        "name": "text-embedding-3-small",
+        "provider": "openai",
+        "connection_string": "https://api.openai.com/v1",
+        "auth_mode": AuthMode.API_KEY,
+        "api_key": "test-key",
+        "type": [ModelType.EMBEDDING],
+        "embedding_dimension": 3,
+    }
+    fields.update(overrides)
+    return Model.model_validate(fields)
 
 
 def test_graph_registry_table_exists_and_tracks_graph_name():
@@ -63,9 +78,7 @@ def test_graph_registry_embedding_round_trips_on_sqlite():
     assert stored.embedding == [0.1, 0.2, 0.3]
 
 
-async def test_upsert_records_skips_embedding_when_env_var_unset(monkeypatch):
-    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-
+async def test_upsert_records_skips_embedding_when_model_not_provided():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -90,16 +103,13 @@ async def test_upsert_records_skips_embedding_when_env_var_unset(monkeypatch):
 async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
     import graphrag_apacheage.services.embedding_service as embedding_service
 
-    monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
-
     captured = {}
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
 
-    async def fake_aembedding(model, input):
-        captured["model"] = model
-        captured["input"] = input
+    async def fake_aembedding(**kwargs):
+        captured.update(kwargs)
         return FakeResponse()
 
     monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
@@ -118,7 +128,9 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
     )
 
     async with AsyncSession(engine) as session:
-        persisted = await GraphSchemaRegistry.upsert_records(session, [record])
+        persisted = await GraphSchemaRegistry.upsert_records(
+            session, [record], model=_embedding_model()
+        )
         embedding = persisted[0].embedding
         await session.commit()
 
@@ -133,12 +145,10 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     # fake session instead of executing it against SQLite.
     import graphrag_apacheage.services.embedding_service as embedding_service
 
-    monkeypatch.setenv("EMBEDDING_MODEL", "openai/text-embedding-3-small")
-
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
 
-    async def fake_aembedding(model, input):
+    async def fake_aembedding(**kwargs):
         return FakeResponse()
 
     monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
@@ -158,7 +168,12 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
             return FakeResult()
 
     results = await GraphSchemaRegistry.vector_search(
-        FakeSession(), query="fast driver", graph_name="demo", type=SchemaType.NODE, limit=3
+        FakeSession(),
+        query="fast driver",
+        graph_name="demo",
+        model=_embedding_model(),
+        type=SchemaType.NODE,
+        limit=3,
     )
 
     assert results == []
@@ -168,16 +183,14 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     assert "LIMIT" in compiled
 
 
-async def test_vector_search_raises_when_embedding_model_unset(monkeypatch):
-    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-
+async def test_vector_search_raises_when_model_not_provided():
     class FakeSession:
         async def execute(self, stmt):
             raise AssertionError("should not query the database without an embedding")
 
-    with pytest.raises(ValueError, match="EMBEDDING_MODEL"):
+    with pytest.raises(ValueError, match="model is required"):
         await GraphSchemaRegistry.vector_search(
-            FakeSession(), query="fast driver", graph_name="demo"
+            FakeSession(), query="fast driver", graph_name="demo", model=None
         )
 
 
