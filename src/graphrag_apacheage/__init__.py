@@ -3,7 +3,6 @@ import os
 
 from dotenv import load_dotenv
 from psycopg import AsyncConnection
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from graphrag_apacheage.config import load_config, settings
@@ -44,6 +43,7 @@ async def create_connection() -> AsyncConnection:
 async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSession):
     # Deferred for the same reason as the imports in run(): must not run
     # before `main()` has called `load_config()`.
+    from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
     from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
@@ -52,6 +52,8 @@ async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSe
     knowledge_base = KnowledgeBase.from_json_file("dummy_data/f1_kb.json")
     knowledge_base_service = KnowledgeBaseService(repository)
     await knowledge_base_service.upsert_knowledge_base(knowledge_base, "kb_graph")
+    schema = knowledge_base.get_graph_schema_registry_records("kb_graph")
+    await GraphSchemaRegistry.upsert_records(session, schema, _embedding_model())
     await knowledge_base_service.upsert_node_embeddings(
         session, knowledge_base, "kb_graph", model=_embedding_model()
     )
@@ -65,9 +67,9 @@ async def run():
     # Unused by name: imported so their tables register on Base.metadata,
     # which is what create_all below actually reads.
     from graphrag_apacheage.models import (
-        graph_schema_registry,
+        graph_schema_registry,  # noqa: F401
         node_embedding,
-    )  # noqa: F401
+    )
     from graphrag_apacheage.models.base import Base
 
     pg_connection = await create_connection()
