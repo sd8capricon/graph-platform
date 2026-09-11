@@ -1,7 +1,4 @@
-from graphrag_apacheage.agent.serializers import (
-    node_neighbours_to_dict,
-    node_schema_to_dict,
-)
+from graphrag_apacheage.agent.serializers import AgentSerializer
 
 
 def test_node_neighbours_to_dict_groups_node_once_with_direction_per_relationship():
@@ -18,7 +15,7 @@ def test_node_neighbours_to_dict_groups_node_once_with_direction_per_relationshi
         ),
     ]
 
-    result = node_neighbours_to_dict("driver-1", "Driver", {"name": "Lewis"}, triplets)
+    result = AgentSerializer.node_neighbours_to_dict("driver-1", "Driver", {"name": "Lewis"}, triplets)
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
@@ -48,13 +45,13 @@ def test_node_neighbours_to_dict_handles_missing_properties():
         )
     ]
 
-    result = node_neighbours_to_dict("driver-1", "Driver", {}, triplets)
+    result = AgentSerializer.node_neighbours_to_dict("driver-1", "Driver", {}, triplets)
 
     assert result["relationships"][0]["properties"] == {}
 
 
 def test_node_neighbours_to_dict_returns_empty_relationships_list_when_no_triplets():
-    result = node_neighbours_to_dict("driver-1", "Driver", {}, [])
+    result = AgentSerializer.node_neighbours_to_dict("driver-1", "Driver", {}, [])
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver", "properties": {}},
@@ -68,7 +65,7 @@ def test_node_schema_to_dict_groups_entries_under_the_node_once():
         ("SPONSORS", "incoming", "Sponsor", 1),
     ]
 
-    result = node_schema_to_dict("driver-1", "Driver", entries)
+    result = AgentSerializer.node_schema_to_dict("driver-1", "Driver", entries)
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver"},
@@ -90,7 +87,7 @@ def test_node_schema_to_dict_groups_entries_under_the_node_once():
 
 
 def test_node_schema_to_dict_returns_empty_relationships_list_when_no_entries():
-    result = node_schema_to_dict("driver-1", "Driver", [])
+    result = AgentSerializer.node_schema_to_dict("driver-1", "Driver", [])
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver"},

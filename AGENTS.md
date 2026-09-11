@@ -74,22 +74,23 @@
      `await context.repository.get_node_neighbours(context.graph_name, node.id,
      relationship_labels=relationships)` (the repository is fully async — see "Direct Graph Query
      & Async Repository Pattern" below) and reshapes the returned `(source, relationship, target)`
-     triplets into a single dict via `node_neighbours_to_dict()`, grouped under the queried node
+     triplets into a single dict via `AgentSerializer.node_neighbours_to_dict()`, grouped under the queried node
      rather than repeating it once per relationship (a flat triplet list would echo the same
      node dict — often the largest, since it's the caller's own input — once per relationship,
      wasting tokens in an LLM tool result). `get_node_schema(node, runtime)` is the cheap
      *overview* counterpart: it calls `await context.repository.get_node_schema(context.graph_name,
-     node.id)` and reshapes the result via `node_schema_to_dict()` into the distinct relationship
+     node.id)` and reshapes the result via `AgentSerializer.node_schema_to_dict()` into the distinct relationship
      label / direction / neighbor label combinations plus a `count` per combination. Use it before
      `get_node_neighbours` — it answers "what kinds of things is this node connected to?" without
      returning every neighbor's full property dict. It takes no relationship-label filter on purpose:
      it's what the agent calls *before* it knows which labels matter, and every extra parameter
      enlarges the model-facing tool schema
-   - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
-     `node_neighbours_to_dict()` / `node_schema_to_dict()`, the ORM-record/agtype-to-plain-dict
-     conversions shared by
-     `tools.py`'s tool implementations (kept in their own module, not prefixed with `_`, so they're
-     importable/testable independent of any `@tool`-decorated function)
+   - `serializers.py` - `AgentSerializer`, a class of `@staticmethod`/`@classmethod` conversions
+     (`schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
+     `node_neighbours_to_dict()` / `node_schema_to_dict()`) shared by `tools.py`'s tool
+     implementations. Grouped as one class purely for a single, discoverable import surface — none
+     hold or need instance state. Kept in their own module, not prefixed with `_`, so they're
+     importable/testable independent of any `@tool`-decorated function
    - Intended for: LLM-based agent tools that interact with the knowledge graph
 
 4. **Services** (`src/graphrag_apacheage/services/`)
@@ -183,7 +184,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
     string and the parsing, not that Age accepts the Cypher. If `label(b)` turns out to be
     unsupported on the target Age version, the fallback is to return `b` and read `b["label"]` in
     Python — which loses the DB-side aggregation and forces a client-side `count`
-- `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
+- `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
 - See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` tests in `tests/test_graph_registry_model.py`
 

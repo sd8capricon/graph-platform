@@ -1,12 +1,7 @@
 from langchain.tools import ToolRuntime, tool
 
 from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.serializers import (
-    node_embedding_record_to_dict,
-    node_neighbours_to_dict,
-    node_schema_to_dict,
-    schema_registry_record_to_dict,
-)
+from graphrag_apacheage.agent.serializers import AgentSerializer
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
@@ -23,7 +18,9 @@ async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext])
         context.model,
         knowledge_base_ids=context.attached_kb_ids,
     )
-    return [schema_registry_record_to_dict(record) for record in records]
+    return [
+        AgentSerializer.schema_registry_record_to_dict(record) for record in records
+    ]
 
 
 @tool
@@ -42,7 +39,9 @@ async def search_entities(
         context.model,
         labels=labels,
     )
-    return [node_embedding_record_to_dict(record) for record in records]
+    return [
+        AgentSerializer.node_embedding_record_to_dict(record) for record in records
+    ]
 
 
 @tool
@@ -59,7 +58,7 @@ async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext
 
     context = runtime.context
     entries = await context.repository.get_node_schema(context.graph_name, node.id)
-    return node_schema_to_dict(node.id, node.label, entries)
+    return AgentSerializer.node_schema_to_dict(node.id, node.label, entries)
 
 
 @tool
@@ -82,4 +81,6 @@ async def get_node_neighbours(
     triplets = await context.repository.get_node_neighbours(
         context.graph_name, node.id, relationships
     )
-    return node_neighbours_to_dict(node.id, node.label, node.properties, triplets)
+    return AgentSerializer.node_neighbours_to_dict(
+        node.id, node.label, node.properties, triplets
+    )
