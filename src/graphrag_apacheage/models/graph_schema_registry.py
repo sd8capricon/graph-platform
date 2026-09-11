@@ -6,9 +6,10 @@ from sqlalchemy import JSON, CheckConstraint, String, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from graphrag_apacheage.config import settings
 from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.schemas.model import Model
-from graphrag_apacheage.services.embedding_service import EMBEDDING_DIM, EmbeddingService
+from graphrag_apacheage.services.embedding_service import EmbeddingService
 
 
 class SchemaType(str, Enum):
@@ -60,7 +61,7 @@ class GraphSchemaRegistry(Base):
     source_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite"), nullable=True
+        Vector(settings.embedding_dimension).with_variant(JSON, "sqlite"), nullable=True
     )
 
     def embedding_text(self) -> str:

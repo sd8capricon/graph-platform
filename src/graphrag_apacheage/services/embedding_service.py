@@ -1,11 +1,8 @@
-import os
 from typing import Any
 
 import litellm
 
 from graphrag_apacheage.schemas.model import AuthMode, Model
-
-EMBEDDING_DIM = os.getenv("EMBEDDING_DIMENSIONS", 1536)
 
 
 class EmbeddingService:
@@ -50,4 +47,4 @@ class EmbeddingService:
         return [item["embedding"] for item in response.data]
 
 
-__all__ = ["EmbeddingService", "EMBEDDING_DIM"]
+__all__ = ["EmbeddingService"]

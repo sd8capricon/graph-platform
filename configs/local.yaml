@@ -1,0 +1,21 @@
+embedding_dimensions: 1536
+
+models:
+  - display_name: ""
+    provider: ""
+    name: ""
+    connection_string: ""
+    auth_mode: ""
+    type:
+      - vision
+      - thinking
+    api_key_env: ""
+  - display_name: ""
+    provider: ""
+    name: ""
+    connection_string: ""
+    auth_mode: ""
+    type:
+      - embedding
+    api_key_env: ""
+    embedding_dimension: ""
