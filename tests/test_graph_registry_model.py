@@ -1170,3 +1170,58 @@ async def test_create_graph_validates_graph_name():
 
     with pytest.raises(ValueError, match="graph_name is required"):
         await service.create_graph("")
+
+
+async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_type():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        session.add_all(
+            [
+                GraphSchemaRegistry(
+                    graph_name="demo_graph",
+                    knowledge_base_ids=["kb-1"],
+                    type=SchemaType.NODE,
+                    name="Driver",
+                    description="A racer",
+                    aliases=[],
+                    properties=["name", "number"],
+                ),
+                GraphSchemaRegistry(
+                    graph_name="demo_graph",
+                    knowledge_base_ids=["kb-1"],
+                    type=SchemaType.RELATIONSHIP,
+                    name="RACED_FOR",
+                    description="Drove for a team",
+                    aliases=[],
+                    properties=["season"],
+                ),
+                # Same name, different graph: must not leak into the lookup below.
+                GraphSchemaRegistry(
+                    graph_name="other_graph",
+                    knowledge_base_ids=["kb-2"],
+                    type=SchemaType.NODE,
+                    name="Driver",
+                    description="A racer",
+                    aliases=[],
+                    properties=["unrelated"],
+                ),
+            ]
+        )
+        await session.commit()
+
+        node_properties = await GraphSchemaRegistry.get_properties_by_name(
+            session, "demo_graph", ["Driver", "Team"], type=SchemaType.NODE
+        )
+        relationship_properties = await GraphSchemaRegistry.get_properties_by_name(
+            session, "demo_graph", ["RACED_FOR"], type=SchemaType.RELATIONSHIP
+        )
+        empty = await GraphSchemaRegistry.get_properties_by_name(
+            session, "demo_graph", []
+        )
+
+    assert node_properties == {"Driver": ["name", "number"]}
+    assert relationship_properties == {"RACED_FOR": ["season"]}
+    assert empty == {}

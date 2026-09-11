@@ -103,6 +103,27 @@
      the text in cannot turn a test red. The shipped text is a deliberate **placeholder** — usable
      (it encodes the schema-discovery -> `search_entities` -> `get_node_schema` ->
      `get_node_neighbours` call order the tools are designed around) but not the final prompt
+   - `get_node_schema(node, runtime)` enriches `AgeGraphRepository.get_node_schema()`'s
+     `(relationship_label, direction, neighbor_label, count)` tuples with property-**name** lists
+     (not values) for the node's own label, each distinct relationship label, and each distinct
+     neighbor label appearing in the entries — sourced from `GraphSchemaRegistry` via its
+     `get_properties_by_name(session, graph_name, names, type=None)` classmethod, not from the live
+     Apache Age graph, since `GraphSchemaRegistry.properties` already **is** a property-name list
+     (see "Schema Registry Pattern"); no new Cypher is needed and the already-fragile,
+     unverified-against-a-live-instance `get_node_schema` Cypher (see "Direct Graph Query & Async
+     Repository Pattern") stays untouched. The node's own live `node.properties` values (the
+     `KnowledgeNode` argument) are deliberately **not** used for this — the agent typically calls
+     this tool precisely because it doesn't know the node's real property values yet, so it may pass
+     a `KnowledgeNode` with `properties={}`. Three separate `get_properties_by_name` calls are made
+     (one per `SchemaType`, since `type` is a single value, not an overlap filter): one for
+     `[node.label]` (`SchemaType.NODE`), one for the distinct relationship labels across entries
+     (`SchemaType.RELATIONSHIP`), one for the distinct neighbor labels across entries
+     (`SchemaType.NODE`) — passed to `AgentSerializer.node_schema_to_dict()` as
+     `node_properties`/`relationship_properties`/`neighbor_properties`, the latter two dicts keyed
+     by label since the same label can repeat across entries (once per direction, or against
+     multiple neighbor labels). A label absent from the registry (e.g. never upserted) is simply
+     omitted from `get_properties_by_name()`'s result dict, so its properties list renders as `[]`
+     rather than raising
    - `chat_model.py` - `build_chat_model(model, /, **overrides)`, mapping a configured `Model`
      (`schemas/model.py`) to a `ChatLiteLLM` (`langchain-litellm`). Mirrors
      `EmbeddingService.compute_embeddings()`'s `Model` -> litellm kwarg mapping exactly —
@@ -188,6 +209,14 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
     source for either yet (a node's own `id` previously leaked into `aliases` by mistake, and
     relationship records were seeding `aliases` with `relationship.label`, which is redundant with
     `name`). Revisit once there's a real alias source (e.g. alternate display names)
+- `GraphSchemaRegistry.get_properties_by_name(session, graph_name, names, type=None)` looks up the
+  stored `properties` list for a batch of names in one query (`name.in_(names)`, optionally filtered
+  by `type`), returning a `dict[name, list[str]]` that omits any name with no matching row (rather
+  than mapping it to `[]`) — the caller decides the default for a schema-less label. This is what
+  `agent/tools.py`'s `get_node_schema` tool uses to attach property-**name** lists to its neighborhood
+  summary (see the `agent/tools.py` bullet under "Agents" above); the same `type` value is shared
+  across all `names` passed in one call, so a caller needing both node and relationship labels'
+  properties makes two calls, not one
 - See: `src/graphrag_apacheage/models/graph_schema_registry.py` and `src/graphrag_apacheage/schemas/knowledge_base.py`
 
 ### Knowledge Base Lifecycle Pattern
@@ -499,6 +528,13 @@ pytest tests/
   - `test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
   - `test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property()` - asserts the outgoing `-[r]->` and incoming `<-[r]-` queries are both issued. Uses `_QueuedRowsConnection`, a fake that serves a *different* row batch per `execute` and records every query — `_RowsConnection` replays one fixed row set and so cannot represent a two-query method
   - `test_age_graph_repository_get_node_schema_orders_entries_deterministically()` - unordered fake rows still come back sorted per direction, outgoing before incoming
+  - `test_get_properties_by_name_returns_properties_scoped_by_graph_and_type()` - a name shared by
+    two `graph_name`s (or looked up under the wrong `type`) doesn't leak across the lookup; an empty
+    `names` list short-circuits to `{}` with no query
+  - `test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node()` (`tests/test_tools.py`)
+    - monkeypatches `GraphSchemaRegistry.get_properties_by_name` (keyed by the `type` argument) to
+    assert the tool attaches the right property-name list to the node, to each relationship label,
+    and to each neighbor label
   - `test_build_deep_agent_exposes_the_graph_tools()` / `..._adds_the_deepagents_and_todo_tools()` -
     compile the real graph against a `GenericFakeChatModel` (no network, no credentials) and read
     tool names off `agent.nodes["tools"].bound.tools_by_name`. Asserted as a **subset** on stable

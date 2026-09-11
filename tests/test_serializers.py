@@ -65,22 +65,57 @@ def test_node_schema_to_dict_groups_entries_under_the_node_once():
         ("SPONSORS", "incoming", "Sponsor", 1),
     ]
 
-    result = AgentSerializer.node_schema_to_dict("driver-1", "Driver", entries)
+    result = AgentSerializer.node_schema_to_dict(
+        "driver-1",
+        "Driver",
+        entries,
+        node_properties=["name", "number"],
+        relationship_properties={"RACED_FOR": ["season"]},
+        neighbor_properties={"Team": ["name"], "Sponsor": ["name", "tier"]},
+    )
 
     assert result == {
-        "node": {"node_id": "driver-1", "label": "Driver"},
+        "node": {
+            "node_id": "driver-1",
+            "label": "Driver",
+            "properties": ["name", "number"],
+        },
         "relationships": [
             {
                 "label": "RACED_FOR",
+                "properties": ["season"],
                 "direction": "outgoing",
                 "neighbor_label": "Team",
+                "neighbor_properties": ["name"],
                 "count": 3,
             },
             {
                 "label": "SPONSORS",
+                "properties": [],
                 "direction": "incoming",
                 "neighbor_label": "Sponsor",
+                "neighbor_properties": ["name", "tier"],
                 "count": 1,
+            },
+        ],
+    }
+
+
+def test_node_schema_to_dict_defaults_properties_to_empty_when_not_provided():
+    entries = [("RACED_FOR", "outgoing", "Team", 3)]
+
+    result = AgentSerializer.node_schema_to_dict("driver-1", "Driver", entries)
+
+    assert result == {
+        "node": {"node_id": "driver-1", "label": "Driver", "properties": []},
+        "relationships": [
+            {
+                "label": "RACED_FOR",
+                "properties": [],
+                "direction": "outgoing",
+                "neighbor_label": "Team",
+                "neighbor_properties": [],
+                "count": 3,
             },
         ],
     }
@@ -90,6 +125,6 @@ def test_node_schema_to_dict_returns_empty_relationships_list_when_no_entries():
     result = AgentSerializer.node_schema_to_dict("driver-1", "Driver", [])
 
     assert result == {
-        "node": {"node_id": "driver-1", "label": "Driver"},
+        "node": {"node_id": "driver-1", "label": "Driver", "properties": []},
         "relationships": [],
     }

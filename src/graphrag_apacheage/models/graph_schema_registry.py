@@ -212,6 +212,39 @@ class GraphSchemaRegistry(Base):
 
         return list((await session.execute(stmt)).scalars().all())
 
+    @classmethod
+    async def get_properties_by_name(
+        cls,
+        session: AsyncSession,
+        graph_name: str,
+        names: Iterable[str],
+        type: SchemaType | None = None,
+    ) -> dict[str, list[str]]:
+        """Look up the stored property-name list for each given schema name.
+
+        Args:
+            session: SQLAlchemy database session for executing the query.
+            graph_name: Restrict the lookup to records belonging to this graph.
+            names: Schema names (node or relationship labels) to look up.
+            type: Optional schema type ('node' or 'relationship') to filter by.
+
+        Returns:
+            A mapping of name -> properties for matching registry rows. Names
+            with no matching row (e.g. a label not yet in the registry) are
+            omitted rather than mapped to an empty list.
+        """
+        names = set(names)
+        if not names:
+            return {}
+
+        stmt = select(cls).where(cls.graph_name == graph_name, cls.name.in_(names))
+        if type is not None:
+            stmt = stmt.where(
+                cls.type == (type.value if isinstance(type, SchemaType) else type)
+            )
+        rows = (await session.execute(stmt)).scalars().all()
+        return {row.name: row.properties for row in rows}
+
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the schema registry record.
 

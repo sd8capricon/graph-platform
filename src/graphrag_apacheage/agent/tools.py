@@ -2,7 +2,10 @@ from langchain.tools import ToolRuntime, tool
 
 from graphrag_apacheage.agent.context import AgentContext
 from graphrag_apacheage.agent.serializers import AgentSerializer
-from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
+from graphrag_apacheage.models.graph_schema_registry import (
+    GraphSchemaRegistry,
+    SchemaType,
+)
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
@@ -66,18 +69,46 @@ async def search_entities(
         "Summarize how a node connects to the rest of the graph: the "
         "distinct relationship types on the node, each with its direction, "
         "the label of the node on the other end, and how many relationships "
-        "match. Use this to understand a node's neighborhood before fetching "
-        "the actual relationships with get_node_neighbours."
+        "match — plus the property names (not values) known for the node, "
+        "each relationship type, and each neighbor label. Use this to "
+        "understand a node's neighborhood before fetching the actual "
+        "relationships with get_node_neighbours."
     )
 )
 async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext]):
-    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema. Requires node.id."""
+    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema and enriches it with GraphSchemaRegistry property-name lists. Requires node.id."""
     if node.id is None:
         raise ValueError("node.id is required to look up its schema")
 
     context = runtime.context
     entries = await context.repository.get_node_schema(context.graph_name, node.id)
-    return AgentSerializer.node_schema_to_dict(node.id, node.label, entries)
+
+    relationship_labels = {relationship_label for relationship_label, _, _, _ in entries}
+    neighbor_labels = {neighbor_label for _, _, neighbor_label, _ in entries}
+
+    node_properties, relationship_properties, neighbor_properties = (
+        await GraphSchemaRegistry.get_properties_by_name(
+            context.session, context.graph_name, [node.label], type=SchemaType.NODE
+        ),
+        await GraphSchemaRegistry.get_properties_by_name(
+            context.session,
+            context.graph_name,
+            relationship_labels,
+            type=SchemaType.RELATIONSHIP,
+        ),
+        await GraphSchemaRegistry.get_properties_by_name(
+            context.session, context.graph_name, neighbor_labels, type=SchemaType.NODE
+        ),
+    )
+
+    return AgentSerializer.node_schema_to_dict(
+        node.id,
+        node.label,
+        entries,
+        node_properties=node_properties.get(node.label, []),
+        relationship_properties=relationship_properties,
+        neighbor_properties=neighbor_properties,
+    )
 
 
 @tool(
@@ -104,6 +135,24 @@ async def get_node_neighbours(
     return AgentSerializer.node_neighbours_to_dict(
         node.id, node.label, node.properties, triplets
     )
+
+
+@tool(
+    description=(
+        "Search graph relationships by relationship type and property filters. "
+        "Can restrict the source and target node labels and optionally source/target "
+        "node IDs. Returns source node, relationship properties, and target node."
+    )
+)
+async def get_relationship(
+    relationship: str,
+    runtime: ToolRuntime[AgentContext],
+    source_label: str | None = None,
+    target_label: str | None = None,
+    source_id: str | None = None,
+    target_id: str | None = None,
+    properties: dict | None = None,
+): ...
 
 
 GRAPH_TOOLS = [

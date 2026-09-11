@@ -11,6 +11,10 @@ from graphrag_apacheage.agent.tools import (
     search_entities,
     search_schema_registry,
 )
+from graphrag_apacheage.models.graph_schema_registry import (
+    GraphSchemaRegistry,
+    SchemaType,
+)
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
@@ -99,7 +103,9 @@ async def test_get_node_neighbours_raises_when_node_has_no_id():
         )
 
 
-async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node():
+async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node(
+    monkeypatch,
+):
     repository = MagicMock(spec=AgeGraphRepository)
     repository.get_node_schema.return_value = [
         ("RACED_FOR", "outgoing", "Team", 3),
@@ -107,24 +113,49 @@ async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node
     ]
     node = KnowledgeNode(id="driver-1", label="Driver", properties={"name": "Lewis"})
 
+    properties_by_type = {
+        SchemaType.NODE: {
+            "Driver": ["name", "number"],
+            "Team": ["name"],
+            "Sponsor": ["name", "tier"],
+        },
+        SchemaType.RELATIONSHIP: {"RACED_FOR": ["season"], "SPONSORS": []},
+    }
+
+    async def fake_get_properties_by_name(session, graph_name, names, type=None):
+        available = properties_by_type[type]
+        return {name: available[name] for name in names if name in available}
+
+    monkeypatch.setattr(
+        GraphSchemaRegistry, "get_properties_by_name", fake_get_properties_by_name
+    )
+
     result = await get_node_schema.coroutine(
         node=node, runtime=_runtime(_context(repository))
     )
 
     repository.get_node_schema.assert_called_once_with("demo_graph", "driver-1")
     assert result == {
-        "node": {"node_id": "driver-1", "label": "Driver"},
+        "node": {
+            "node_id": "driver-1",
+            "label": "Driver",
+            "properties": ["name", "number"],
+        },
         "relationships": [
             {
                 "label": "RACED_FOR",
+                "properties": ["season"],
                 "direction": "outgoing",
                 "neighbor_label": "Team",
+                "neighbor_properties": ["name"],
                 "count": 3,
             },
             {
                 "label": "SPONSORS",
+                "properties": [],
                 "direction": "incoming",
                 "neighbor_label": "Sponsor",
+                "neighbor_properties": ["name", "tier"],
                 "count": 1,
             },
         ],

@@ -85,21 +85,35 @@ class AgentSerializer:
         node_id: str,
         label: str,
         entries: list[tuple[str, str, str, int]],
+        node_properties: list[str] | None = None,
+        relationship_properties: dict[str, list[str]] | None = None,
+        neighbor_properties: dict[str, list[str]] | None = None,
     ) -> dict:
         """Group a node's (relationship, direction, neighbor label, count) entries under it.
 
         The node appears once rather than per entry, mirroring
-        `node_neighbours_to_dict`. Node properties are deliberately omitted: this
-        is a summary of the node's neighborhood shape, and the caller already holds
-        the node it asked about.
+        `node_neighbours_to_dict`. `node_properties`/`relationship_properties`/
+        `neighbor_properties` are property-name lists (from
+        `GraphSchemaRegistry`), not instance values — this is a summary of the
+        node's neighborhood *shape*, not its data. `relationship_properties` and
+        `neighbor_properties` are keyed by label since the same label can repeat
+        across entries (once per direction, or for different neighbor labels).
         """
+        relationship_properties = relationship_properties or {}
+        neighbor_properties = neighbor_properties or {}
         return {
-            "node": {"node_id": node_id, "label": label},
+            "node": {
+                "node_id": node_id,
+                "label": label,
+                "properties": node_properties or [],
+            },
             "relationships": [
                 {
                     "label": relationship_label,
+                    "properties": relationship_properties.get(relationship_label, []),
                     "direction": direction,
                     "neighbor_label": neighbor_label,
+                    "neighbor_properties": neighbor_properties.get(neighbor_label, []),
                     "count": count,
                 }
                 for relationship_label, direction, neighbor_label, count in entries
