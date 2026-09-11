@@ -600,6 +600,34 @@ class _RowsConnection:
         return self.cursor_obj
 
 
+class _QueuedRowsCursor:
+    """Cursor that serves a different row batch per execute, recording every query.
+
+    `_RowsCursor` replays one fixed row set for every execute, which cannot
+    represent `get_node_schema`'s two queries (outgoing, then incoming).
+    """
+
+    def __init__(self, row_batches=()):
+        self.row_batches = [list(batch) for batch in row_batches]
+        self.queries = []
+        self._pending = []
+
+    async def execute(self, query):
+        self.queries.append(query)
+        self._pending = self.row_batches.pop(0) if self.row_batches else []
+
+    async def fetchall(self):
+        return self._pending
+
+
+class _QueuedRowsConnection:
+    def __init__(self, row_batches=()):
+        self.cursor_obj = _QueuedRowsCursor(row_batches)
+
+    def cursor(self):
+        return self.cursor_obj
+
+
 async def test_age_graph_repository_get_node_relationships_matches_node_by_id_property():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
@@ -761,3 +789,70 @@ def test_get_graph_schema_registry_records_requires_knowledge_base_id():
 
     with pytest.raises(ValueError, match="id is required"):
         knowledge_base.get_graph_schema_registry_records("demo")
+
+
+async def test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.get_node_schema("demo_graph", "driver-1")
+
+    outgoing, incoming = connection.cursor_obj.queries
+    assert 'MATCH (a {"id": \'driver-1\'})-[r]->(b)' in outgoing
+    assert 'MATCH (a {"id": \'driver-1\'})<-[r]-(b)' in incoming
+    for query in (outgoing, incoming):
+        assert "demo_graph" in query
+        assert "RETURN type(r), label(b), count(*)" in query
+
+
+async def test_age_graph_repository_get_node_schema_parses_scalars_and_tags_direction():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection(
+        [
+            [('"RACED_FOR"', '"Team"', "3")],
+            [('"SPONSORS"', '"Sponsor"', "1")],
+        ]
+    )
+    repository = AgeGraphRepository(connection)
+
+    assert await repository.get_node_schema("demo_graph", "driver-1") == [
+        ("RACED_FOR", "outgoing", "Team", 3),
+        ("SPONSORS", "incoming", "Sponsor", 1),
+    ]
+
+
+async def test_age_graph_repository_get_node_schema_orders_entries_deterministically():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    # The database gives no row-order guarantee, so entries are sorted within
+    # each direction — but outgoing still precedes incoming.
+    connection = _QueuedRowsConnection(
+        [
+            [
+                ('"WON"', '"Race"', "12"),
+                ('"RACED_FOR"', '"Team"', "3"),
+                ('"RACED_FOR"', '"Academy"', "1"),
+            ],
+            [('"SPONSORS"', '"Sponsor"', "1")],
+        ]
+    )
+    repository = AgeGraphRepository(connection)
+
+    assert await repository.get_node_schema("demo_graph", "driver-1") == [
+        ("RACED_FOR", "outgoing", "Academy", 1),
+        ("RACED_FOR", "outgoing", "Team", 3),
+        ("WON", "outgoing", "Race", 12),
+        ("SPONSORS", "incoming", "Sponsor", 1),
+    ]
+
+
+async def test_age_graph_repository_get_node_schema_returns_empty_list_when_no_relationships():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection([[], []])
+    repository = AgeGraphRepository(connection)
+
+    assert await repository.get_node_schema("demo_graph", "driver-1") == []

@@ -77,9 +77,17 @@
      triplets into a single dict via `node_relationships_to_dict()`, grouped under the queried node
      rather than repeating it once per relationship (a flat triplet list would echo the same
      node dict — often the largest, since it's the caller's own input — once per relationship,
-     wasting tokens in an LLM tool result)
+     wasting tokens in an LLM tool result). `get_node_schema(node, runtime)` is the cheap
+     *overview* counterpart: it calls `await context.repository.get_node_schema(context.graph_name,
+     node.id)` and reshapes the result via `node_schema_to_dict()` into the distinct relationship
+     label / direction / neighbor label combinations plus a `count` per combination. Use it before
+     `get_node_relationships` — it answers "what kinds of things is this node connected to?" without
+     returning every neighbor's full property dict. It takes no relationship-label filter on purpose:
+     it's what the agent calls *before* it knows which labels matter, and every extra parameter
+     enlarges the model-facing tool schema
    - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
-     `node_relationships_to_dict()`, the ORM-record/agtype-to-plain-dict conversions shared by
+     `node_relationships_to_dict()` / `node_schema_to_dict()`, the ORM-record/agtype-to-plain-dict
+     conversions shared by
      `tools.py`'s tool implementations (kept in their own module, not prefixed with `_`, so they're
      importable/testable independent of any `@tool`-decorated function)
    - Intended for: LLM-based agent tools that interact with the knowledge graph
@@ -96,8 +104,9 @@
      Most methods only build and `.execute()` a Cypher query, returning the query string itself
      (used as an audit trail, e.g. by `KnowledgeBaseService.upsert_knowledge_base()`) without
      fetching/parsing results — `graph_exists()` fetches but only checks `(await cursor.fetchone())
-     is not None`. `get_node_relationships()` is the first method that actually fetches and parses
-     real result rows — see "Direct Graph Query & Async Repository Pattern" below
+     is not None`. `get_node_relationships()` and `get_node_schema()` are the methods that
+     actually fetch and parse real result rows — see "Direct Graph Query & Async Repository
+     Pattern" below
 
 ### Data Flow
 
@@ -159,6 +168,21 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
   - De-duplicates on the edge's own internal `id` (not on a `(source, label, target)` tuple), since Apache Age can return the same physical edge twice for an undirected `()-[r]-()` pattern; a source/label/target-based key would incorrectly collapse legitimate parallel edges, since Apache Age is a multigraph
   - Source/target are oriented by comparing each vertex's internal `id` to the edge's `start_id`/`end_id`, since the queried node isn't always bound to the pattern's first variable (`a`)
+- `get_node_schema(graph_name, node_id)` returns the *shape* of a node's neighborhood rather than
+  its contents: a `list[tuple[relationship_label, direction, neighbor_label, count]]`. It runs one
+  query per direction — `MATCH (a {"id": ...})-[r]->(b)` then `<-[r]-` — each
+  `RETURN type(r), label(b), count(*)`, so direction comes from which query produced the row (no
+  `start_id`/`end_id` comparison needed) and the *database* does the counting, meaning a high-degree
+  node costs a handful of rows instead of one per relationship. Entries are sorted by
+  `(relationship_label, neighbor_label)` within each direction, outgoing first, since the database
+  guarantees no row order. A self-loop legitimately appears in both directions
+  - The columns here are bare agtype *scalars*, not `::vertex`/`::edge` payloads. `_parse_agtype()`
+    handles both (the suffix strip is a no-op for scalars), so its return type is `Any`, not `dict`
+  - Unverified against a live Apache Age instance: `label(b)` and `count(*)` with implicit grouping.
+    `type(r)` is already used by shipped code. Unit tests use fake cursors, so they pin the query
+    string and the parsing, not that Age accepts the Cypher. If `label(b)` turns out to be
+    unsupported on the target Age version, the fallback is to return `b` and read `b["label"]` in
+    Python — which loses the DB-side aggregation and forces a client-side `count`
 - `agent/tools.py`'s `get_node_relationships` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `node_relationships_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
 - See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_relationships_*` tests in `tests/test_graph_registry_model.py`
@@ -262,6 +286,8 @@ pytest tests/
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
   - `test_age_graph_repository_get_node_relationships_orients_source_target_via_edge_start_end_ids()` - regression test that source/target come from the edge's own `start_id`/`end_id`, not from assuming the queried node is always bound to the pattern's first variable
   - `test_age_graph_repository_get_node_relationships_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
+  - `test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property()` - asserts the outgoing `-[r]->` and incoming `<-[r]-` queries are both issued. Uses `_QueuedRowsConnection`, a fake that serves a *different* row batch per `execute` and records every query — `_RowsConnection` replays one fixed row set and so cannot represent a two-query method
+  - `test_age_graph_repository_get_node_schema_orders_entries_deterministically()` - unordered fake rows still come back sorted per direction, outgoing before incoming
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base, with a stable top-level `id` so re-ingesting the file is idempotent)
 
 ### Type System

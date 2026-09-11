@@ -4,6 +4,7 @@ from graphrag_apacheage.agent.context import AgentContext
 from graphrag_apacheage.agent.serializers import (
     node_embedding_record_to_dict,
     node_relationships_to_dict,
+    node_schema_to_dict,
     schema_registry_record_to_dict,
 )
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
@@ -45,9 +46,20 @@ async def search_entities(
 
 
 @tool
-async def get_node_schema(node: KnowledgeNode):
-    """Not yet implemented."""
-    return
+async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext]):
+    """Summarize how a node connects to the rest of the graph.
+
+    Returns the distinct relationship types on `node`, each with its direction,
+    the label of the node on the other end, and how many relationships match.
+    Use this to understand a node's neighborhood before fetching the actual
+    relationships with `get_node_relationships`.
+    """
+    if node.id is None:
+        raise ValueError("node.id is required to look up its schema")
+
+    context = runtime.context
+    entries = await context.repository.get_node_schema(context.graph_name, node.id)
+    return node_schema_to_dict(node.id, node.label, entries)
 
 
 @tool

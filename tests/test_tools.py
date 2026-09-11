@@ -5,7 +5,7 @@ from langchain.tools import ToolRuntime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.tools import get_node_relationships
+from graphrag_apacheage.agent.tools import get_node_relationships, get_node_schema
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
@@ -91,4 +91,45 @@ async def test_get_node_relationships_raises_when_node_has_no_id():
             node=node,
             runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
             relationships=None,
+        )
+
+
+async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node():
+    repository = MagicMock(spec=AgeGraphRepository)
+    repository.get_node_schema.return_value = [
+        ("RACED_FOR", "outgoing", "Team", 3),
+        ("SPONSORS", "incoming", "Sponsor", 1),
+    ]
+    node = KnowledgeNode(id="driver-1", label="Driver", properties={"name": "Lewis"})
+
+    result = await get_node_schema.coroutine(
+        node=node, runtime=_runtime(_context(repository))
+    )
+
+    repository.get_node_schema.assert_called_once_with("demo_graph", "driver-1")
+    assert result == {
+        "node": {"node_id": "driver-1", "label": "Driver"},
+        "relationships": [
+            {
+                "label": "RACED_FOR",
+                "direction": "outgoing",
+                "neighbor_label": "Team",
+                "count": 3,
+            },
+            {
+                "label": "SPONSORS",
+                "direction": "incoming",
+                "neighbor_label": "Sponsor",
+                "count": 1,
+            },
+        ],
+    }
+
+
+async def test_get_node_schema_raises_when_node_has_no_id():
+    node = KnowledgeNode.model_construct(id=None, label="Driver", properties={})
+
+    with pytest.raises(ValueError, match="node.id is required"):
+        await get_node_schema.coroutine(
+            node=node, runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
         )

@@ -69,8 +69,35 @@ def node_relationships_to_dict(
     }
 
 
+def node_schema_to_dict(
+    node_id: str,
+    label: str,
+    entries: list[tuple[str, str, str, int]],
+) -> dict:
+    """Group a node's (relationship, direction, neighbor label, count) entries under it.
+
+    The node appears once rather than per entry, mirroring
+    `node_relationships_to_dict`. Node properties are deliberately omitted: this
+    is a summary of the node's neighborhood shape, and the caller already holds
+    the node it asked about.
+    """
+    return {
+        "node": {"node_id": node_id, "label": label},
+        "relationships": [
+            {
+                "label": relationship_label,
+                "direction": direction,
+                "neighbor_label": neighbor_label,
+                "count": count,
+            }
+            for relationship_label, direction, neighbor_label, count in entries
+        ],
+    }
+
+
 __all__ = [
     "schema_registry_record_to_dict",
     "node_embedding_record_to_dict",
     "node_relationships_to_dict",
+    "node_schema_to_dict",
 ]

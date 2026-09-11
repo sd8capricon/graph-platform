@@ -73,20 +73,21 @@ class AgeGraphRepository:
         return " {" + ", ".join(entries) + "}"
 
     @staticmethod
-    def _parse_agtype(value: str) -> dict[str, Any]:
-        """Parse a raw `agtype` vertex/edge string into a plain dict.
+    def _parse_agtype(value: str) -> Any:
+        """Parse a raw `agtype` column value into a plain Python value.
 
         Apache Age returns vertex/edge columns as a JSON object literal suffixed
         with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex`
         or `{"id": ..., "start_id": ..., "end_id": ..., "label": ..., "properties": {...}}::edge`.
         Strips a trailing `::vertex`/`::edge` suffix (if present) before parsing
-        the remainder as JSON.
+        the remainder as JSON. Scalar columns (e.g. `type(r)`, `label(b)`, `count(*)`)
+        carry no such suffix and parse directly into a str/int.
 
         Args:
             value: The raw string returned by psycopg for an `agtype` column.
 
         Returns:
-            The parsed JSON object as a plain dict.
+            The parsed value: a dict for a vertex/edge, or a scalar for a scalar column.
         """
         text = value
         for suffix in ("::vertex", "::edge"):
@@ -316,6 +317,63 @@ class AgeGraphRepository:
             triplets.append((source, edge, target))
 
         return triplets
+
+    async def get_node_schema(
+        self, graph_name: str, node_id: str
+    ) -> list[tuple[str, str, str, int]]:
+        """Summarize the shape of a node's neighborhood, aggregated by the database.
+
+        Unlike `get_node_relationships()`, which returns every relationship
+        instance along with its neighbor's full properties, this returns only the
+        distinct relationship label / neighbor label combinations and how many
+        relationships match each. The counting is done by the database, so a
+        high-degree node costs a handful of rows rather than one per relationship.
+
+        Runs one query per direction (outgoing, then incoming) rather than a single
+        undirected match, so each row's direction is known from the query that
+        produced it and no `start_id`/`end_id` comparison is needed. A self-loop
+        legitimately appears in both directions.
+
+        Args:
+            graph_name: The name of the graph to query.
+            node_id: The `id` property value of the node to summarize.
+
+        Returns:
+            A list of `(relationship_label, direction, neighbor_label, count)`
+            tuples, outgoing entries first then incoming, each group sorted by
+            `(relationship_label, neighbor_label)` since the database does not
+            guarantee row order.
+        """
+        id_filter = self._age_properties_literal({"id": node_id})
+        cursor = self.pg_connection.cursor()
+
+        entries: list[tuple[str, str, str, int]] = []
+        for direction, pattern in (
+            ("outgoing", f"MATCH (a{id_filter})-[r]->(b)"),
+            ("incoming", f"MATCH (a{id_filter})<-[r]-(b)"),
+        ):
+            query = (
+                f"SELECT * FROM cypher('{graph_name}', $$ "
+                f"{pattern} "
+                "RETURN type(r), label(b), count(*) $$) "
+                "AS (relationship agtype, neighbor_label agtype, count agtype);"
+            )
+            await cursor.execute(query)
+            rows = await cursor.fetchall()
+            parsed = [
+                (
+                    self._parse_agtype(relationship),
+                    self._parse_agtype(neighbor_label),
+                    self._parse_agtype(count),
+                )
+                for relationship, neighbor_label, count in rows
+            ]
+            entries.extend(
+                (relationship, direction, neighbor_label, count)
+                for relationship, neighbor_label, count in sorted(parsed)
+            )
+
+        return entries
 
     async def create_relationship(
         self,
