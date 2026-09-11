@@ -5,7 +5,12 @@ from langchain.tools import ToolRuntime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.tools import get_node_neighbours, get_node_schema
+from graphrag_apacheage.agent.tools import (
+    get_node_neighbours,
+    get_node_schema,
+    search_entities,
+    search_schema_registry,
+)
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
@@ -132,4 +137,23 @@ async def test_get_node_schema_raises_when_node_has_no_id():
     with pytest.raises(ValueError, match="node.id is required"):
         await get_node_schema.coroutine(
             node=node, runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
+        )
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+async def test_search_schema_registry_raises_on_empty_query(query):
+    with pytest.raises(ValueError, match="query must not be empty"):
+        await search_schema_registry.coroutine(
+            query=query,
+            runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
+        )
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+async def test_search_entities_raises_on_empty_query(query):
+    with pytest.raises(ValueError, match="query must not be empty"):
+        await search_entities.coroutine(
+            query=query,
+            runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
+            labels=None,
         )

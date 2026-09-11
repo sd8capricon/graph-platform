@@ -20,6 +20,9 @@ from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 )
 async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext]):
     """Vector-search GraphSchemaRegistry, scoped to the run's attached knowledge bases."""
+    if not query.strip():
+        raise ValueError("query must not be empty")
+
     context = runtime.context
     records = await GraphSchemaRegistry.vector_search(
         context.session,
@@ -44,6 +47,9 @@ async def search_entities(
     query: str, runtime: ToolRuntime[AgentContext], labels: list[str] | None = None
 ):
     """Vector-search NodeEmbedding for context.graph_name; not scoped to attached_kb_ids."""
+    if not query.strip():
+        raise ValueError("query must not be empty")
+
     context = runtime.context
     records = await NodeEmbedding.vector_search(
         context.session,

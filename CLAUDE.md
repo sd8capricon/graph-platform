@@ -59,7 +59,12 @@
      tool's schema shown to the model — don't document it in the tool's docstring or list it as a
      model-facing arg. `@tool`-decorated functions require a docstring (LangChain raises
      `ValueError` at decoration time otherwise), and can be `async def` when they need to await a
-     model method. `search_schema_registry(query, runtime)` calls
+     model method. Both `search_schema_registry` and `search_entities` raise `ValueError` up front
+     when `query.strip()` is empty, the same fail-fast convention `get_node_schema`/
+     `get_node_neighbours` use for a missing `node.id` — an empty query would otherwise reach
+     `EmbeddingService.compute_embeddings()` and either waste a real embedding call on blank text or
+     (with no `model` configured) silently return no results, instead of surfacing the bad input at
+     the tool boundary. `search_schema_registry(query, runtime)` calls
      `GraphSchemaRegistry.vector_search(context.session, query, context.graph_name, context.model,
      knowledge_base_ids=context.attached_kb_ids)` and reshapes each result into a plain dict
      (type/name/description/aliases/properties/source_label/target_label) since tool return values
