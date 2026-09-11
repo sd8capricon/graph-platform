@@ -21,7 +21,7 @@ class KnowledgeBaseService:
         """
         self.repository = repository
 
-    def upsert_knowledge_base(
+    async def upsert_knowledge_base(
         self, knowledge_base: KnowledgeBase, graph_name: str | None = None
     ) -> list[str]:
         """Upsert a knowledge base into the Apache Age graph database.
@@ -45,7 +45,7 @@ class KnowledgeBaseService:
                 "graph_name is required when upserting knowledge base to Apache Age graph"
             )
 
-        if not self.repository.graph_exists(graph_name):
+        if not await self.repository.graph_exists(graph_name):
             raise ValueError(
                 f"Apache Age graph '{graph_name}' does not exist in the database"
             )
@@ -57,12 +57,12 @@ class KnowledgeBaseService:
             if node.id is not None:
                 node_properties["id"] = node.id
             queries.append(
-                self.repository.create_node(graph_name, node.label, node_properties)
+                await self.repository.create_node(graph_name, node.label, node_properties)
             )
 
         for relationship in knowledge_base.relationships:
             queries.append(
-                self.repository.create_relationship(
+                await self.repository.create_relationship(
                     graph_name,
                     relationship.source_id,
                     relationship.target_id,
@@ -71,7 +71,7 @@ class KnowledgeBaseService:
                 )
             )
 
-        self.repository.commit()
+        await self.repository.commit()
         return queries
 
     async def upsert_node_embeddings(

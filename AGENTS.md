@@ -47,10 +47,12 @@
      graph state and made available to tools via LangGraph's runtime. Fields: `graph_name: str`
      (required, the Apache Age graph the run's tools operate against), `attached_kb_ids: list[str]`
      (the knowledge base IDs a run's tools may operate against), `session: AsyncSession` (required
-     — how tools reach the database; needs `model_config = ConfigDict(arbitrary_types_allowed=True)`
-     since `AsyncSession` isn't a pydantic type), and `model: Model | None` (embedding provider for
-     tools that vector-search; `None` means such tools should raise, matching
-     `GraphSchemaRegistry.vector_search`'s own contract)
+     — how tools reach the NodeEmbedding/GraphSchemaRegistry side-tables; needs `model_config =
+     ConfigDict(arbitrary_types_allowed=True)` since `AsyncSession` isn't a pydantic type),
+     `repository: AgeGraphRepository` (required — how tools reach the live Apache Age graph
+     directly, e.g. for relationship traversal, as opposed to the `session`-backed side-tables),
+     and `model: Model | None` (embedding provider for tools that vector-search; `None` means such
+     tools should raise, matching `GraphSchemaRegistry.vector_search`'s own contract)
    - `tools.py` - tool implementations. Tools access `AgentContext` by adding a
      `runtime: ToolRuntime[AgentContext]` parameter (imported from `langchain.tools`) and reading
      `runtime.context.*`; LangChain injects this argument automatically so it's excluded from the
@@ -68,20 +70,31 @@
      `context.attached_kb_ids` — `NodeEmbedding.vector_search`'s `knowledge_base_id` filter is a
      single-value equality filter (one knowledge base at a time), not a multi-id overlap filter like
      `GraphSchemaRegistry.vector_search`'s `knowledge_base_ids`, so it can't take the whole
-     `attached_kb_ids` list
-   - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()`,
-     the ORM-record-to-plain-dict conversions shared by `tools.py`'s tool implementations (kept
-     in their own module, not prefixed with `_`, so they're importable/testable independent of
-     any `@tool`-decorated function)
+     `attached_kb_ids` list. `get_node_relationships(node, runtime, relationships=None)` calls
+     `await context.repository.get_node_relationships(context.graph_name, node.id,
+     relationship_labels=relationships)` (the repository is fully async — see "Direct Graph Query
+     & Async Repository Pattern" below) and reshapes each returned `(source, relationship, target)`
+     triplet into a plain dict via `relationship_triplet_to_dict()`
+   - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
+     `relationship_triplet_to_dict()`, the ORM-record/agtype-to-plain-dict conversions shared by
+     `tools.py`'s tool implementations (kept in their own module, not prefixed with `_`, so they're
+     importable/testable independent of any `@tool`-decorated function)
    - Intended for: LLM-based agent tools that interact with the knowledge graph
 
 4. **Services** (`src/graphrag_apacheage/services/`)
-   - `KnowledgeBaseService`: High-level service for knowledge base operations
+   - `KnowledgeBaseService`: High-level service for knowledge base operations.
+     `upsert_knowledge_base()` is `async def` (awaits the now-fully-async `AgeGraphRepository`)
    - `EmbeddingService` (`services/embedding_service.py`): Computes text embeddings via litellm,
      shared by any ORM model with a vector embedding column
 
 5. **Repositories** (`src/graphrag_apacheage/repositories/`)
-   - `AgeGraphRepository`: Data access layer for Apache Age graph operations
+   - `AgeGraphRepository`: Data access layer for Apache Age graph operations. Fully async, backed
+     by `psycopg` v3's `AsyncConnection`/`AsyncCursor` (not `psycopg2`, which has no async mode).
+     Most methods only build and `.execute()` a Cypher query, returning the query string itself
+     (used as an audit trail, e.g. by `KnowledgeBaseService.upsert_knowledge_base()`) without
+     fetching/parsing results — `graph_exists()` fetches but only checks `(await cursor.fetchone())
+     is not None`. `get_node_relationships()` is the first method that actually fetches and parses
+     real result rows — see "Direct Graph Query & Async Repository Pattern" below
 
 ### Data Flow
 
@@ -135,6 +148,17 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since `?|` doesn't run on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
+
+### Direct Graph Query & Async Repository Pattern
+- `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; `KnowledgeBaseService.upsert_knowledge_base()` is `async def` too, since it awaits repository calls internally
+- Most methods only build and `.execute()` a Cypher query, returning the query string itself (used as an audit trail, e.g. by `upsert_knowledge_base()`) without fetching/parsing results — `graph_exists()` is the one exception that fetches, but only checks `(await cursor.fetchone()) is not None`
+- `get_node_relationships(graph_name, node_id, relationship_labels=None)` is the first method that actually fetches and parses real result rows: it matches a node via its app-level `id` property (the same property `create_node`/`create_relationship` set — not Apache Age's own internal vertex id/graphid), traverses relationships in both directions (`MATCH (a {"id": ...})-[r]-(b)`), and returns a de-duplicated `list[tuple[dict, dict, dict]]` of `(source, relationship, target)`
+  - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
+  - De-duplicates on the edge's own internal `id` (not on a `(source, label, target)` tuple), since Apache Age can return the same physical edge twice for an undirected `()-[r]-()` pattern; a source/label/target-based key would incorrectly collapse legitimate parallel edges, since Apache Age is a multigraph
+  - Source/target are oriented by comparing each vertex's internal `id` to the edge's `start_id`/`end_id`, since the queried node isn't always bound to the pattern's first variable (`a`)
+- `agent/tools.py`'s `get_node_relationships` tool wraps this repository method and reshapes each triplet into a plain dict via `agent/serializers.py`'s `relationship_triplet_to_dict()`, which drops Apache Age's internal integer ids from the output, keeping only the app-level UUID `id` pulled out of each vertex's `properties`
+- No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
+- See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_relationships_*` tests in `tests/test_graph_registry_model.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -198,9 +222,11 @@ async with AsyncSession(engine) as session:
 ### Key Files
 - `pyproject.toml` - project metadata, dependencies, build config
 - `src/graphrag_apacheage/` - main source directory
-- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior)
+- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_relationships`)
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
+- `tests/test_tools.py` - test suite for `agent/tools.py`'s `@tool`-decorated functions
+- `tests/test_serializers.py` - test suite for `agent/serializers.py`'s dict-conversion helpers
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests
@@ -211,7 +237,7 @@ pytest tests/
 ### Project Dependencies
 - **pydantic** (>=2.13.5): Data validation and serialization
 - **sqlalchemy[asyncio]** (>=2.0.42): ORM and database abstraction (async engine/session)
-- **psycopg2-binary** (>=2.9.12): PostgreSQL/Apache Age connection
+- **psycopg[binary]** (>=3.2): Async PostgreSQL/Apache Age connection (`AgeGraphRepository` is fully async via psycopg3's `AsyncConnection`/`AsyncCursor`)
 - **pgvector** (>=0.5.0): `Vector` column type for embedding storage/cosine search
 - **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); called only when a `Model` is passed to `EmbeddingService.compute_embeddings()`
 - Dev-only: **aiosqlite** for async SQLite tests
@@ -231,6 +257,8 @@ pytest tests/
   - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
+  - `test_age_graph_repository_get_node_relationships_orients_source_target_via_edge_start_end_ids()` - regression test that source/target come from the edge's own `start_id`/`end_id`, not from assuming the queried node is always bound to the pattern's first variable
+  - `test_age_graph_repository_get_node_relationships_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base, with a stable top-level `id` so re-ingesting the file is idempotent)
 
 ### Type System

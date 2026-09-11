@@ -1,7 +1,7 @@
 import json
 from typing import Any
 
-from psycopg2.extensions import connection
+from psycopg import AsyncConnection
 
 
 class AgeGraphRepository:
@@ -9,18 +9,19 @@ class AgeGraphRepository:
 
     Provides a high-level interface for creating, querying, and manipulating
     Apache Age graphs and their nodes/relationships. All operations are executed
-    against a PostgreSQL database with the Apache Age extension.
+    against a PostgreSQL database with the Apache Age extension, via an async
+    psycopg connection.
 
     Attributes:
-        pg_connection: An active psycopg2 PostgreSQL database connection.
+        pg_connection: An active psycopg async PostgreSQL database connection.
     """
 
-    def __init__(self, pg_connection: connection):
+    def __init__(self, pg_connection: AsyncConnection):
         """Initialize the repository with a PostgreSQL connection.
 
         Args:
-            pg_connection: A psycopg2 connection object to a PostgreSQL database
-                with the Apache Age extension installed.
+            pg_connection: A psycopg async connection object to a PostgreSQL
+                database with the Apache Age extension installed.
         """
         self.pg_connection = pg_connection
 
@@ -71,7 +72,30 @@ class AgeGraphRepository:
         ]
         return " {" + ", ".join(entries) + "}"
 
-    def create_graph(self, graph_name: str) -> str:
+    @staticmethod
+    def _parse_agtype(value: str) -> dict[str, Any]:
+        """Parse a raw `agtype` vertex/edge string into a plain dict.
+
+        Apache Age returns vertex/edge columns as a JSON object literal suffixed
+        with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex`
+        or `{"id": ..., "start_id": ..., "end_id": ..., "label": ..., "properties": {...}}::edge`.
+        Strips a trailing `::vertex`/`::edge` suffix (if present) before parsing
+        the remainder as JSON.
+
+        Args:
+            value: The raw string returned by psycopg for an `agtype` column.
+
+        Returns:
+            The parsed JSON object as a plain dict.
+        """
+        text = value
+        for suffix in ("::vertex", "::edge"):
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+                break
+        return json.loads(text)
+
+    async def create_graph(self, graph_name: str) -> str:
         """Create a new Apache Age graph in the database.
 
         Args:
@@ -84,10 +108,11 @@ class AgeGraphRepository:
             Exception: If the graph already exists or if the database operation fails.
         """
         query = f"SELECT * FROM ag_catalog.create_graph('{graph_name}');"
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def delete_graph(self, graph_name: str) -> str:
+    async def delete_graph(self, graph_name: str) -> str:
         """Drop (delete) an Apache Age graph and all its contents.
 
         Cascades the deletion, removing all nodes, edges, and associated data
@@ -103,10 +128,11 @@ class AgeGraphRepository:
             Exception: If the graph does not exist or if the database operation fails.
         """
         query = f"SELECT * FROM ag_catalog.drop_graph('{graph_name}', true);"
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def graph_exists(self, graph_name: str) -> bool:
+    async def graph_exists(self, graph_name: str) -> bool:
         """Check if a graph exists in the database.
 
         Args:
@@ -117,11 +143,11 @@ class AgeGraphRepository:
         """
         query = f"SELECT 1 FROM ag_catalog.ag_graph WHERE name = '{graph_name}';"
         cursor = self.pg_connection.cursor()
-        cursor.execute(query)
-        result = cursor.fetchone()
+        await cursor.execute(query)
+        result = await cursor.fetchone()
         return result is not None
 
-    def get_nodes(self, graph_name: str, label: str | None = None) -> str:
+    async def get_nodes(self, graph_name: str, label: str | None = None) -> str:
         """Query nodes in a graph, optionally filtered by label.
 
         Args:
@@ -136,10 +162,11 @@ class AgeGraphRepository:
             f"SELECT * FROM cypher('{graph_name}', $$ MATCH (n{label_filter}) RETURN n $$) "
             "AS (n agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def create_node(
+    async def create_node(
         self, graph_name: str, label: str, properties: dict[str, Any]
     ) -> str:
         """Create a new node in the graph.
@@ -158,10 +185,11 @@ class AgeGraphRepository:
             f"SELECT * FROM cypher('{graph_name}', $$ CREATE (n:{label}{properties_literal}) "
             f"RETURN n $$) AS (v agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def update_node(
+    async def update_node(
         self, graph_name: str, node_id: str, properties: dict[str, Any]
     ) -> str:
         """Update properties on an existing node.
@@ -181,10 +209,11 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{"id":"{node_id}"}}) '
             f"SET n = n + {props} RETURN n $$) AS (v agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def delete_node(self, graph_name: str, node_id: str) -> str:
+    async def delete_node(self, graph_name: str, node_id: str) -> str:
         """Delete a node from the graph.
 
         Also detaches and deletes all edges connected to this node.
@@ -200,10 +229,11 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{"id":"{node_id}"}}) '
             "DETACH DELETE n RETURN count(n) $$) AS (count agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def get_relationships(self, graph_name: str, label: str | None = None) -> str:
+    async def get_relationships(self, graph_name: str, label: str | None = None) -> str:
         """Query relationships in a graph, optionally filtered by label.
 
         Args:
@@ -218,10 +248,76 @@ class AgeGraphRepository:
             f"SELECT * FROM cypher('{graph_name}', $$ MATCH ()-[r]-() {label_filter} "
             "RETURN r $$) AS (r agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def create_relationship(
+    async def get_node_relationships(
+        self,
+        graph_name: str,
+        node_id: str,
+        relationship_labels: list[str] | None = None,
+    ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+        """Fetch relationships incident to a node, as (source, relationship, target) triplets.
+
+        Matches the node by its `id` property (the app-level identifier stamped onto
+        every vertex by `create_node`), not Apache Age's own internal vertex id.
+        Traverses relationships in both directions and, for each one, orients
+        source/target using the edge's own `start_id`/`end_id` rather than assuming
+        the queried node is always the source. De-duplicates so a single physical
+        relationship is never returned twice (Apache Age can surface an undirected
+        match twice, once per traversal direction).
+
+        Args:
+            graph_name: The name of the graph to query.
+            node_id: The `id` property value of the node whose relationships to fetch.
+            relationship_labels: Optional relationship labels to filter by. If None
+                or empty, all relationship labels are included.
+
+        Returns:
+            A list of `(source, relationship, target)` tuples, each a plain dict
+            parsed from the vertex/edge `agtype` payload, with no relationship
+            repeated.
+        """
+        id_filter = self._age_properties_literal({"id": node_id})
+        label_filter = ""
+        if relationship_labels:
+            literal_labels = ", ".join(
+                self._age_literal(label) for label in relationship_labels
+            )
+            label_filter = f" WHERE type(r) IN [{literal_labels}]"
+
+        query = (
+            f"SELECT * FROM cypher('{graph_name}', $$ "
+            f"MATCH (a{id_filter})-[r]-(b){label_filter} "
+            "RETURN a, r, b $$) AS (a agtype, r agtype, b agtype);"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
+        rows = await cursor.fetchall()
+
+        seen_edge_ids: set[Any] = set()
+        triplets: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+        for a_raw, r_raw, b_raw in rows:
+            a_vertex = self._parse_agtype(a_raw)
+            edge = self._parse_agtype(r_raw)
+            b_vertex = self._parse_agtype(b_raw)
+
+            edge_id = edge["id"]
+            if edge_id in seen_edge_ids:
+                continue
+            seen_edge_ids.add(edge_id)
+
+            if edge["start_id"] == a_vertex["id"]:
+                source, target = a_vertex, b_vertex
+            else:
+                source, target = b_vertex, a_vertex
+
+            triplets.append((source, edge, target))
+
+        return triplets
+
+    async def create_relationship(
         self,
         graph_name: str,
         source_node_id: str,
@@ -247,10 +343,11 @@ class AgeGraphRepository:
             f'(b {{"id":"{target_node_id}"}}) CREATE (a)-[:{label}{properties_literal}]->(b) '
             "RETURN a, b $$) AS (v agtype);"
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def update_relationship(
+    async def update_relationship(
         self,
         graph_name: str,
         source_node_id: str,
@@ -277,10 +374,11 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}})-[r:{label}]->'
             f'(b {{"id":"{target_node_id}"}}) SET r = r + {props} RETURN r $$) AS (v agtype);'
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def delete_relationship(
+    async def delete_relationship(
         self, graph_name: str, source_node_id: str, target_node_id: str, label: str
     ) -> str:
         """Delete a relationship between two nodes.
@@ -298,13 +396,14 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}})-[r:{label}]->'
             f'(b {{"id":"{target_node_id}"}}) DELETE r RETURN count(r) $$) AS (count agtype);'
         )
-        self.pg_connection.cursor().execute(query)
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
         return query
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         """Commit the current transaction to the database.
 
         Only commits if the connection supports the commit method.
         """
         if hasattr(self.pg_connection, "commit"):
-            self.pg_connection.commit()
+            await self.pg_connection.commit()

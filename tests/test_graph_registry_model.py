@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -351,7 +352,7 @@ def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
     assert records[0].knowledge_base_ids == [knowledge_base.id]
 
 
-def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
+async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
@@ -375,10 +376,10 @@ def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
 
     with pytest.raises(ValueError, match="graph_name is required"):
         # Calling without graph_name should raise ValueError
-        service.upsert_knowledge_base(knowledge_base)
+        await service.upsert_knowledge_base(knowledge_base)
 
 
-def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
+async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
     knowledge_base = KnowledgeBase.model_validate(
@@ -395,16 +396,16 @@ def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
     )
 
     class MockRepository:
-        def graph_exists(self, graph_name):
+        async def graph_exists(self, graph_name):
             return False  # Graph does not exist
 
     service = KnowledgeBaseService(MockRepository())
 
     with pytest.raises(ValueError, match="does not exist in the database"):
-        service.upsert_knowledge_base(knowledge_base, graph_name="nonexistent_graph")
+        await service.upsert_knowledge_base(knowledge_base, graph_name="nonexistent_graph")
 
 
-def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
+async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
     knowledge_base = KnowledgeBase.model_validate(
         {
             "name": "demo_kb",
@@ -441,7 +442,7 @@ def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def execute(self, query, params=None):
+        async def execute(self, query, params=None):
             self.calls.append((query, params))
 
     class RecordingConnection:
@@ -458,15 +459,15 @@ def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
         def __init__(self, connection):
             self.connection = connection
 
-        def graph_exists(self, graph_name):
+        async def graph_exists(self, graph_name):
             return True  # Mock graph exists
 
-        def create_graph(self, graph_name):
+        async def create_graph(self, graph_name):
             query = f"SELECT * FROM ag_catalog.create_graph('{graph_name}');"
             connection.cursor_obj.calls.append((query, None))
             return query
 
-        def create_node(self, graph_name, label, properties):
+        async def create_node(self, graph_name, label, properties):
             query = (
                 f"SELECT * FROM cypher('{graph_name}', $$ CREATE (n:{label} {properties}) "
                 "RETURN n $$) AS (v agtype);"
@@ -474,7 +475,7 @@ def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
             connection.cursor_obj.calls.append((query, None))
             return query
 
-        def create_relationship(
+        async def create_relationship(
             self, graph_name, source_node_id, target_node_id, label, properties
         ):
             query = (
@@ -485,11 +486,11 @@ def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
             connection.cursor_obj.calls.append((query, None))
             return query
 
-        def commit(self):
+        async def commit(self):
             return None
 
     service = KnowledgeBaseService(RecordingRepository(connection))
-    service.upsert_knowledge_base(knowledge_base, graph_name="demo_graph")
+    await service.upsert_knowledge_base(knowledge_base, graph_name="demo_graph")
 
     executed_queries = connection.cursor_obj.calls
     # Graph already exists, so no create_graph call should be made
@@ -503,7 +504,7 @@ def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
     )
 
 
-def test_age_graph_repository_graph_exists_checks_if_graph_exists():
+async def test_age_graph_repository_graph_exists_checks_if_graph_exists():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     class MockCursor:
@@ -511,10 +512,10 @@ def test_age_graph_repository_graph_exists_checks_if_graph_exists():
             self.has_graph = has_graph
             self.last_query = None
 
-        def execute(self, query):
+        async def execute(self, query):
             self.last_query = query
 
-        def fetchone(self):
+        async def fetchone(self):
             return (1,) if self.has_graph else None
 
     class MockConnection:
@@ -527,24 +528,24 @@ def test_age_graph_repository_graph_exists_checks_if_graph_exists():
     # Test graph exists
     connection = MockConnection(has_graph=True)
     repository = AgeGraphRepository(connection)
-    assert repository.graph_exists("existing_graph") is True
+    assert await repository.graph_exists("existing_graph") is True
     assert "ag_catalog.ag_graph" in connection.cursor_obj.last_query
     assert "existing_graph" in connection.cursor_obj.last_query
 
     # Test graph does not exist
     connection = MockConnection(has_graph=False)
     repository = AgeGraphRepository(connection)
-    assert repository.graph_exists("nonexistent_graph") is False
+    assert await repository.graph_exists("nonexistent_graph") is False
 
 
-def test_age_graph_repository_delete_graph_drops_graph():
+async def test_age_graph_repository_delete_graph_drops_graph():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     class MockCursor:
         def __init__(self):
             self.last_query = None
 
-        def execute(self, query):
+        async def execute(self, query):
             self.last_query = query
 
     class MockConnection:
@@ -556,11 +557,161 @@ def test_age_graph_repository_delete_graph_drops_graph():
 
     connection = MockConnection()
     repository = AgeGraphRepository(connection)
-    query = repository.delete_graph("demo_graph")
+    query = await repository.delete_graph("demo_graph")
 
     assert "drop_graph" in query.lower()
     assert "demo_graph" in query
     assert "drop_graph" in connection.cursor_obj.last_query.lower()
+
+
+def _agtype_vertex(id_: int, node_id: str, label: str, **properties) -> str:
+    payload = {"id": id_, "label": label, "properties": {"id": node_id, **properties}}
+    return json.dumps(payload) + "::vertex"
+
+
+def _agtype_edge(id_: int, start_id: int, end_id: int, label: str, **properties) -> str:
+    payload = {
+        "id": id_,
+        "start_id": start_id,
+        "end_id": end_id,
+        "label": label,
+        "properties": properties,
+    }
+    return json.dumps(payload) + "::edge"
+
+
+class _RowsCursor:
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+        self.last_query = None
+
+    async def execute(self, query):
+        self.last_query = query
+
+    async def fetchall(self):
+        return self.rows
+
+
+class _RowsConnection:
+    def __init__(self, rows=()):
+        self.cursor_obj = _RowsCursor(rows)
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+async def test_age_graph_repository_get_node_relationships_matches_node_by_id_property():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.get_node_relationships("demo_graph", "driver-1")
+
+    query = connection.cursor_obj.last_query
+    assert "demo_graph" in query
+    assert 'MATCH (a {"id": \'driver-1\'})-[r]-(b)' in query
+    assert "RETURN a, r, b" in query
+
+
+async def test_age_graph_repository_get_node_relationships_filters_by_labels_when_provided():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.get_node_relationships(
+        "demo_graph", "driver-1", relationship_labels=["DRIVES_FOR", "MEMBER_OF"]
+    )
+
+    assert "WHERE type(r) IN ['DRIVES_FOR', 'MEMBER_OF']" in connection.cursor_obj.last_query
+
+
+async def test_age_graph_repository_get_node_relationships_omits_label_filter_when_not_provided():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    for relationship_labels in (None, []):
+        connection = _RowsConnection()
+        repository = AgeGraphRepository(connection)
+        await repository.get_node_relationships(
+            "demo_graph", "driver-1", relationship_labels=relationship_labels
+        )
+        assert "type(r)" not in connection.cursor_obj.last_query
+
+
+async def test_age_graph_repository_get_node_relationships_parses_agtype_rows():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    rows = [
+        (
+            _agtype_vertex(1, "driver-1", "Driver", name="Lewis"),
+            _agtype_edge(10, 1, 2, "DRIVES_FOR"),
+            _agtype_vertex(2, "team-1", "Team", name="Mercedes"),
+        )
+    ]
+    connection = _RowsConnection(rows)
+    repository = AgeGraphRepository(connection)
+
+    triplets = await repository.get_node_relationships("demo_graph", "driver-1")
+
+    assert len(triplets) == 1
+    source, relationship, target = triplets[0]
+    assert source == {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}}
+    assert relationship == {
+        "id": 10,
+        "start_id": 1,
+        "end_id": 2,
+        "label": "DRIVES_FOR",
+        "properties": {},
+    }
+    assert target == {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}}
+
+
+async def test_age_graph_repository_get_node_relationships_orients_source_target_via_edge_start_end_ids():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    # The queried node ("driver-1", vertex id 1) lands in the *second* returned
+    # vertex position, and the edge's start_id points at vertex id 2 (the team) —
+    # so the team is the true source, not whichever vertex happened to bind to `a`.
+    rows = [
+        (
+            _agtype_vertex(1, "driver-1", "Driver"),
+            _agtype_edge(10, 2, 1, "DRIVES_FOR"),
+            _agtype_vertex(2, "team-1", "Team"),
+        )
+    ]
+    connection = _RowsConnection(rows)
+    repository = AgeGraphRepository(connection)
+
+    [(source, _, target)] = await repository.get_node_relationships("demo_graph", "driver-1")
+
+    assert source["properties"]["id"] == "team-1"
+    assert target["properties"]["id"] == "driver-1"
+
+
+async def test_age_graph_repository_get_node_relationships_deduplicates_repeated_edge_rows():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    row = (
+        _agtype_vertex(1, "driver-1", "Driver"),
+        _agtype_edge(10, 1, 2, "DRIVES_FOR"),
+        _agtype_vertex(2, "team-1", "Team"),
+    )
+    connection = _RowsConnection([row, row])
+    repository = AgeGraphRepository(connection)
+
+    triplets = await repository.get_node_relationships("demo_graph", "driver-1")
+
+    assert len(triplets) == 1
+
+
+async def test_age_graph_repository_get_node_relationships_returns_empty_list_when_no_relationships():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection([])
+    repository = AgeGraphRepository(connection)
+
+    assert await repository.get_node_relationships("demo_graph", "driver-1") == []
 
 
 async def test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases():
