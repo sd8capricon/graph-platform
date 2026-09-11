@@ -132,7 +132,7 @@ class NodeEmbedding(Base):
         query: str,
         graph_name: str,
         model: Model,
-        label: str | None = None,
+        labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
         limit: int = 5,
     ) -> list["NodeEmbedding"]:
@@ -148,7 +148,8 @@ class NodeEmbedding(Base):
             query: Free-text query to embed and compare stored records against.
             graph_name: Restrict the search to nodes belonging to this graph.
             model: The embedding provider configuration used to embed `query`.
-            label: Optional node label to filter by.
+            labels: Optional node labels to filter by. A record matches if its
+                label is any of these.
             knowledge_base_id: Optional KnowledgeBase id to restrict the search to, so a
                 graph fed by several knowledge bases can be searched one base at a time.
             limit: Maximum number of records to return, ordered by similarity.
@@ -171,8 +172,8 @@ class NodeEmbedding(Base):
             .order_by(cls.embedding.cosine_distance(embedding))
             .limit(limit)
         )
-        if label is not None:
-            stmt = stmt.where(cls.label == label)
+        if labels:
+            stmt = stmt.where(cls.label.in_(labels))
         if knowledge_base_id is not None:
             stmt = stmt.where(cls.knowledge_base_id == knowledge_base_id)
 

@@ -213,7 +213,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
         query="fast driver",
         graph_name="demo",
         model=_embedding_model(),
-        label="Driver",
+        labels=["Driver"],
         limit=3,
     )
 
@@ -222,6 +222,45 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     assert "<=>" in compiled
     assert "node_embedding.graph_name" in compiled
     assert "LIMIT" in compiled
+
+
+async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatch):
+    import graphrag_apacheage.services.embedding_service as embedding_service
+
+    class FakeResponse:
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
+
+    async def fake_aembedding(**kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
+
+    captured = {}
+
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class FakeSession:
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+    results = await NodeEmbedding.vector_search(
+        FakeSession(),
+        query="fast driver",
+        graph_name="demo",
+        model=_embedding_model(),
+        labels=["Driver", "Team"],
+        limit=3,
+    )
+
+    assert results == []
+    compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
+    assert "node_embedding.label IN" in compiled
 
 
 async def test_vector_search_raises_when_model_not_provided():

@@ -109,7 +109,7 @@ class KnowledgeBaseService:
         query: str,
         graph_name: str,
         model: Model,
-        label: str | None = None,
+        labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
         limit: int = 5,
     ) -> list[NodeEmbedding]:
@@ -120,7 +120,7 @@ class KnowledgeBaseService:
             query: Free-text query to embed and compare stored node embeddings against.
             graph_name: Restrict the search to nodes belonging to this graph.
             model: The embedding provider configuration used to embed `query`.
-            label: Optional node label to filter by.
+            labels: Optional node labels to filter by.
             knowledge_base_id: Optional KnowledgeBase id to restrict the search to.
             limit: Maximum number of nodes to return, ordered by similarity.
 
@@ -132,7 +132,7 @@ class KnowledgeBaseService:
             query,
             graph_name,
             model,
-            label=label,
+            labels=labels,
             knowledge_base_id=knowledge_base_id,
             limit=limit,
         )

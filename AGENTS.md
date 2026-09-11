@@ -61,7 +61,18 @@
      `GraphSchemaRegistry.vector_search(context.session, query, context.graph_name, context.model,
      knowledge_base_ids=context.attached_kb_ids)` and reshapes each result into a plain dict
      (type/name/description/aliases/properties/source_label/target_label) since tool return values
-     must be JSON-serializable, not ORM instances
+     must be JSON-serializable, not ORM instances. `search_entities(query, runtime, labels=None)`
+     calls `NodeEmbedding.vector_search(context.session, query, context.graph_name, context.model,
+     labels=labels)` and reshapes each result into a plain dict (node_id/label/properties) for the
+     same JSON-serializability reason. Unlike `search_schema_registry`, it does not scope to
+     `context.attached_kb_ids` — `NodeEmbedding.vector_search`'s `knowledge_base_id` filter is a
+     single-value equality filter (one knowledge base at a time), not a multi-id overlap filter like
+     `GraphSchemaRegistry.vector_search`'s `knowledge_base_ids`, so it can't take the whole
+     `attached_kb_ids` list
+   - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()`,
+     the ORM-record-to-plain-dict conversions shared by `tools.py`'s tool implementations (kept
+     in their own module, not prefixed with `_`, so they're importable/testable independent of
+     any `@tool`-decorated function)
    - Intended for: LLM-based agent tools that interact with the knowledge graph
 
 4. **Services** (`src/graphrag_apacheage/services/`)
@@ -120,7 +131,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
 - Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)`
 - `vector_search(session, query, graph_name, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator: `cls.embedding.cosine_distance(embedding)` — requires PostgreSQL, raises `ValueError` if `model` is `None`
-- `NodeEmbedding` rows are keyed by `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping it onto each record as `knowledge_base_id`; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base
+- `NodeEmbedding` rows are keyed by `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping it onto each record as `knowledge_base_id`; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since `?|` doesn't run on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
@@ -217,6 +228,7 @@ pytest tests/
   - `test_knowledge_base_graph_name_is_provided_to_service_not_stored()` - graph_name parameter pattern
   - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls
   - `test_vector_search_embeds_query_and_builds_cosine_distance_statement()` - asserts on the compiled `postgresql` dialect SQL (via a fake async session) since pgvector's `<=>` operator can't run on SQLite
+  - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base, with a stable top-level `id` so re-ingesting the file is idempotent)
