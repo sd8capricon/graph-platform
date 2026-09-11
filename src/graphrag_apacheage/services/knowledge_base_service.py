@@ -22,7 +22,7 @@ class KnowledgeBaseService:
         self.repository = repository
 
     async def upsert_knowledge_base(
-        self, knowledge_base: KnowledgeBase, graph_name: str | None = None
+        self, knowledge_base: KnowledgeBase, graph_name: str
     ) -> list[str]:
         """Upsert a knowledge base into the Apache Age graph database.
 
@@ -57,7 +57,9 @@ class KnowledgeBaseService:
             if node.id is not None:
                 node_properties["id"] = node.id
             queries.append(
-                await self.repository.create_node(graph_name, node.label, node_properties)
+                await self.repository.create_node(
+                    graph_name, node.label, node_properties
+                )
             )
 
         for relationship in knowledge_base.relationships:
