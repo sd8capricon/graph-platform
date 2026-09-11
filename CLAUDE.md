@@ -91,7 +91,35 @@
      implementations. Grouped as one class purely for a single, discoverable import surface — none
      hold or need instance state. Kept in their own module, not prefixed with `_`, so they're
      importable/testable independent of any `@tool`-decorated function
-   - Intended for: LLM-based agent tools that interact with the knowledge graph
+   - `prompts.py` - `GRAPH_AGENT_SYSTEM_PROMPT`, the agent's system prompt. Its own module so
+     replacing the prompt is a one-line change in one file: `deep_agent.py` imports the constant and
+     never inlines prompt text, and `tests/test_deep_agent.py` asserts prompt *identity*
+     (`captured["system_prompt"] is GRAPH_AGENT_SYSTEM_PROMPT`), never prompt content, so swapping
+     the text in cannot turn a test red. The shipped text is a deliberate **placeholder** — usable
+     (it encodes the schema-discovery -> `search_entities` -> `get_node_schema` ->
+     `get_node_neighbours` call order the tools are designed around) but not the final prompt
+   - `chat_model.py` - `build_chat_model(model, /, **overrides)`, mapping a configured `Model`
+     (`schemas/model.py`) to a `ChatLiteLLM` (`langchain-litellm`). Mirrors
+     `EmbeddingService.compute_embeddings()`'s `Model` -> litellm kwarg mapping exactly —
+     `f"{provider}/{name}"` as the model string, `connection_string` as `api_base`,
+     `api_key.get_secret_value()` only when `auth_mode` is `api_key` — so chat and embedding calls
+     read the same config the same way. `embedding_dimension` is deliberately **not** forwarded (no
+     chat-completion meaning), and nothing else is set by default, so provider defaults apply unless
+     a caller passes `**overrides` (`temperature`, `max_tokens`, `profile`). The `model` parameter is
+     **positional-only** (`/`) because `model` is also `ChatLiteLLM`'s own field name — without the
+     marker, `build_chat_model(cfg, model=...)` raises `TypeError: got multiple values for argument
+     'model'` instead of overriding the model string. Note the deviation: the convention-consistent
+     home for this is `services/chat_model_service.py` as a `ChatModelService` mirroring
+     `EmbeddingService`, since nothing about it is agent-specific. It lives in `agent/` because it
+     currently has exactly one caller; move it (file move + one import line in `deep_agent.py`) as
+     soon as a non-agent caller appears
+   - `deep_agent.py` - `build_deep_agent(chat_model, *, tools, middleware, system_prompt, name)`,
+     the single place the agent is assembled. See "Deep Agent Assembly Pattern" below
+   - `GRAPH_TOOLS` (in `tools.py`) - the ordered list of the four tools handed to the agent. It lives
+     in `tools.py`, the leaf module that owns the tools, **not** in an `agent/__init__.py`: `agent/`
+     has no `__init__.py` at all on purpose (see the import-cycle note under "Vector Embedding &
+     Search Pattern"), so the aggregate has to sit beside what it aggregates. Import it as
+     `from graphrag_apacheage.agent.tools import GRAPH_TOOLS`
 
 4. **Services** (`src/graphrag_apacheage/services/`)
    - `KnowledgeBaseService`: High-level service for knowledge base operations.
@@ -151,7 +179,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from graphrag_apacheage.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
   - Ordering gotcha: `load_config()` must run before `models/graph_schema_registry.py` or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time; a later reload cannot resize an already-defined column
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
-  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
+  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle. `agent/deep_agent.py` imports `agent/tools.py` and so inherits the `load_config()`-before-import constraint too; sanity-check it with `python -c "from graphrag_apacheage.agent.deep_agent import build_deep_agent"` in a fresh interpreter
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
   - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `f"{model.provider}/{model.name}"`, passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
@@ -187,6 +215,79 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 - `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
 - See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` tests in `tests/test_graph_registry_model.py`
+
+### Deep Agent Assembly Pattern
+- `agent/deep_agent.py`'s `build_deep_agent()` is the **only** place the agent graph is built. It
+  calls `deepagents.create_deep_agent()` with `GRAPH_TOOLS`, `GRAPH_AGENT_SYSTEM_PROMPT`,
+  `context_schema=AgentContext`, and `middleware=[TodoListMiddleware(), *middleware]` — deepagents'
+  default stack (filesystem, subagents, summarization, tool-call patching) plus the opt-in todo
+  list. `TodoListMiddleware` comes from `langchain.agents.middleware`, **not** from deepagents, and
+  is not in deepagents' base stack; it contributes the `write_todos` tool
+- `chat_model` is typed `Model | BaseChatModel`. The `Model` branch is the production path (config
+  file -> `build_chat_model()` -> `ChatLiteLLM`); the `BaseChatModel` branch lets a caller inject a
+  pre-tuned model and lets tests compile the real graph against a `GenericFakeChatModel` with no
+  network and no credentials — that single `isinstance` check is what makes the factory
+  unit-testable. A model is **always required**: `create_deep_agent(model=None)` falls back to
+  `ChatAnthropic` with a deprecation warning, so `build_deep_agent` never forwards `None` and
+  `chat_model` must never be given a default
+- The chat model is a **construction-time** dependency and is deliberately *not* on `AgentContext`.
+  `AgentContext` holds invoke-time, run-scoped data; the chat model is bound into the compiled graph
+  (and into the summarization middleware and the general-purpose subagent) at build time, so a
+  `chat_model` field there would be read by nothing and could not change which model the graph
+  calls. This also keeps `AgentContext.model` unambiguous — it is the *embedding* provider, only. If
+  a per-run model override is ever needed, the idiomatic answer is a `@wrap_model_call` middleware
+  reading `runtime.context`, and *that* commit is the one that should add `AgentContext.chat_model`
+  alongside its consumer
+- Run-scoped data is supplied per invocation, not at build time:
+  ```python
+  agent = build_deep_agent(chat_model_config)  # once, at startup
+  result = await agent.ainvoke(
+      {"messages": [{"role": "user", "content": "who drives for Mercedes?"}]},
+      context=AgentContext(
+          graph_name="demo_graph", attached_kb_ids=["kb-1"],
+          session=session, repository=repository, model=embedding_model,
+      ),
+  )
+  ```
+- **Ordering gotcha (inherited):** `deep_agent.py` imports `agent/tools.py`, which imports both
+  pgvector ORM models, so *importing `agent/deep_agent.py` sizes the embedding columns*.
+  `config.load_config()` must therefore run before `agent/deep_agent.py` (or `agent/tools.py`) is
+  first imported anywhere. The specific trap for the still-empty `api/app.py`: a module-level
+  `from graphrag_apacheage.agent.deep_agent import build_deep_agent` with `load_config()` in a
+  FastAPI `lifespan` handler runs in the **wrong** order — module imports resolve before any startup
+  hook. Load config before the first agent/model import, the way `__init__.py`'s `main()` does
+- `checkpointer` and `store` are deliberately **not** exposed yet (conversation persistence and
+  long-term memory are planned separately), so every `ainvoke` starts from an empty message list.
+  Neither are `subagents`, `skills`, `memory`, `permissions`, `backend`, `interrupt_on`,
+  `response_format`, `state_schema`, `debug`, `cache` — promote each to a keyword-only argument when
+  a caller actually needs it, rather than adding a `**kwargs` passthrough
+- `backend` is left at deepagents' default `StateBackend()` (`deepagents/graph.py:637`), so the
+  agent's `read_file`/`write_file` sandbox lives **inside LangGraph state** — it has no host
+  filesystem access. A consequence worth knowing: `StateBackend` does not implement
+  `SandboxBackendProtocol`, but the `execute` (shell) tool is still advertised to the model and
+  simply returns an error message when called. It costs a tool slot and can waste a turn; pass a
+  sandbox backend if you actually want execution, or `tools=` restriction if you want it gone
+- `subagents` is unset. deepagents still auto-inserts its general-purpose subagent (so the `task`
+  tool exists), which inherits the same `AgentContext` — meaning a subagent and its parent share one
+  `AsyncSession`. `task` is sequential today, so this is latent rather than live, but a future
+  concurrent subagent would need its own session, not a shared one
+- deepagents' harness profiles key off the model's provider/identifier, and nothing matches
+  `ChatLiteLLM` (litellm identifiers look like `openai/gpt-4o`, with a slash, not `openai:gpt-4o`),
+  so no profile applies: no `base_system_prompt`, no `system_prompt_suffix`, no tool description
+  overrides, no excluded tools. `GRAPH_AGENT_SYSTEM_PROMPT` is therefore the whole authored system
+  prompt. Relatedly, `ChatLiteLLM.profile` defaults to `None`, so `create_summarization_middleware`
+  falls back to its conservative fixed token trigger instead of a fraction of the real context
+  window — for a smaller-context model, pass `profile={"max_input_tokens": N}` through
+  `build_chat_model(cfg, profile=...)`, or hand a configured summarization middleware in via
+  `middleware=`
+- deepagents hard-depends on `langchain-anthropic` and `langchain-google-genai` (not optional
+  extras): `graph.py` imports `ChatAnthropic` at module scope and always appends
+  `AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")`. Both are pure-Python and
+  no Anthropic/Google credentials are needed as long as a model is always passed explicitly. The
+  caching middleware no-ops for non-`ChatAnthropic` models, so routing to Anthropic *through
+  litellm* forgoes prompt caching
+- See: `src/graphrag_apacheage/agent/deep_agent.py`, `agent/chat_model.py`, `agent/prompts.py`,
+  `agent/tools.py` (`GRAPH_TOOLS`), and `tests/test_deep_agent.py` / `tests/test_chat_model.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -255,6 +356,8 @@ async with AsyncSession(engine) as session:
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
 - `tests/test_tools.py` - test suite for `agent/tools.py`'s `@tool`-decorated functions
 - `tests/test_serializers.py` - test suite for `agent/serializers.py`'s dict-conversion helpers
+- `tests/test_deep_agent.py` - test suite for `agent/deep_agent.py`'s `build_deep_agent()` factory
+- `tests/test_chat_model.py` - test suite for `agent/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests
@@ -268,6 +371,13 @@ pytest tests/
 - **psycopg[binary]** (>=3.2): Async PostgreSQL/Apache Age connection (`AgeGraphRepository` is fully async via psycopg3's `AsyncConnection`/`AsyncCursor`)
 - **pgvector** (>=0.5.0): `Vector` column type for embedding storage/cosine search
 - **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); called only when a `Model` is passed to `EmbeddingService.compute_embeddings()`
+- **deepagents** (>=0.7.13): Agent harness — `create_deep_agent()` supplies the filesystem,
+  subagent, summarization and tool-call-patching middleware stack that `agent/deep_agent.py`
+  assembles. Hard-depends on **langchain-anthropic** and **langchain-google-genai** (pure-Python; no
+  credentials required when a model is always passed explicitly)
+- **langchain-litellm** (>=0.7.1): `ChatLiteLLM`, the chat-model counterpart to the
+  `litellm.aembedding()` call in `EmbeddingService` — built from a configured `Model` by
+  `agent/chat_model.py`
 - Dev-only: **aiosqlite** for async SQLite tests
 
 ## Important Notes
@@ -289,6 +399,20 @@ pytest tests/
   - `test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
   - `test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property()` - asserts the outgoing `-[r]->` and incoming `<-[r]-` queries are both issued. Uses `_QueuedRowsConnection`, a fake that serves a *different* row batch per `execute` and records every query — `_RowsConnection` replays one fixed row set and so cannot represent a two-query method
   - `test_age_graph_repository_get_node_schema_orders_entries_deterministically()` - unordered fake rows still come back sorted per direction, outgoing before incoming
+  - `test_build_deep_agent_exposes_the_graph_tools()` / `..._adds_the_deepagents_and_todo_tools()` -
+    compile the real graph against a `GenericFakeChatModel` (no network, no credentials) and read
+    tool names off `agent.nodes["tools"].bound.tools_by_name`. Asserted as a **subset** on stable
+    names only (`write_todos`, `task`, `ls`, `read_file`, `write_file`) — deepagents' full built-in
+    tool set can change in a minor release
+  - `test_build_deep_agent_passes_the_tools_prompt_middleware_and_context_schema()` - monkeypatches
+    `deep_agent.create_deep_agent` and asserts the captured kwargs, pinning the wiring contract
+    without coupling to deepagents' internal graph assembly
+  - `test_build_chat_model_*()` - assert the `Model` -> `ChatLiteLLM` field mapping
+    (`model`/`api_base`/`api_key`) and that `embedding_dimension` is *not* forwarded. Constructing a
+    `ChatLiteLLM` performs no I/O, so these need no mocking at all
+  - Not unit-testable here, by design: real provider calls, prompt quality / actual tool-call
+    ordering (needs evals, not asserts), async streaming through `ChatLiteLLM`, and the four tools
+    against live PostgreSQL+pgvector / Apache Age
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base, with a stable top-level `id` so re-ingesting the file is idempotent)
 
 ### Type System

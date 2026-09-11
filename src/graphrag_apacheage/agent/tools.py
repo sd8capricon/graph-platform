@@ -98,3 +98,26 @@ async def get_node_neighbours(
     return AgentSerializer.node_neighbours_to_dict(
         node.id, node.label, node.properties, triplets
     )
+
+
+GRAPH_TOOLS = [
+    search_schema_registry,
+    search_entities,
+    get_node_schema,
+    get_node_neighbours,
+]
+"""The knowledge-graph tools handed to the agent, ordered as the system prompt
+teaches them (schema discovery -> entity lookup -> neighborhood overview ->
+neighbours). Defined here, in the leaf module that owns the tools, rather than in
+an `agent/__init__.py`: `agent/` has no `__init__.py` at all, on purpose (see the
+import-cycle note in CLAUDE.md), so the aggregate has to live beside the tools it
+aggregates.
+"""
+
+__all__ = [
+    "search_schema_registry",
+    "search_entities",
+    "get_node_schema",
+    "get_node_neighbours",
+    "GRAPH_TOOLS",
+]
