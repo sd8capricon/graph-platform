@@ -162,7 +162,7 @@ class GraphSchemaRegistry(Base):
         model: Model,
         type: SchemaType | None = None,
         knowledge_base_ids: list[str] | None = None,
-        limit: int = 5,
+        top_k: int = 5,
     ) -> list[GraphSchemaRegistry]:
         """Find the schema registry records whose embedding is closest to a text query.
 
@@ -181,7 +181,7 @@ class GraphSchemaRegistry(Base):
                 A record matches if its `knowledge_base_ids` overlaps with any of these
                 (via PostgreSQL's jsonb `?|` operator), since a schema row may be shared
                 by several contributing knowledge bases.
-            limit: Maximum number of records to return, ordered by similarity.
+            top_k: Maximum number of records to return, ordered by similarity.
 
         Returns:
             A list of GraphSchemaRegistry records ordered from most to least similar.
@@ -199,10 +199,12 @@ class GraphSchemaRegistry(Base):
             select(cls)
             .where(cls.graph_name == graph_name, cls.embedding.is_not(None))
             .order_by(cls.embedding.cosine_distance(embedding))
-            .limit(limit)
+            .limit(top_k)
         )
         if type is not None:
-            stmt = stmt.where(cls.type == (type.value if isinstance(type, SchemaType) else type))
+            stmt = stmt.where(
+                cls.type == (type.value if isinstance(type, SchemaType) else type)
+            )
         if knowledge_base_ids:
             stmt = stmt.where(
                 cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))
