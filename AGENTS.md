@@ -122,8 +122,10 @@
      `from graphrag_apacheage.agent.tools import GRAPH_TOOLS`
 
 4. **Services** (`src/graphrag_apacheage/services/`)
-   - `KnowledgeBaseService`: High-level service for knowledge base operations.
-     `upsert_knowledge_base()` is `async def` (awaits the now-fully-async `AgeGraphRepository`)
+   - `KnowledgeBaseService`: High-level service for knowledge base operations. Every method is
+     `async def` (awaits the fully-async `AgeGraphRepository` and/or the awaited litellm embedding
+     calls). `upsert_knowledge_base()` / `delete_knowledge_base()` are the orchestrating pair that
+     keep the graph and both side-tables in sync — see "Knowledge Base Lifecycle Pattern" below
    - `EmbeddingService` (`services/embedding_service.py`): Computes text embeddings via litellm,
      shared by any ORM model with a vector embedding column
 
@@ -140,12 +142,18 @@
 ### Data Flow
 
 ```
-JSON File → KnowledgeBase.from_json_file() → get_graph_schema_registry_records(graph_name) → 
-  → GraphSchemaRegistry list → GraphSchemaRegistry.upsert_records() → Database
+JSON File → KnowledgeBase.from_json_file() → KnowledgeBaseService.upsert_knowledge_base(
+    session, kb, graph_name, model) → 3 writes in one call:
+  1. nodes/relationships → AgeGraphRepository.create_node()/create_relationship() → Apache Age graph
+  2. get_graph_schema_registry_records(graph_name) → GraphSchemaRegistry.upsert_records()
+  3. get_node_embedding_records(graph_name) → NodeEmbedding.upsert_records() (embeds via litellm)
 
-JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(graph_name) →
-  → NodeEmbedding list → NodeEmbedding.upsert_records() (embeds via litellm) → Database
-  → NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
+KnowledgeBaseService.delete_knowledge_base(session, kb_id, graph_name) → the inverse:
+  1. NodeEmbedding rows (kb_id, graph_name) → node ids → repository.delete_node() (DETACH DELETE)
+  2. DELETE those NodeEmbedding rows
+  3. GraphSchemaRegistry: drop kb_id from knowledge_base_ids; delete rows left with none
+
+NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
 ```
 
 ## Key Patterns & Conventions
@@ -172,6 +180,41 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - Requires `self.id` to be set (raises `ValueError` otherwise); sets `knowledge_base_ids=[self.id]` on each constructed record
   - Returns list of `GraphSchemaRegistry` records for nodes and relationships
 - See: `src/graphrag_apacheage/models/graph_schema_registry.py` and `src/graphrag_apacheage/schemas/knowledge_base.py`
+
+### Knowledge Base Lifecycle Pattern
+- `KnowledgeBaseService` owns the whole lifecycle of one knowledge base in one graph. There are two
+  orchestrating methods; the four single-concern methods they call
+  (`upsert_graph_schema_registry()`, `delete_graph_schema_registry()`, `upsert_node_embeddings()`,
+  `search_nodes()`) stay public so a caller can drive one side-table alone
+- `upsert_knowledge_base(session, knowledge_base, graph_name, model=None)` does three writes:
+  the graph (`create_node`/`create_relationship` + `repository.commit()`), then
+  `GraphSchemaRegistry.upsert_records()`, then `NodeEmbedding.upsert_records()`. It returns only the
+  list of executed Cypher queries (the graph audit trail) — call the single-concern methods directly
+  if you need the persisted side-table records back
+- `delete_knowledge_base(session, knowledge_base_id, graph_name)` is the inverse and takes an **id**,
+  not a `KnowledgeBase`: at delete time the source JSON is usually long gone. It gets the node ids
+  to delete from the knowledge base's own `NodeEmbedding` rows, which are the service's record of
+  what it wrote to the graph — so a knowledge base written by something *other* than
+  `upsert_knowledge_base()` (no `NodeEmbedding` rows) will not have its graph nodes removed
+  - Nodes are removed with `repository.delete_node()`, i.e. `DETACH DELETE`, so relationships go
+    with their nodes and no separate relationship pass is needed
+  - Schema registry adjustment removes `knowledge_base_id` from each row's `knowledge_base_ids` and
+    deletes only the rows left with no contributing knowledge base, since a label may be defined by
+    several knowledge bases feeding one graph (see "Schema Registry Pattern")
+  - **Known limitation:** a surviving shared row keeps the aliases and properties the deleted
+    knowledge base contributed — the merge in `upsert_records()` is lossy and cannot be attributed
+    back per knowledge base. Re-upsert the remaining knowledge bases if an exact schema is required
+  - `delete_graph_schema_registry()` filters rows in **Python**, not SQL: `knowledge_base_ids` is a
+    plain JSON column and a graph holds one registry row per label, so the scan is cheap and works
+    on SQLite. Do *not* reach for the jsonb `?|` operator `GraphSchemaRegistry.vector_search()` uses
+    — that's PostgreSQL-only and would make these paths untestable on SQLite
+- Transaction split (both methods): the **graph** connection is committed inside the method
+  (`repository.commit()`), the SQLAlchemy `session` is only flushed — committing it is the caller's
+  job, so a caller can batch several knowledge bases into one side-table transaction. The two stores
+  are not in a shared transaction, so a failure between them can leave the graph ahead of the
+  side-tables; re-running the upsert is idempotent and recovers
+- See: `src/graphrag_apacheage/services/knowledge_base_service.py` and the
+  `test_delete_knowledge_base_*` tests in `tests/test_graph_registry_model.py`
 
 ### Vector Embedding & Search Pattern
 - Both `GraphSchemaRegistry` and `NodeEmbedding` (`models/node_embedding.py`) store a pgvector `embedding` column (`Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`), sized from the `settings` singleton (`config.py`, `AppSettings.embedding_dimension`, default `1536`) — both ORM models import `settings` directly from `config.py` (not from `embedding_service.py`, and not from an env var) so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
@@ -307,10 +350,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession
 
-kb = KnowledgeBase.from_json_file("path/to/kb.json")
-# kb.id must be set — both getters raise ValueError otherwise
-schema_records = kb.get_graph_schema_registry_records("my_age_graph")  # graph_name required
-node_records = kb.get_node_embedding_records("my_age_graph")
+kb = KnowledgeBase.from_json_file("path/to/kb.json")  # kb.id must be set
 
 embedding_model = Model(
     name="text-embedding-3-small",
@@ -322,10 +362,15 @@ embedding_model = Model(
     embedding_dimension=1536,
 )
 
-# upsert_records() is async (litellm embedding calls are awaited internally)
+service = KnowledgeBaseService(repository)
 async with AsyncSession(engine) as session:
-    await GraphSchemaRegistry.upsert_records(session, schema_records, model=embedding_model)
-    await NodeEmbedding.upsert_records(session, node_records, model=embedding_model)
+    # Writes the graph, the schema registry and the node embeddings; commits the
+    # graph connection itself, leaves the session commit to us.
+    await service.upsert_knowledge_base(session, kb, "my_age_graph", model=embedding_model)
+    await session.commit()
+
+    # ...and the inverse, by knowledge base id:
+    await service.delete_knowledge_base(session, kb.id, "my_age_graph")
     await session.commit()
 ```
 
@@ -396,6 +441,17 @@ pytest tests/
   - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
+  - `test_knowledge_base_can_write_nodes_and_relationships_to_age_graph()` - one
+    `upsert_knowledge_base()` call writes the graph (recording fake repository) *and* both
+    side-tables (real async SQLite session)
+  - `test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows()` - round-trips
+    upsert-then-delete: both nodes `DETACH DELETE`d, no `NodeEmbedding` rows, no registry rows left
+  - `test_delete_knowledge_base_keeps_registry_rows_shared_with_another_base()` - deleting one of
+    two knowledge bases sharing a label leaves the row with only the other's id, and leaves the
+    other's node embeddings alone
+  - `_RecordingAgeRepository` (in `tests/test_graph_registry_model.py`) - the shared fake for
+    service-level tests: records the Cypher it's asked to run and its commit count, with a
+    `graph_exists=False` switch for the does-not-exist paths
   - `test_age_graph_repository_get_node_neighbours_orients_source_target_via_edge_start_end_ids()` - regression test that source/target come from the edge's own `start_id`/`end_id`, not from assuming the queried node is always bound to the pattern's first variable
   - `test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
   - `test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property()` - asserts the outgoing `-[r]->` and incoming `<-[r]-` queries are both issued. Uses `_QueuedRowsConnection`, a fake that serves a *different* row batch per `execute` and records every query — `_RowsConnection` replays one fixed row set and so cannot represent a two-query method

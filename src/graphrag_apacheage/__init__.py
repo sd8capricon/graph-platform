@@ -43,7 +43,6 @@ async def create_connection() -> AsyncConnection:
 async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSession):
     # Deferred for the same reason as the imports in run(): must not run
     # before `main()` has called `load_config()`.
-    from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
     from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
@@ -51,10 +50,9 @@ async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSe
         await repository.create_graph("kb_graph")
     knowledge_base = KnowledgeBase.from_json_file("dummy_data/f1_kb.json")
     knowledge_base_service = KnowledgeBaseService(repository)
-    await knowledge_base_service.upsert_knowledge_base(knowledge_base, "kb_graph")
-    schema = knowledge_base.get_graph_schema_registry_records("kb_graph")
-    await GraphSchemaRegistry.upsert_records(session, schema, _embedding_model())
-    await knowledge_base_service.upsert_node_embeddings(
+    # Writes the graph, the schema registry and the node embeddings in one call;
+    # committing the SQLAlchemy session is left to us.
+    await knowledge_base_service.upsert_knowledge_base(
         session, knowledge_base, "kb_graph", model=_embedding_model()
     )
     await session.commit()

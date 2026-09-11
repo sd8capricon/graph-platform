@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
 from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
@@ -376,7 +377,7 @@ async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
 
     with pytest.raises(ValueError, match="graph_name is required"):
         # graph_name is a mandatory parameter; an empty value should still raise ValueError
-        await service.upsert_knowledge_base(knowledge_base, "")
+        await service.upsert_knowledge_base(None, knowledge_base, "")
 
 
 async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
@@ -402,7 +403,9 @@ async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
     service = KnowledgeBaseService(MockRepository())
 
     with pytest.raises(ValueError, match="does not exist in the database"):
-        await service.upsert_knowledge_base(knowledge_base, graph_name="nonexistent_graph")
+        await service.upsert_knowledge_base(
+            None, knowledge_base, graph_name="nonexistent_graph"
+        )
 
 
 async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
@@ -490,7 +493,43 @@ async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
             return None
 
     service = KnowledgeBaseService(RecordingRepository(connection))
-    await service.upsert_knowledge_base(knowledge_base, graph_name="demo_graph")
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        await service.upsert_knowledge_base(
+            session, knowledge_base, graph_name="demo_graph"
+        )
+        await session.commit()
+
+        # The one call writes the graph and both side-tables.
+        schema_names = set(
+            (
+                await session.execute(
+                    select(GraphSchemaRegistry.name).where(
+                        GraphSchemaRegistry.graph_name == "demo_graph"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert schema_names == {"Driver", "Team", "DRIVES_FOR"}
+
+        embedded_node_ids = set(
+            (
+                await session.execute(
+                    select(NodeEmbedding.node_id).where(
+                        NodeEmbedding.graph_name == "demo_graph"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert embedded_node_ids == {"node-1", "node-2"}
 
     executed_queries = connection.cursor_obj.calls
     # Graph already exists, so no create_graph call should be made
@@ -856,3 +895,162 @@ async def test_age_graph_repository_get_node_schema_returns_empty_list_when_no_r
     repository = AgeGraphRepository(connection)
 
     assert await repository.get_node_schema("demo_graph", "driver-1") == []
+
+
+class _RecordingAgeRepository:
+    """Stands in for AgeGraphRepository, recording the Cypher it is asked to run."""
+
+    def __init__(self, graph_exists: bool = True):
+        self._graph_exists = graph_exists
+        self.queries: list[str] = []
+        self.commits = 0
+
+    async def graph_exists(self, graph_name):
+        return self._graph_exists
+
+    async def create_node(self, graph_name, label, properties):
+        query = f"CREATE (n:{label} {properties})"
+        self.queries.append(query)
+        return query
+
+    async def create_relationship(
+        self, graph_name, source_node_id, target_node_id, label, properties
+    ):
+        query = f"CREATE ({source_node_id})-[:{label}]->({target_node_id})"
+        self.queries.append(query)
+        return query
+
+    async def delete_node(self, graph_name, node_id):
+        query = f'MATCH (n {{id:"{node_id}"}}) DETACH DELETE n'
+        self.queries.append(query)
+        return query
+
+    async def commit(self):
+        self.commits += 1
+
+
+async def _sqlite_session():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return AsyncSession(engine)
+
+
+def _demo_knowledge_base(knowledge_base_id: str) -> KnowledgeBase:
+    return KnowledgeBase.model_validate(
+        {
+            "id": knowledge_base_id,
+            "name": f"kb_{knowledge_base_id}",
+            "nodes": [
+                {
+                    "id": f"{knowledge_base_id}-node-1",
+                    "label": "Driver",
+                    "properties": {"name": "Max Verstappen"},
+                },
+                {
+                    "id": f"{knowledge_base_id}-node-2",
+                    "label": "Team",
+                    "properties": {"name": "Red Bull"},
+                },
+            ],
+            "relationships": [
+                {
+                    "source_id": f"{knowledge_base_id}-node-1",
+                    "target_id": f"{knowledge_base_id}-node-2",
+                    "label": "DRIVES_FOR",
+                    "properties": {},
+                }
+            ],
+        }
+    )
+
+
+async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
+    knowledge_base = _demo_knowledge_base("kb-1")
+
+    async with await _sqlite_session() as session:
+        await service.upsert_knowledge_base(session, knowledge_base, "demo_graph")
+        await session.commit()
+
+        repository.queries.clear()
+        queries = await service.delete_knowledge_base(session, "kb-1", "demo_graph")
+        await session.commit()
+
+        # Every node this knowledge base wrote is detach-deleted from the graph;
+        # its relationships go with the nodes.
+        assert len(queries) == 2
+        assert all("DETACH DELETE" in query for query in queries)
+        assert {"kb-1-node-1", "kb-1-node-2"} == {
+            query.split('"')[1] for query in queries
+        }
+
+        remaining_embeddings = (
+            (await session.execute(select(NodeEmbedding))).scalars().all()
+        )
+        assert remaining_embeddings == []
+
+        remaining_schema = (
+            (await session.execute(select(GraphSchemaRegistry))).scalars().all()
+        )
+        assert remaining_schema == []
+
+
+async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_base():
+    # The same label may be defined by several knowledge bases feeding one graph;
+    # deleting one must only drop its id, not the shared row.
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
+
+    async with await _sqlite_session() as session:
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-1"), "demo_graph"
+        )
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-2"), "demo_graph"
+        )
+        await session.commit()
+
+        rows = (await session.execute(select(GraphSchemaRegistry))).scalars().all()
+        assert all(
+            sorted(row.knowledge_base_ids) == ["kb-1", "kb-2"] for row in rows
+        )
+
+        await service.delete_knowledge_base(session, "kb-1", "demo_graph")
+        await session.commit()
+
+        rows = (await session.execute(select(GraphSchemaRegistry))).scalars().all()
+        assert {row.name for row in rows} == {"Driver", "Team", "DRIVES_FOR"}
+        assert all(row.knowledge_base_ids == ["kb-2"] for row in rows)
+
+        # Only the deleted knowledge base's node embeddings are removed.
+        remaining = (await session.execute(select(NodeEmbedding))).scalars().all()
+        assert {record.knowledge_base_id for record in remaining} == {"kb-2"}
+
+
+async def test_delete_knowledge_base_validates_graph_name_and_knowledge_base_id():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    service = KnowledgeBaseService(_RecordingAgeRepository())
+
+    with pytest.raises(ValueError, match="graph_name is required"):
+        await service.delete_knowledge_base(None, "kb-1", "")
+
+    with pytest.raises(ValueError, match="knowledge_base_id is required"):
+        await service.delete_knowledge_base(None, "", "demo_graph")
+
+
+async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    service = KnowledgeBaseService(_RecordingAgeRepository(graph_exists=False))
+
+    with pytest.raises(ValueError, match="does not exist in the database"):
+        await service.delete_knowledge_base(None, "kb-1", "demo_graph")
