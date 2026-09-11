@@ -29,14 +29,19 @@ def _runtime(context: AgentContext) -> ToolRuntime:
     )
 
 
-async def test_get_node_relationships_returns_triplet_dicts_from_repository():
+async def test_get_node_relationships_groups_relationships_under_the_node_once():
     repository = MagicMock(spec=AgeGraphRepository)
     repository.get_node_relationships.return_value = [
         (
             {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
             {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {}},
             {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}},
-        )
+        ),
+        (
+            {"id": 3, "label": "Team", "properties": {"id": "team-2", "name": "Ferrari"}},
+            {"id": 11, "start_id": 3, "end_id": 1, "label": "SPONSORS", "properties": {}},
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+        ),
     ]
     node = KnowledgeNode(id="driver-1", label="Driver", properties={"name": "Lewis"})
 
@@ -45,18 +50,23 @@ async def test_get_node_relationships_returns_triplet_dicts_from_repository():
     )
 
     repository.get_node_relationships.assert_called_once_with("demo_graph", "driver-1", None)
-    assert result == [
-        {
-            "source": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
-            "relationship": {
-                "source_id": "driver-1",
-                "target_id": "team-1",
+    assert result == {
+        "node": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
+        "relationships": [
+            {
                 "label": "DRIVES_FOR",
                 "properties": {},
+                "direction": "outgoing",
+                "neighbor": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
             },
-            "target": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
-        }
-    ]
+            {
+                "label": "SPONSORS",
+                "properties": {},
+                "direction": "incoming",
+                "neighbor": {"node_id": "team-2", "label": "Team", "properties": {"name": "Ferrari"}},
+            },
+        ],
+    }
 
 
 async def test_get_node_relationships_passes_relationship_label_filter_through():

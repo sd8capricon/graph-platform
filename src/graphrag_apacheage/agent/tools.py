@@ -3,7 +3,7 @@ from langchain.tools import ToolRuntime, tool
 from graphrag_apacheage.agent.context import AgentContext
 from graphrag_apacheage.agent.serializers import (
     node_embedding_record_to_dict,
-    relationship_triplet_to_dict,
+    node_relationships_to_dict,
     schema_registry_record_to_dict,
 )
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
@@ -58,9 +58,9 @@ async def get_node_relationships(
 ):
     """Get a knowledge graph node's relationships.
 
-    Returns every relationship incident to `node`, as (source, relationship,
-    target) triplets, regardless of direction and with no relationship
-    repeated. Optionally restrict results to one or more relationship labels
+    Returns every relationship incident to `node`, grouped under the node
+    itself, regardless of direction and with no relationship repeated.
+    Optionally restrict results to one or more relationship labels
     (e.g. 'DRIVES_FOR').
     """
     if node.id is None:
@@ -70,4 +70,4 @@ async def get_node_relationships(
     triplets = await context.repository.get_node_relationships(
         context.graph_name, node.id, relationships
     )
-    return [relationship_triplet_to_dict(*triplet) for triplet in triplets]
+    return node_relationships_to_dict(node.id, node.label, node.properties, triplets)

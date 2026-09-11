@@ -1,30 +1,59 @@
-from graphrag_apacheage.agent.serializers import relationship_triplet_to_dict
+from graphrag_apacheage.agent.serializers import node_relationships_to_dict
 
 
-def test_relationship_triplet_to_dict_extracts_node_id_from_properties():
-    source = {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}}
-    relationship = {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {"season": 2025}}
-    target = {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}}
+def test_node_relationships_to_dict_groups_node_once_with_direction_per_relationship():
+    triplets = [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+            {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {"season": 2025}},
+            {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}},
+        ),
+        (
+            {"id": 3, "label": "Team", "properties": {"id": "team-2", "name": "Ferrari"}},
+            {"id": 11, "start_id": 3, "end_id": 1, "label": "SPONSORS", "properties": {}},
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+        ),
+    ]
 
-    result = relationship_triplet_to_dict(source, relationship, target)
+    result = node_relationships_to_dict("driver-1", "Driver", {"name": "Lewis"}, triplets)
 
     assert result == {
-        "source": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
-        "relationship": {
-            "source_id": "driver-1",
-            "target_id": "team-1",
-            "label": "DRIVES_FOR",
-            "properties": {"season": 2025},
-        },
-        "target": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
+        "node": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
+        "relationships": [
+            {
+                "label": "DRIVES_FOR",
+                "properties": {"season": 2025},
+                "direction": "outgoing",
+                "neighbor": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
+            },
+            {
+                "label": "SPONSORS",
+                "properties": {},
+                "direction": "incoming",
+                "neighbor": {"node_id": "team-2", "label": "Team", "properties": {"name": "Ferrari"}},
+            },
+        ],
     }
 
 
-def test_relationship_triplet_to_dict_handles_missing_properties():
-    source = {"id": 1, "label": "Driver", "properties": {"id": "driver-1"}}
-    relationship = {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR"}
-    target = {"id": 2, "label": "Team", "properties": {"id": "team-1"}}
+def test_node_relationships_to_dict_handles_missing_properties():
+    triplets = [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1"}},
+            {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR"},
+            {"id": 2, "label": "Team", "properties": {"id": "team-1"}},
+        )
+    ]
 
-    result = relationship_triplet_to_dict(source, relationship, target)
+    result = node_relationships_to_dict("driver-1", "Driver", {}, triplets)
 
-    assert result["relationship"]["properties"] == {}
+    assert result["relationships"][0]["properties"] == {}
+
+
+def test_node_relationships_to_dict_returns_empty_relationships_list_when_no_triplets():
+    result = node_relationships_to_dict("driver-1", "Driver", {}, [])
+
+    assert result == {
+        "node": {"node_id": "driver-1", "label": "Driver", "properties": {}},
+        "relationships": [],
+    }

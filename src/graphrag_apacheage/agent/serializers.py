@@ -34,25 +34,43 @@ def _age_vertex_to_dict(vertex: dict[str, Any]) -> dict[str, Any]:
     return {"node_id": node_id, "label": vertex["label"], "properties": properties}
 
 
-def relationship_triplet_to_dict(
-    source: dict[str, Any], relationship: dict[str, Any], target: dict[str, Any]
+def node_relationships_to_dict(
+    node_id: str,
+    label: str,
+    properties: dict[str, Any],
+    triplets: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
 ) -> dict:
-    source_dict = _age_vertex_to_dict(source)
-    target_dict = _age_vertex_to_dict(target)
+    """Group (source, relationship, target) triplets under the queried node.
+
+    Avoids repeating the queried node's dict once per relationship (as a flat
+    triplet list would) — it appears once, with each relationship reduced to
+    its label/properties, a direction ("outgoing" if the queried node is the
+    relationship's source, "incoming" otherwise), and the other endpoint.
+    """
+    relationships = []
+    for source, relationship, target in triplets:
+        source_dict = _age_vertex_to_dict(source)
+        target_dict = _age_vertex_to_dict(target)
+        if source_dict["node_id"] == node_id:
+            neighbor, direction = target_dict, "outgoing"
+        else:
+            neighbor, direction = source_dict, "incoming"
+        relationships.append(
+            {
+                "label": relationship["label"],
+                "properties": relationship.get("properties", {}),
+                "direction": direction,
+                "neighbor": neighbor,
+            }
+        )
     return {
-        "source": source_dict,
-        "relationship": {
-            "source_id": source_dict["node_id"],
-            "target_id": target_dict["node_id"],
-            "label": relationship["label"],
-            "properties": relationship.get("properties", {}),
-        },
-        "target": target_dict,
+        "node": {"node_id": node_id, "label": label, "properties": properties},
+        "relationships": relationships,
     }
 
 
 __all__ = [
     "schema_registry_record_to_dict",
     "node_embedding_record_to_dict",
-    "relationship_triplet_to_dict",
+    "node_relationships_to_dict",
 ]

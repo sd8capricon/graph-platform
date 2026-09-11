@@ -73,10 +73,13 @@
      `attached_kb_ids` list. `get_node_relationships(node, runtime, relationships=None)` calls
      `await context.repository.get_node_relationships(context.graph_name, node.id,
      relationship_labels=relationships)` (the repository is fully async — see "Direct Graph Query
-     & Async Repository Pattern" below) and reshapes each returned `(source, relationship, target)`
-     triplet into a plain dict via `relationship_triplet_to_dict()`
+     & Async Repository Pattern" below) and reshapes the returned `(source, relationship, target)`
+     triplets into a single dict via `node_relationships_to_dict()`, grouped under the queried node
+     rather than repeating it once per relationship (a flat triplet list would echo the same
+     node dict — often the largest, since it's the caller's own input — once per relationship,
+     wasting tokens in an LLM tool result)
    - `serializers.py` - `schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
-     `relationship_triplet_to_dict()`, the ORM-record/agtype-to-plain-dict conversions shared by
+     `node_relationships_to_dict()`, the ORM-record/agtype-to-plain-dict conversions shared by
      `tools.py`'s tool implementations (kept in their own module, not prefixed with `_`, so they're
      importable/testable independent of any `@tool`-decorated function)
    - Intended for: LLM-based agent tools that interact with the knowledge graph
@@ -156,7 +159,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
   - De-duplicates on the edge's own internal `id` (not on a `(source, label, target)` tuple), since Apache Age can return the same physical edge twice for an undirected `()-[r]-()` pattern; a source/label/target-based key would incorrectly collapse legitimate parallel edges, since Apache Age is a multigraph
   - Source/target are oriented by comparing each vertex's internal `id` to the edge's `start_id`/`end_id`, since the queried node isn't always bound to the pattern's first variable (`a`)
-- `agent/tools.py`'s `get_node_relationships` tool wraps this repository method and reshapes each triplet into a plain dict via `agent/serializers.py`'s `relationship_triplet_to_dict()`, which drops Apache Age's internal integer ids from the output, keeping only the app-level UUID `id` pulled out of each vertex's `properties`
+- `agent/tools.py`'s `get_node_relationships` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `node_relationships_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
 - See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_relationships_*` tests in `tests/test_graph_registry_model.py`
 
