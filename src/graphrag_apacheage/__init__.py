@@ -39,8 +39,6 @@ async def create_knowledge_base(repository: AgeGraphRepository):
 async def run():
     pg_connection = await create_connection()
     age_repository = AgeGraphRepository(pg_connection)
-    await age_repository.delete_graph("kb_graph")
-    await create_knowledge_base(age_repository)
 
 
 def main() -> None:
