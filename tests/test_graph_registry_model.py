@@ -179,7 +179,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
         graph_name="demo",
         model=_embedding_model(),
         type=SchemaType.NODE,
-        limit=3,
+        top_k=3,
     )
 
     assert results == []
@@ -222,7 +222,7 @@ async def test_vector_search_filters_by_knowledge_base_ids(monkeypatch):
         graph_name="demo",
         model=_embedding_model(),
         knowledge_base_ids=["kb-1", "kb-2"],
-        limit=3,
+        top_k=3,
     )
 
     assert results == []
