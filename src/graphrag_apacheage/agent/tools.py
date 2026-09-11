@@ -52,7 +52,7 @@ async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext
     Returns the distinct relationship types on `node`, each with its direction,
     the label of the node on the other end, and how many relationships match.
     Use this to understand a node's neighborhood before fetching the actual
-    relationships with `get_node_relationships`.
+    relationships with `get_node_neighbours`.
     """
     if node.id is None:
         raise ValueError("node.id is required to look up its schema")
@@ -63,12 +63,12 @@ async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext
 
 
 @tool
-async def get_node_relationships(
+async def get_node_neighbours(
     node: KnowledgeNode,
     runtime: ToolRuntime[AgentContext],
     relationships: list[str] | None = None,
 ):
-    """Get a knowledge graph node's relationships.
+    """Get a knowledge graph node's neighbours.
 
     Returns every relationship incident to `node`, grouped under the node
     itself, regardless of direction and with no relationship repeated.
@@ -79,7 +79,7 @@ async def get_node_relationships(
         raise ValueError("node.id is required to look up its relationships")
 
     context = runtime.context
-    triplets = await context.repository.get_node_relationships(
+    triplets = await context.repository.get_node_neighbours(
         context.graph_name, node.id, relationships
     )
     return node_relationships_to_dict(node.id, node.label, node.properties, triplets)

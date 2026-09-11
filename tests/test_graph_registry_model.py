@@ -628,13 +628,13 @@ class _QueuedRowsConnection:
         return self.cursor_obj
 
 
-async def test_age_graph_repository_get_node_relationships_matches_node_by_id_property():
+async def test_age_graph_repository_get_node_neighbours_matches_node_by_id_property():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
 
-    await repository.get_node_relationships("demo_graph", "driver-1")
+    await repository.get_node_neighbours("demo_graph", "driver-1")
 
     query = connection.cursor_obj.last_query
     assert "demo_graph" in query
@@ -642,32 +642,32 @@ async def test_age_graph_repository_get_node_relationships_matches_node_by_id_pr
     assert "RETURN a, r, b" in query
 
 
-async def test_age_graph_repository_get_node_relationships_filters_by_labels_when_provided():
+async def test_age_graph_repository_get_node_neighbours_filters_by_labels_when_provided():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
 
-    await repository.get_node_relationships(
+    await repository.get_node_neighbours(
         "demo_graph", "driver-1", relationship_labels=["DRIVES_FOR", "MEMBER_OF"]
     )
 
     assert "WHERE type(r) IN ['DRIVES_FOR', 'MEMBER_OF']" in connection.cursor_obj.last_query
 
 
-async def test_age_graph_repository_get_node_relationships_omits_label_filter_when_not_provided():
+async def test_age_graph_repository_get_node_neighbours_omits_label_filter_when_not_provided():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     for relationship_labels in (None, []):
         connection = _RowsConnection()
         repository = AgeGraphRepository(connection)
-        await repository.get_node_relationships(
+        await repository.get_node_neighbours(
             "demo_graph", "driver-1", relationship_labels=relationship_labels
         )
         assert "type(r)" not in connection.cursor_obj.last_query
 
 
-async def test_age_graph_repository_get_node_relationships_parses_agtype_rows():
+async def test_age_graph_repository_get_node_neighbours_parses_agtype_rows():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     rows = [
@@ -680,7 +680,7 @@ async def test_age_graph_repository_get_node_relationships_parses_agtype_rows():
     connection = _RowsConnection(rows)
     repository = AgeGraphRepository(connection)
 
-    triplets = await repository.get_node_relationships("demo_graph", "driver-1")
+    triplets = await repository.get_node_neighbours("demo_graph", "driver-1")
 
     assert len(triplets) == 1
     source, relationship, target = triplets[0]
@@ -695,7 +695,7 @@ async def test_age_graph_repository_get_node_relationships_parses_agtype_rows():
     assert target == {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}}
 
 
-async def test_age_graph_repository_get_node_relationships_orients_source_target_via_edge_start_end_ids():
+async def test_age_graph_repository_get_node_neighbours_orients_source_target_via_edge_start_end_ids():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     # The queried node ("driver-1", vertex id 1) lands in the *second* returned
@@ -711,13 +711,13 @@ async def test_age_graph_repository_get_node_relationships_orients_source_target
     connection = _RowsConnection(rows)
     repository = AgeGraphRepository(connection)
 
-    [(source, _, target)] = await repository.get_node_relationships("demo_graph", "driver-1")
+    [(source, _, target)] = await repository.get_node_neighbours("demo_graph", "driver-1")
 
     assert source["properties"]["id"] == "team-1"
     assert target["properties"]["id"] == "driver-1"
 
 
-async def test_age_graph_repository_get_node_relationships_deduplicates_repeated_edge_rows():
+async def test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     row = (
@@ -728,18 +728,18 @@ async def test_age_graph_repository_get_node_relationships_deduplicates_repeated
     connection = _RowsConnection([row, row])
     repository = AgeGraphRepository(connection)
 
-    triplets = await repository.get_node_relationships("demo_graph", "driver-1")
+    triplets = await repository.get_node_neighbours("demo_graph", "driver-1")
 
     assert len(triplets) == 1
 
 
-async def test_age_graph_repository_get_node_relationships_returns_empty_list_when_no_relationships():
+async def test_age_graph_repository_get_node_neighbours_returns_empty_list_when_no_relationships():
     from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection([])
     repository = AgeGraphRepository(connection)
 
-    assert await repository.get_node_relationships("demo_graph", "driver-1") == []
+    assert await repository.get_node_neighbours("demo_graph", "driver-1") == []
 
 
 async def test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases():

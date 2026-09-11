@@ -5,7 +5,7 @@ from langchain.tools import ToolRuntime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.tools import get_node_relationships, get_node_schema
+from graphrag_apacheage.agent.tools import get_node_neighbours, get_node_schema
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
@@ -29,9 +29,9 @@ def _runtime(context: AgentContext) -> ToolRuntime:
     )
 
 
-async def test_get_node_relationships_groups_relationships_under_the_node_once():
+async def test_get_node_neighbours_groups_relationships_under_the_node_once():
     repository = MagicMock(spec=AgeGraphRepository)
-    repository.get_node_relationships.return_value = [
+    repository.get_node_neighbours.return_value = [
         (
             {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
             {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {}},
@@ -45,11 +45,11 @@ async def test_get_node_relationships_groups_relationships_under_the_node_once()
     ]
     node = KnowledgeNode(id="driver-1", label="Driver", properties={"name": "Lewis"})
 
-    result = await get_node_relationships.coroutine(
+    result = await get_node_neighbours.coroutine(
         node=node, runtime=_runtime(_context(repository)), relationships=None
     )
 
-    repository.get_node_relationships.assert_called_once_with("demo_graph", "driver-1", None)
+    repository.get_node_neighbours.assert_called_once_with("demo_graph", "driver-1", None)
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
         "relationships": [
@@ -69,25 +69,25 @@ async def test_get_node_relationships_groups_relationships_under_the_node_once()
     }
 
 
-async def test_get_node_relationships_passes_relationship_label_filter_through():
+async def test_get_node_neighbours_passes_relationship_label_filter_through():
     repository = MagicMock(spec=AgeGraphRepository)
-    repository.get_node_relationships.return_value = []
+    repository.get_node_neighbours.return_value = []
     node = KnowledgeNode(id="driver-1", label="Driver")
 
-    await get_node_relationships.coroutine(
+    await get_node_neighbours.coroutine(
         node=node, runtime=_runtime(_context(repository)), relationships=["DRIVES_FOR"]
     )
 
-    repository.get_node_relationships.assert_called_once_with(
+    repository.get_node_neighbours.assert_called_once_with(
         "demo_graph", "driver-1", ["DRIVES_FOR"]
     )
 
 
-async def test_get_node_relationships_raises_when_node_has_no_id():
+async def test_get_node_neighbours_raises_when_node_has_no_id():
     node = KnowledgeNode.model_construct(id=None, label="Driver", properties={})
 
     with pytest.raises(ValueError, match="node.id is required"):
-        await get_node_relationships.coroutine(
+        await get_node_neighbours.coroutine(
             node=node,
             runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
             relationships=None,

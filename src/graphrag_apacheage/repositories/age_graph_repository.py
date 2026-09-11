@@ -253,13 +253,13 @@ class AgeGraphRepository:
         await cursor.execute(query)
         return query
 
-    async def get_node_relationships(
+    async def get_node_neighbours(
         self,
         graph_name: str,
         node_id: str,
         relationship_labels: list[str] | None = None,
     ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
-        """Fetch relationships incident to a node, as (source, relationship, target) triplets.
+        """Fetch a node's neighbours, as (source, relationship, target) triplets.
 
         Matches the node by its `id` property (the app-level identifier stamped onto
         every vertex by `create_node`), not Apache Age's own internal vertex id.
@@ -323,7 +323,7 @@ class AgeGraphRepository:
     ) -> list[tuple[str, str, str, int]]:
         """Summarize the shape of a node's neighborhood, aggregated by the database.
 
-        Unlike `get_node_relationships()`, which returns every relationship
+        Unlike `get_node_neighbours()`, which returns every relationship
         instance along with its neighbor's full properties, this returns only the
         distinct relationship label / neighbor label combinations and how many
         relationships match each. The counting is done by the database, so a

@@ -70,8 +70,8 @@
      `context.attached_kb_ids` — `NodeEmbedding.vector_search`'s `knowledge_base_id` filter is a
      single-value equality filter (one knowledge base at a time), not a multi-id overlap filter like
      `GraphSchemaRegistry.vector_search`'s `knowledge_base_ids`, so it can't take the whole
-     `attached_kb_ids` list. `get_node_relationships(node, runtime, relationships=None)` calls
-     `await context.repository.get_node_relationships(context.graph_name, node.id,
+     `attached_kb_ids` list. `get_node_neighbours(node, runtime, relationships=None)` calls
+     `await context.repository.get_node_neighbours(context.graph_name, node.id,
      relationship_labels=relationships)` (the repository is fully async — see "Direct Graph Query
      & Async Repository Pattern" below) and reshapes the returned `(source, relationship, target)`
      triplets into a single dict via `node_relationships_to_dict()`, grouped under the queried node
@@ -81,7 +81,7 @@
      *overview* counterpart: it calls `await context.repository.get_node_schema(context.graph_name,
      node.id)` and reshapes the result via `node_schema_to_dict()` into the distinct relationship
      label / direction / neighbor label combinations plus a `count` per combination. Use it before
-     `get_node_relationships` — it answers "what kinds of things is this node connected to?" without
+     `get_node_neighbours` — it answers "what kinds of things is this node connected to?" without
      returning every neighbor's full property dict. It takes no relationship-label filter on purpose:
      it's what the agent calls *before* it knows which labels matter, and every extra parameter
      enlarges the model-facing tool schema
@@ -104,7 +104,7 @@
      Most methods only build and `.execute()` a Cypher query, returning the query string itself
      (used as an audit trail, e.g. by `KnowledgeBaseService.upsert_knowledge_base()`) without
      fetching/parsing results — `graph_exists()` fetches but only checks `(await cursor.fetchone())
-     is not None`. `get_node_relationships()` and `get_node_schema()` are the methods that
+     is not None`. `get_node_neighbours()` and `get_node_schema()` are the methods that
      actually fetch and parse real result rows — see "Direct Graph Query & Async Repository
      Pattern" below
 
@@ -164,7 +164,7 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
 ### Direct Graph Query & Async Repository Pattern
 - `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; `KnowledgeBaseService.upsert_knowledge_base()` is `async def` too, since it awaits repository calls internally
 - Most methods only build and `.execute()` a Cypher query, returning the query string itself (used as an audit trail, e.g. by `upsert_knowledge_base()`) without fetching/parsing results — `graph_exists()` is the one exception that fetches, but only checks `(await cursor.fetchone()) is not None`
-- `get_node_relationships(graph_name, node_id, relationship_labels=None)` is the first method that actually fetches and parses real result rows: it matches a node via its app-level `id` property (the same property `create_node`/`create_relationship` set — not Apache Age's own internal vertex id/graphid), traverses relationships in both directions (`MATCH (a {"id": ...})-[r]-(b)`), and returns a de-duplicated `list[tuple[dict, dict, dict]]` of `(source, relationship, target)`
+- `get_node_neighbours(graph_name, node_id, relationship_labels=None)` is the first method that actually fetches and parses real result rows: it matches a node via its app-level `id` property (the same property `create_node`/`create_relationship` set — not Apache Age's own internal vertex id/graphid), traverses relationships in both directions (`MATCH (a {"id": ...})-[r]-(b)`), and returns a de-duplicated `list[tuple[dict, dict, dict]]` of `(source, relationship, target)`
   - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
   - De-duplicates on the edge's own internal `id` (not on a `(source, label, target)` tuple), since Apache Age can return the same physical edge twice for an undirected `()-[r]-()` pattern; a source/label/target-based key would incorrectly collapse legitimate parallel edges, since Apache Age is a multigraph
   - Source/target are oriented by comparing each vertex's internal `id` to the edge's `start_id`/`end_id`, since the queried node isn't always bound to the pattern's first variable (`a`)
@@ -183,9 +183,9 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
     string and the parsing, not that Age accepts the Cypher. If `label(b)` turns out to be
     unsupported on the target Age version, the fallback is to return `b` and read `b["label"]` in
     Python — which loses the DB-side aggregation and forces a client-side `count`
-- `agent/tools.py`'s `get_node_relationships` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `node_relationships_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
+- `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `node_relationships_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
-- See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_relationships_*` tests in `tests/test_graph_registry_model.py`
+- See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` tests in `tests/test_graph_registry_model.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -249,7 +249,7 @@ async with AsyncSession(engine) as session:
 ### Key Files
 - `pyproject.toml` - project metadata, dependencies, build config
 - `src/graphrag_apacheage/` - main source directory
-- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_relationships`)
+- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
 - `tests/test_tools.py` - test suite for `agent/tools.py`'s `@tool`-decorated functions
@@ -284,8 +284,8 @@ pytest tests/
   - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
-  - `test_age_graph_repository_get_node_relationships_orients_source_target_via_edge_start_end_ids()` - regression test that source/target come from the edge's own `start_id`/`end_id`, not from assuming the queried node is always bound to the pattern's first variable
-  - `test_age_graph_repository_get_node_relationships_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
+  - `test_age_graph_repository_get_node_neighbours_orients_source_target_via_edge_start_end_ids()` - regression test that source/target come from the edge's own `start_id`/`end_id`, not from assuming the queried node is always bound to the pattern's first variable
+  - `test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows()` - the same physical edge returned twice by a fake cursor still yields one triplet
   - `test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property()` - asserts the outgoing `-[r]->` and incoming `<-[r]-` queries are both issued. Uses `_QueuedRowsConnection`, a fake that serves a *different* row batch per `execute` and records every query — `_RowsConnection` replays one fixed row set and so cannot represent a two-query method
   - `test_age_graph_repository_get_node_schema_orders_entries_deterministically()` - unordered fake rows still come back sorted per direction, outgoing before incoming
 - Example data: `dummy_data/f1_kb.json` (Formula 1 knowledge base, with a stable top-level `id` so re-ingesting the file is idempotent)
