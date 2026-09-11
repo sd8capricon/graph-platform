@@ -1,6 +1,18 @@
 embedding_dimensions: 768
 
 models:
+  # - display_name: "Groq OpenAI OSS 20B"
+  #   provider: groq
+  #   name: openai/gpt-oss-20b
+  #   auth_mode: api_key
+  #   type: [thinking]
+  #   api_key_env: GROQ_API_KEY
+  - display_name: "Openrouter"
+    provider: openrouter
+    name: openai/gpt-oss-120b
+    auth_mode: api_key
+    type: [thinking]
+    api_key_env: OPENROUTER_API_KEY
   - display_name: "Gemini Embedding 2"
     provider: gemini
     name: gemini-embedding-2

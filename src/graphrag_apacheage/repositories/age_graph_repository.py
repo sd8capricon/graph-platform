@@ -374,6 +374,71 @@ class AgeGraphRepository:
 
         return entries
 
+    async def search_relationships(
+        self,
+        graph_name: str,
+        label: str,
+        source_label: str | None = None,
+        target_label: str | None = None,
+        source_id: str | None = None,
+        target_id: str | None = None,
+        properties: dict[str, Any] | None = None,
+    ) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+        """Search relationships by type, optional endpoint constraints, and property filters.
+
+        Unlike `get_node_neighbours()`, which traverses from one known node in
+        both directions, this searches the whole graph by relationship type, so
+        `source_id`/`target_id` are optional constraints rather than the anchor
+        of the match. Matches the directed pattern relationships are created
+        with (`(a)-[r:label]->(b)`, the same orientation `create_relationship()`
+        writes), so `source_label`/`source_id` constrain the relationship's
+        actual source and `target_label`/`target_id` its actual target — never
+        either endpoint interchangeably.
+
+        Args:
+            graph_name: The name of the graph to query.
+            label: The relationship type to match.
+            source_label: Optional label to restrict the source node to.
+            target_label: Optional label to restrict the target node to.
+            source_id: Optional `id` property value to restrict the source node to.
+            target_id: Optional `id` property value to restrict the target node to.
+            properties: Optional relationship property filters (exact match on
+                each key).
+
+        Returns:
+            A list of `(source, relationship, target)` tuples, each a plain
+            dict parsed from the vertex/edge `agtype` payload.
+        """
+        source_label_filter = f":{source_label}" if source_label else ""
+        target_label_filter = f":{target_label}" if target_label else ""
+        source_id_filter = (
+            self._age_properties_literal({"id": source_id}) if source_id else ""
+        )
+        target_id_filter = (
+            self._age_properties_literal({"id": target_id}) if target_id else ""
+        )
+        properties_filter = self._age_properties_literal(properties or {})
+
+        query = (
+            f"SELECT * FROM cypher('{graph_name}', $$ "
+            f"MATCH (a{source_label_filter}{source_id_filter})"
+            f"-[r:{label}{properties_filter}]->"
+            f"(b{target_label_filter}{target_id_filter}) "
+            "RETURN a, r, b $$) AS (a agtype, r agtype, b agtype);"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
+        rows = await cursor.fetchall()
+
+        return [
+            (
+                self._parse_agtype(a_raw),
+                self._parse_agtype(r_raw),
+                self._parse_agtype(b_raw),
+            )
+            for a_raw, r_raw, b_raw in rows
+        ]
+
     async def create_relationship(
         self,
         graph_name: str,

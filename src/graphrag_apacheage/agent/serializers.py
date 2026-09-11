@@ -80,6 +80,30 @@ class AgentSerializer:
             "relationships": relationships,
         }
 
+    @classmethod
+    def relationship_matches_to_dict(
+        cls,
+        triplets: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
+    ) -> list[dict]:
+        """Reshape (source, relationship, target) triplets from a relationship search.
+
+        Unlike `node_neighbours_to_dict`, there is no single queried node to
+        group results under — `get_relationship` can match relationships
+        between different node pairs in one call — so each triplet is returned
+        as its own source/relationship/target dict.
+        """
+        return [
+            {
+                "source": cls._age_vertex_to_dict(source),
+                "relationship": {
+                    "label": relationship["label"],
+                    "properties": relationship.get("properties", {}),
+                },
+                "target": cls._age_vertex_to_dict(target),
+            }
+            for source, relationship, target in triplets
+        ]
+
     @staticmethod
     def node_schema_to_dict(
         node_id: str,

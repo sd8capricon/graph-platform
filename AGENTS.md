@@ -89,20 +89,33 @@
      `get_node_neighbours` — it answers "what kinds of things is this node connected to?" without
      returning every neighbor's full property dict. It takes no relationship-label filter on purpose:
      it's what the agent calls *before* it knows which labels matter, and every extra parameter
-     enlarges the model-facing tool schema
+     enlarges the model-facing tool schema. `get_relationship(relationship, runtime, source_label=None,
+     target_label=None, source_id=None, target_id=None, properties=None)` is the odd one out among the
+     four other tools: it does not take a `KnowledgeNode`, since its whole point is finding
+     relationships when the caller does **not** already hold one of the endpoints — `get_node_neighbours`
+     covers the "I have a node, what's attached to it" case. It requires only a non-empty `relationship`
+     label (raises `ValueError` on `relationship.strip()` being falsy, the same fail-fast convention as
+     the other tools) and calls `await context.repository.search_relationships(context.graph_name,
+     relationship, source_label=source_label, target_label=target_label, source_id=source_id,
+     target_id=target_id, properties=properties)`, reshaping the returned `(source, relationship,
+     target)` triplets via `AgentSerializer.relationship_matches_to_dict()`. Unlike
+     `get_node_neighbours`'s single queried node, a relationship search can match many unrelated node
+     pairs in one call, so there is no single node to group results under — each match is returned as
+     its own `{"source", "relationship", "target"}` dict
    - `serializers.py` - `AgentSerializer`, a class of `@staticmethod`/`@classmethod` conversions
      (`schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
-     `node_neighbours_to_dict()` / `node_schema_to_dict()`) shared by `tools.py`'s tool
-     implementations. Grouped as one class purely for a single, discoverable import surface — none
-     hold or need instance state. Kept in their own module, not prefixed with `_`, so they're
-     importable/testable independent of any `@tool`-decorated function
+     `node_neighbours_to_dict()` / `node_schema_to_dict()` / `relationship_matches_to_dict()`) shared by
+     `tools.py`'s tool implementations. Grouped as one class purely for a single, discoverable import
+     surface — none hold or need instance state. Kept in their own module, not prefixed with `_`, so
+     they're importable/testable independent of any `@tool`-decorated function
    - `prompts.py` - `GRAPH_AGENT_SYSTEM_PROMPT`, the agent's system prompt. Its own module so
      replacing the prompt is a one-line change in one file: `deep_agent.py` imports the constant and
      never inlines prompt text, and `tests/test_deep_agent.py` asserts prompt *identity*
      (`captured["system_prompt"] is GRAPH_AGENT_SYSTEM_PROMPT`), never prompt content, so swapping
      the text in cannot turn a test red. The shipped text is a deliberate **placeholder** — usable
      (it encodes the schema-discovery -> `search_entities` -> `get_node_schema` ->
-     `get_node_neighbours` call order the tools are designed around) but not the final prompt
+     `get_node_neighbours` -> `get_relationship` call order the tools are designed around) but not
+     the final prompt
    - `get_node_schema(node, runtime)` enriches `AgeGraphRepository.get_node_schema()`'s
      `(relationship_label, direction, neighbor_label, count)` tuples with property-**name** lists
      (not values) for the node's own label, each distinct relationship label, and each distinct
@@ -141,7 +154,7 @@
      soon as a non-agent caller appears
    - `deep_agent.py` - `build_deep_agent(chat_model, *, tools, middleware, system_prompt, name)`,
      the single place the agent is assembled. See "Deep Agent Assembly Pattern" below
-   - `GRAPH_TOOLS` (in `tools.py`) - the ordered list of the four tools handed to the agent. It lives
+   - `GRAPH_TOOLS` (in `tools.py`) - the ordered list of the five tools handed to the agent. It lives
      in `tools.py`, the leaf module that owns the tools, **not** in an `agent/__init__.py`: `agent/`
      has no `__init__.py` at all on purpose (see the import-cycle note under "Vector Embedding &
      Search Pattern"), so the aggregate has to sit beside what it aggregates. Import it as
@@ -320,8 +333,10 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
     unsupported on the target Age version, the fallback is to return `b` and read `b["label"]` in
     Python — which loses the DB-side aggregation and forces a client-side `count`
 - `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
+- `search_relationships(graph_name, label, source_label=None, target_label=None, source_id=None, target_id=None, properties=None)` is `get_node_neighbours()`'s graph-wide counterpart: instead of traversing from one known node, it searches by relationship *type*, so `source_id`/`target_id` are optional constraints rather than the anchor of the match. It matches the single **directed** pattern `(a)-[r:label]->(b)` — the same orientation `create_relationship()` writes — so `source_label`/`source_id` always constrain the relationship's actual source and `target_label`/`target_id` its actual target; there is no undirected `-[r]-` traversal here, and therefore no `start_id`/`end_id` re-orientation or edge-id de-duplication like `get_node_neighbours()` needs. Endpoint labels are inlined as `:Label` on the pattern variable, endpoint ids and relationship `properties` are each rendered via `_age_properties_literal()`, and every filter is omitted (not just left empty) when its argument is `None`/falsy, so an all-`None` call degenerates to a plain `MATCH (a)-[r:label]->(b)`
+- `agent/tools.py`'s `get_relationship` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.relationship_matches_to_dict(triplets)` into `[{"source": {...}, "relationship": {"label", "properties"}, "target": {...}}, ...]`. Unlike `node_neighbours_to_dict()`, there is no queried node to group under — a relationship search can legitimately match relationships between different node pairs in one call — so each triplet is reshaped independently rather than nested under a shared anchor
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
-- See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` tests in `tests/test_graph_registry_model.py`
+- See: `src/graphrag_apacheage/repositories/age_graph_repository.py`, `src/graphrag_apacheage/agent/tools.py`, `src/graphrag_apacheage/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` / `test_age_graph_repository_search_relationships_*` tests in `tests/test_graph_registry_model.py`
 
 ### Deep Agent Assembly Pattern
 - `agent/deep_agent.py`'s `build_deep_agent()` is the **only** place the agent graph is built. It
@@ -535,6 +550,15 @@ pytest tests/
     - monkeypatches `GraphSchemaRegistry.get_properties_by_name` (keyed by the `type` argument) to
     assert the tool attaches the right property-name list to the node, to each relationship label,
     and to each neighbor label
+  - `test_age_graph_repository_search_relationships_matches_directed_pattern_by_label()` /
+    `..._filters_by_endpoint_labels_and_ids()` / `..._filters_by_relationship_properties()` - assert
+    the directed `(a)-[r:label]->(b)` pattern and that each optional filter (endpoint label, endpoint
+    id, relationship property) is inlined only when provided
+  - `test_get_relationship_reshapes_matches_via_serializer()` (`tests/test_tools.py`) - asserts the
+    tool passes every filter argument through to `AgeGraphRepository.search_relationships()` by
+    keyword and reshapes the returned triplets via `AgentSerializer.relationship_matches_to_dict()`
+  - `test_get_relationship_raises_on_empty_relationship_label()` - same fail-fast convention as
+    `search_schema_registry`/`search_entities`'s empty-query check, for the relationship label instead
   - `test_build_deep_agent_exposes_the_graph_tools()` / `..._adds_the_deepagents_and_todo_tools()` -
     compile the real graph against a `GenericFakeChatModel` (no network, no credentials) and read
     tool names off `agent.nodes["tools"].bound.tools_by_name`. Asserted as a **subset** on stable

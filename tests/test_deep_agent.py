@@ -12,6 +12,7 @@ _GRAPH_TOOL_NAMES = [
     "search_entities",
     "get_node_schema",
     "get_node_neighbours",
+    "get_relationship",
 ]
 
 

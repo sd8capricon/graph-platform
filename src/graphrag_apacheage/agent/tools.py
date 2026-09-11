@@ -152,7 +152,22 @@ async def get_relationship(
     source_id: str | None = None,
     target_id: str | None = None,
     properties: dict | None = None,
-): ...
+):
+    """Delegates to AgeGraphRepository.search_relationships and reshapes the (source, relationship, target) triplets via AgentSerializer.relationship_matches_to_dict. Requires a non-empty relationship label."""
+    if not relationship.strip():
+        raise ValueError("relationship must not be empty")
+
+    context = runtime.context
+    triplets = await context.repository.search_relationships(
+        context.graph_name,
+        relationship,
+        source_label=source_label,
+        target_label=target_label,
+        source_id=source_id,
+        target_id=target_id,
+        properties=properties,
+    )
+    return AgentSerializer.relationship_matches_to_dict(triplets)
 
 
 GRAPH_TOOLS = [
@@ -160,13 +175,14 @@ GRAPH_TOOLS = [
     search_entities,
     get_node_schema,
     get_node_neighbours,
+    get_relationship,
 ]
 """The knowledge-graph tools handed to the agent, ordered as the system prompt
 teaches them (schema discovery -> entity lookup -> neighborhood overview ->
-neighbours). Defined here, in the leaf module that owns the tools, rather than in
-an `agent/__init__.py`: `agent/` has no `__init__.py` at all, on purpose (see the
-import-cycle note in CLAUDE.md), so the aggregate has to live beside the tools it
-aggregates.
+neighbours -> relationship search). Defined here, in the leaf module that owns
+the tools, rather than in an `agent/__init__.py`: `agent/` has no `__init__.py`
+at all, on purpose (see the import-cycle note in CLAUDE.md), so the aggregate
+has to live beside the tools it aggregates.
 """
 
 __all__ = [
@@ -174,5 +190,6 @@ __all__ = [
     "search_entities",
     "get_node_schema",
     "get_node_neighbours",
+    "get_relationship",
     "GRAPH_TOOLS",
 ]

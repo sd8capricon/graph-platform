@@ -21,6 +21,9 @@ Discover the graph's shape before querying its contents:
    before step 4 so you know which relationship labels are worth fetching.
 4. `get_node_neighbours` - the actual neighbours, filtered to the relationship
    labels that matter.
+5. `get_relationship` - search relationships graph-wide by type and property
+   filters (optionally restricted to source/target labels or ids) when you
+   need to look up relationships without already holding one of the endpoints.
 
 Ground every claim in tool results. If a lookup returns nothing, say so rather
 than inventing graph contents.

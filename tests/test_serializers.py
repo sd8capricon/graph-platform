@@ -59,6 +59,40 @@ def test_node_neighbours_to_dict_returns_empty_relationships_list_when_no_triple
     }
 
 
+def test_relationship_matches_to_dict_reshapes_each_triplet_independently():
+    triplets = [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+            {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {"season": 2025}},
+            {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}},
+        ),
+        (
+            {"id": 3, "label": "Driver", "properties": {"id": "driver-2", "name": "Max"}},
+            {"id": 11, "start_id": 3, "end_id": 4, "label": "DRIVES_FOR", "properties": {}},
+            {"id": 4, "label": "Team", "properties": {"id": "team-2", "name": "Red Bull"}},
+        ),
+    ]
+
+    result = AgentSerializer.relationship_matches_to_dict(triplets)
+
+    assert result == [
+        {
+            "source": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
+            "relationship": {"label": "DRIVES_FOR", "properties": {"season": 2025}},
+            "target": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
+        },
+        {
+            "source": {"node_id": "driver-2", "label": "Driver", "properties": {"name": "Max"}},
+            "relationship": {"label": "DRIVES_FOR", "properties": {}},
+            "target": {"node_id": "team-2", "label": "Team", "properties": {"name": "Red Bull"}},
+        },
+    ]
+
+
+def test_relationship_matches_to_dict_returns_empty_list_when_no_triplets():
+    assert AgentSerializer.relationship_matches_to_dict([]) == []
+
+
 def test_node_schema_to_dict_groups_entries_under_the_node_once():
     entries = [
         ("RACED_FOR", "outgoing", "Team", 3),

@@ -1172,6 +1172,91 @@ async def test_create_graph_validates_graph_name():
         await service.create_graph("")
 
 
+async def test_age_graph_repository_search_relationships_matches_directed_pattern_by_label():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.search_relationships("demo_graph", "DRIVES_FOR")
+
+    query = connection.cursor_obj.last_query
+    assert "demo_graph" in query
+    assert "MATCH (a)-[r:DRIVES_FOR]->(b)" in query
+    assert "RETURN a, r, b" in query
+
+
+async def test_age_graph_repository_search_relationships_filters_by_endpoint_labels_and_ids():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.search_relationships(
+        "demo_graph",
+        "DRIVES_FOR",
+        source_label="Driver",
+        target_label="Team",
+        source_id="driver-1",
+        target_id="team-1",
+    )
+
+    query = connection.cursor_obj.last_query
+    assert "MATCH (a:Driver {id: 'driver-1'})-[r:DRIVES_FOR]->(b:Team {id: 'team-1'})" in query
+
+
+async def test_age_graph_repository_search_relationships_filters_by_relationship_properties():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.search_relationships(
+        "demo_graph", "DRIVES_FOR", properties={"season": 2025}
+    )
+
+    assert "[r:DRIVES_FOR {season: 2025}]" in connection.cursor_obj.last_query
+
+
+async def test_age_graph_repository_search_relationships_parses_agtype_rows():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    rows = [
+        (
+            _agtype_vertex(1, "driver-1", "Driver", name="Lewis"),
+            _agtype_edge(10, 1, 2, "DRIVES_FOR", season=2025),
+            _agtype_vertex(2, "team-1", "Team", name="Mercedes"),
+        )
+    ]
+    connection = _RowsConnection(rows)
+    repository = AgeGraphRepository(connection)
+
+    triplets = await repository.search_relationships("demo_graph", "DRIVES_FOR")
+
+    assert triplets == [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+            {
+                "id": 10,
+                "start_id": 1,
+                "end_id": 2,
+                "label": "DRIVES_FOR",
+                "properties": {"season": 2025},
+            },
+            {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}},
+        )
+    ]
+
+
+async def test_age_graph_repository_search_relationships_returns_empty_list_when_no_matches():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _RowsConnection([])
+    repository = AgeGraphRepository(connection)
+
+    assert await repository.search_relationships("demo_graph", "DRIVES_FOR") == []
+
+
 async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_type():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:

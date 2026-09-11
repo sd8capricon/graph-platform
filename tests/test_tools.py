@@ -8,6 +8,7 @@ from graphrag_apacheage.agent.context import AgentContext
 from graphrag_apacheage.agent.tools import (
     get_node_neighbours,
     get_node_schema,
+    get_relationship,
     search_entities,
     search_schema_registry,
 )
@@ -168,6 +169,53 @@ async def test_get_node_schema_raises_when_node_has_no_id():
     with pytest.raises(ValueError, match="node.id is required"):
         await get_node_schema.coroutine(
             node=node, runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
+        )
+
+
+async def test_get_relationship_reshapes_matches_via_serializer():
+    repository = MagicMock(spec=AgeGraphRepository)
+    repository.search_relationships.return_value = [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
+            {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {"season": 2025}},
+            {"id": 2, "label": "Team", "properties": {"id": "team-1", "name": "Mercedes"}},
+        ),
+    ]
+
+    result = await get_relationship.coroutine(
+        relationship="DRIVES_FOR",
+        runtime=_runtime(_context(repository)),
+        source_label="Driver",
+        target_label="Team",
+        source_id="driver-1",
+        target_id="team-1",
+        properties={"season": 2025},
+    )
+
+    repository.search_relationships.assert_called_once_with(
+        "demo_graph",
+        "DRIVES_FOR",
+        source_label="Driver",
+        target_label="Team",
+        source_id="driver-1",
+        target_id="team-1",
+        properties={"season": 2025},
+    )
+    assert result == [
+        {
+            "source": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
+            "relationship": {"label": "DRIVES_FOR", "properties": {"season": 2025}},
+            "target": {"node_id": "team-1", "label": "Team", "properties": {"name": "Mercedes"}},
+        },
+    ]
+
+
+@pytest.mark.parametrize("relationship", ["", "   "])
+async def test_get_relationship_raises_on_empty_relationship_label(relationship):
+    with pytest.raises(ValueError, match="relationship must not be empty"):
+        await get_relationship.coroutine(
+            relationship=relationship,
+            runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
         )
 
 
