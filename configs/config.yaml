@@ -1,0 +1,24 @@
+embedding_dimensions: ""
+
+# Configured model providers. Uncomment and fill in to use; `api_key_env` names an
+# environment variable that must be set (it is read at load time into `api_key`).
+# Chat models are the entries *without* `embedding` in `type` — `agent/chat_model.py`'s
+# `build_chat_model()` maps such an entry to a `ChatLiteLLM`. There is no `chat` member in
+# `ModelType` and no selector helper yet, so callers pick the entry themselves.
+# models:
+#   - display_name: "Chat GPT-4o"
+#     provider: openai
+#     name: gpt-4o
+#     connection_string: https://api.openai.com/v1
+#     auth_mode: api_key
+#     type: [vision, thinking]
+#     api_key_env: OPENAI_API_KEY
+#   - display_name: "Text Embedding 3 Small"
+#     provider: openai
+#     name: text-embedding-3-small
+#     connection_string: https://api.openai.com/v1
+#     auth_mode: api_key
+#     type: [embedding]
+#     api_key_env: OPENAI_API_KEY
+#     embedding_dimension: 1536
+models: []
