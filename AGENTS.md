@@ -179,6 +179,10 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
   - Requires `graph_name` parameter (not stored on model, passed to method)
   - Requires `self.id` to be set (raises `ValueError` otherwise); sets `knowledge_base_ids=[self.id]` on each constructed record
   - Returns list of `GraphSchemaRegistry` records for nodes and relationships
+  - Both node and relationship records always get `aliases=[]` — there is deliberately no alias
+    source for either yet (a node's own `id` previously leaked into `aliases` by mistake, and
+    relationship records were seeding `aliases` with `relationship.label`, which is redundant with
+    `name`). Revisit once there's a real alias source (e.g. alternate display names)
 - See: `src/graphrag_apacheage/models/graph_schema_registry.py` and `src/graphrag_apacheage/schemas/knowledge_base.py`
 
 ### Knowledge Base Lifecycle Pattern

@@ -169,13 +169,12 @@ class KnowledgeBase(BaseModel):
                     type=SchemaType.NODE,
                     name=node.label,
                     description="",
-                    aliases=[node.label],
+                    aliases=[],
                     properties=list(node.properties.keys()),
                     source_label=None,
                     target_label=None,
                 ),
             )
-            row.aliases = sorted(set(row.aliases) | {node.label, node.id})
             row.properties = sorted(set(row.properties) | set(node.properties.keys()))
 
         for relationship in self.relationships:
@@ -204,13 +203,12 @@ class KnowledgeBase(BaseModel):
                     type=SchemaType.RELATIONSHIP,
                     name=relationship.label,
                     description="",
-                    aliases=[relationship.label],
+                    aliases=[],
                     properties=list(relationship.properties.keys()),
                     source_label=source_label,
                     target_label=target_label,
                 ),
             )
-            row.aliases = sorted(set(row.aliases) | {relationship.label})
             row.properties = sorted(
                 set(row.properties) | set(relationship.properties.keys())
             )
