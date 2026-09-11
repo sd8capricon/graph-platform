@@ -3,7 +3,7 @@ from langchain.tools import ToolRuntime, tool
 from graphrag_apacheage.agent.context import AgentContext
 from graphrag_apacheage.agent.serializers import (
     node_embedding_record_to_dict,
-    node_relationships_to_dict,
+    node_neighbours_to_dict,
     node_schema_to_dict,
     schema_registry_record_to_dict,
 )
@@ -82,4 +82,4 @@ async def get_node_neighbours(
     triplets = await context.repository.get_node_neighbours(
         context.graph_name, node.id, relationships
     )
-    return node_relationships_to_dict(node.id, node.label, node.properties, triplets)
+    return node_neighbours_to_dict(node.id, node.label, node.properties, triplets)

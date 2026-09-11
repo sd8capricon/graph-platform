@@ -1,10 +1,10 @@
 from graphrag_apacheage.agent.serializers import (
-    node_relationships_to_dict,
+    node_neighbours_to_dict,
     node_schema_to_dict,
 )
 
 
-def test_node_relationships_to_dict_groups_node_once_with_direction_per_relationship():
+def test_node_neighbours_to_dict_groups_node_once_with_direction_per_relationship():
     triplets = [
         (
             {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis"}},
@@ -18,7 +18,7 @@ def test_node_relationships_to_dict_groups_node_once_with_direction_per_relation
         ),
     ]
 
-    result = node_relationships_to_dict("driver-1", "Driver", {"name": "Lewis"}, triplets)
+    result = node_neighbours_to_dict("driver-1", "Driver", {"name": "Lewis"}, triplets)
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}},
@@ -39,7 +39,7 @@ def test_node_relationships_to_dict_groups_node_once_with_direction_per_relation
     }
 
 
-def test_node_relationships_to_dict_handles_missing_properties():
+def test_node_neighbours_to_dict_handles_missing_properties():
     triplets = [
         (
             {"id": 1, "label": "Driver", "properties": {"id": "driver-1"}},
@@ -48,13 +48,13 @@ def test_node_relationships_to_dict_handles_missing_properties():
         )
     ]
 
-    result = node_relationships_to_dict("driver-1", "Driver", {}, triplets)
+    result = node_neighbours_to_dict("driver-1", "Driver", {}, triplets)
 
     assert result["relationships"][0]["properties"] == {}
 
 
-def test_node_relationships_to_dict_returns_empty_relationships_list_when_no_triplets():
-    result = node_relationships_to_dict("driver-1", "Driver", {}, [])
+def test_node_neighbours_to_dict_returns_empty_relationships_list_when_no_triplets():
+    result = node_neighbours_to_dict("driver-1", "Driver", {}, [])
 
     assert result == {
         "node": {"node_id": "driver-1", "label": "Driver", "properties": {}},

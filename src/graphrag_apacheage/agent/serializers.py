@@ -34,7 +34,7 @@ def _age_vertex_to_dict(vertex: dict[str, Any]) -> dict[str, Any]:
     return {"node_id": node_id, "label": vertex["label"], "properties": properties}
 
 
-def node_relationships_to_dict(
+def node_neighbours_to_dict(
     node_id: str,
     label: str,
     properties: dict[str, Any],
@@ -77,7 +77,7 @@ def node_schema_to_dict(
     """Group a node's (relationship, direction, neighbor label, count) entries under it.
 
     The node appears once rather than per entry, mirroring
-    `node_relationships_to_dict`. Node properties are deliberately omitted: this
+    `node_neighbours_to_dict`. Node properties are deliberately omitted: this
     is a summary of the node's neighborhood shape, and the caller already holds
     the node it asked about.
     """
@@ -98,6 +98,6 @@ def node_schema_to_dict(
 __all__ = [
     "schema_registry_record_to_dict",
     "node_embedding_record_to_dict",
-    "node_relationships_to_dict",
+    "node_neighbours_to_dict",
     "node_schema_to_dict",
 ]
