@@ -41,6 +41,8 @@ class Model(BaseModel):
         name: The name of the model (e.g., 'gpt-4o', 'text-embedding-3-small').
         provider: The provider serving the model (e.g., 'openai', 'azure').
         connection_string: The connection string/endpoint used to reach the provider.
+            Optional — omit to use the provider's default endpoint (e.g. litellm's
+            built-in routing for a known provider name).
         auth_mode: How to authenticate with the provider: 'api_key' or 'managed_identity'.
         type: The capabilities this model supports (e.g., embedding, vision, thinking).
         api_key: The API key used to authenticate, required when auth_mode is 'api_key'.
@@ -52,7 +54,7 @@ class Model(BaseModel):
     display_name: str
     name: str
     provider: str
-    connection_string: str
+    connection_string: str | None = None
     auth_mode: AuthMode
     type: list[ModelType] = Field(default_factory=list)
     api_key: SecretStr | None = None
