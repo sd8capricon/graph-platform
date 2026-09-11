@@ -1,3 +1,5 @@
-from .age_graph_repository import AgeGraphRepository
+"""Data access layer.
 
-__all__ = ["AgeGraphRepository"]
+Intentionally re-exports nothing, for consistency with the other subpackages (see
+`services/__init__.py`). Import leaf modules directly.
+"""

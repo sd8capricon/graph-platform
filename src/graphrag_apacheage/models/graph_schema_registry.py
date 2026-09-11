@@ -2,7 +2,8 @@ from collections.abc import Iterable
 from enum import Enum
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, CheckConstraint, String, Text, select
+from sqlalchemy import JSON, CheckConstraint, String, Text, cast, select
+from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -160,6 +161,7 @@ class GraphSchemaRegistry(Base):
         graph_name: str,
         model: Model,
         type: SchemaType | None = None,
+        knowledge_base_ids: list[str] | None = None,
         limit: int = 5,
     ) -> list[GraphSchemaRegistry]:
         """Find the schema registry records whose embedding is closest to a text query.
@@ -175,6 +177,10 @@ class GraphSchemaRegistry(Base):
             graph_name: Restrict the search to records belonging to this graph.
             model: The embedding provider configuration used to embed `query`.
             type: Optional schema type ('node' or 'relationship') to filter by.
+            knowledge_base_ids: Optional knowledge base ids to restrict the search to.
+                A record matches if its `knowledge_base_ids` overlaps with any of these
+                (via PostgreSQL's jsonb `?|` operator), since a schema row may be shared
+                by several contributing knowledge bases.
             limit: Maximum number of records to return, ordered by similarity.
 
         Returns:
@@ -197,6 +203,10 @@ class GraphSchemaRegistry(Base):
         )
         if type is not None:
             stmt = stmt.where(cls.type == (type.value if isinstance(type, SchemaType) else type))
+        if knowledge_base_ids:
+            stmt = stmt.where(
+                cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))
+            )
 
         return list((await session.execute(stmt)).scalars().all())
 

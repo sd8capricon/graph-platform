@@ -1,4 +1,3 @@
-from psycopg2.extensions import connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
@@ -99,9 +98,7 @@ class KnowledgeBaseService:
                 no id.
         """
         if not graph_name:
-            raise ValueError(
-                "graph_name is required when upserting node embeddings"
-            )
+            raise ValueError("graph_name is required when upserting node embeddings")
 
         records = knowledge_base.get_node_embedding_records(graph_name)
         return await NodeEmbedding.upsert_records(session, records, model=model)

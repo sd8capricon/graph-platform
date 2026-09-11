@@ -44,14 +44,24 @@
 3. **Agents** (`src/graphrag_apacheage/agent/`)
    - `context.py` - `AgentContext`: pydantic model passed as `context_schema` to LangChain's
      `create_agent()`; holds run-scoped, static data (not conversational state), separate from
-     graph state and made available to tools via LangGraph's runtime. Currently just
-     `attached_kb_ids: list[str]`, the knowledge base IDs a run's tools may operate against
-   - `tools.py` - tool implementations, still mostly placeholders. Tools access `AgentContext`
-     by adding a `runtime: ToolRuntime[AgentContext]` parameter (imported from `langchain.tools`)
-     and reading `runtime.context.attached_kb_ids`; LangChain injects this argument automatically
-     so it's excluded from the tool's schema shown to the model — don't document it in the
-     tool's docstring or list it as a model-facing arg. `@tool`-decorated functions require a
-     docstring (LangChain raises `ValueError` at decoration time otherwise)
+     graph state and made available to tools via LangGraph's runtime. Fields: `graph_name: str`
+     (required, the Apache Age graph the run's tools operate against), `attached_kb_ids: list[str]`
+     (the knowledge base IDs a run's tools may operate against), `session: AsyncSession` (required
+     — how tools reach the database; needs `model_config = ConfigDict(arbitrary_types_allowed=True)`
+     since `AsyncSession` isn't a pydantic type), and `model: Model | None` (embedding provider for
+     tools that vector-search; `None` means such tools should raise, matching
+     `GraphSchemaRegistry.vector_search`'s own contract)
+   - `tools.py` - tool implementations. Tools access `AgentContext` by adding a
+     `runtime: ToolRuntime[AgentContext]` parameter (imported from `langchain.tools`) and reading
+     `runtime.context.*`; LangChain injects this argument automatically so it's excluded from the
+     tool's schema shown to the model — don't document it in the tool's docstring or list it as a
+     model-facing arg. `@tool`-decorated functions require a docstring (LangChain raises
+     `ValueError` at decoration time otherwise), and can be `async def` when they need to await a
+     model method. `search_schema_registry(query, runtime)` calls
+     `GraphSchemaRegistry.vector_search(context.session, query, context.graph_name, context.model,
+     knowledge_base_ids=context.attached_kb_ids)` and reshapes each result into a plain dict
+     (type/name/description/aliases/properties/source_label/target_label) since tool return values
+     must be JSON-serializable, not ORM instances
    - Intended for: LLM-based agent tools that interact with the knowledge graph
 
 4. **Services** (`src/graphrag_apacheage/services/`)
@@ -104,12 +114,14 @@ JSON File → KnowledgeBase.from_json_file() → get_node_embedding_records(grap
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from graphrag_apacheage.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
   - Ordering gotcha: `load_config()` must run before `models/graph_schema_registry.py` or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time; a later reload cannot resize an already-defined column
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
+  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
   - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `f"{model.provider}/{model.name}"`, passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
 - Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)`
 - `vector_search(session, query, graph_name, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator: `cls.embedding.cosine_distance(embedding)` — requires PostgreSQL, raises `ValueError` if `model` is `None`
-- `NodeEmbedding` rows are keyed by `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping it onto each record as `knowledge_base_id`; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). Both `NodeEmbedding.vector_search()` and `search_nodes()` take an optional `knowledge_base_id` filter to scope a search to one knowledge base; `GraphSchemaRegistry.vector_search()` deliberately does **not** — its `knowledge_base_ids` list is shared across knowledge bases by design and a JSON-list containment filter would be dialect-specific (Postgres `@>` vs SQLite), so it's left until a caller needs it
+- `NodeEmbedding` rows are keyed by `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping it onto each record as `knowledge_base_id`; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base
+- `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since `?|` doesn't run on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
 

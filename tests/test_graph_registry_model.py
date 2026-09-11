@@ -188,6 +188,48 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     assert "LIMIT" in compiled
 
 
+async def test_vector_search_filters_by_knowledge_base_ids(monkeypatch):
+    # Same rationale as the test above: the `?|` jsonb overlap operator only
+    # exists on PostgreSQL, so we capture the statement via a fake session.
+    import graphrag_apacheage.services.embedding_service as embedding_service
+
+    class FakeResponse:
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
+
+    async def fake_aembedding(**kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
+
+    captured = {}
+
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class FakeSession:
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+    results = await GraphSchemaRegistry.vector_search(
+        FakeSession(),
+        query="fast driver",
+        graph_name="demo",
+        model=_embedding_model(),
+        knowledge_base_ids=["kb-1", "kb-2"],
+        limit=3,
+    )
+
+    assert results == []
+    compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
+    assert "?|" in compiled
+    assert "graph_registry.knowledge_base_ids" in compiled
+
+
 async def test_vector_search_raises_when_model_not_provided():
     class FakeSession:
         async def execute(self, stmt):
