@@ -7,9 +7,19 @@ from graphrag_apacheage.models.node_embedding import NodeEmbedding
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
 
-@tool
+@tool(
+    description=(
+        "Search the graph's schema for node and relationship types matching a "
+        "text query. Each result describes a type (not an instance): its "
+        "name, whether it is a node or relationship, a description, known "
+        "aliases, its properties, and for relationships the source/target "
+        "node labels. Use this to discover which labels and properties exist "
+        "in the graph before querying actual data with search_entities or "
+        "get_node_neighbours."
+    )
+)
 async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext]):
-    """Search the schema registry, scoped to the run's attached knowledge bases."""
+    """Vector-search GraphSchemaRegistry, scoped to the run's attached knowledge bases."""
     context = runtime.context
     records = await GraphSchemaRegistry.vector_search(
         context.session,
@@ -23,14 +33,17 @@ async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext])
     ]
 
 
-@tool
+@tool(
+    description=(
+        "Search knowledge graph entities (nodes) by similarity to a text "
+        "query. Optionally restrict results to one or more node labels. "
+        "Returns each matching node's id, label, and properties."
+    )
+)
 async def search_entities(
     query: str, runtime: ToolRuntime[AgentContext], labels: list[str] | None = None
 ):
-    """Search knowledge graph entities (nodes) by similarity to a text query.
-
-    Optionally restrict results to one or more node labels (e.g. 'Driver').
-    """
+    """Vector-search NodeEmbedding for context.graph_name; not scoped to attached_kb_ids."""
     context = runtime.context
     records = await NodeEmbedding.vector_search(
         context.session,
@@ -39,20 +52,20 @@ async def search_entities(
         context.model,
         labels=labels,
     )
-    return [
-        AgentSerializer.node_embedding_record_to_dict(record) for record in records
-    ]
+    return [AgentSerializer.node_embedding_record_to_dict(record) for record in records]
 
 
-@tool
+@tool(
+    description=(
+        "Summarize how a node connects to the rest of the graph: the "
+        "distinct relationship types on the node, each with its direction, "
+        "the label of the node on the other end, and how many relationships "
+        "match. Use this to understand a node's neighborhood before fetching "
+        "the actual relationships with get_node_neighbours."
+    )
+)
 async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext]):
-    """Summarize how a node connects to the rest of the graph.
-
-    Returns the distinct relationship types on `node`, each with its direction,
-    the label of the node on the other end, and how many relationships match.
-    Use this to understand a node's neighborhood before fetching the actual
-    relationships with `get_node_neighbours`.
-    """
+    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema. Requires node.id."""
     if node.id is None:
         raise ValueError("node.id is required to look up its schema")
 
@@ -61,19 +74,20 @@ async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext
     return AgentSerializer.node_schema_to_dict(node.id, node.label, entries)
 
 
-@tool
+@tool(
+    description=(
+        "Get a knowledge graph node's neighbours. Returns every relationship "
+        "incident to the node, grouped under the node itself, regardless of "
+        "direction and with no relationship repeated. Optionally restrict "
+        "results to one or more relationship labels."
+    )
+)
 async def get_node_neighbours(
     node: KnowledgeNode,
     runtime: ToolRuntime[AgentContext],
     relationships: list[str] | None = None,
 ):
-    """Get a knowledge graph node's neighbours.
-
-    Returns every relationship incident to `node`, grouped under the node
-    itself, regardless of direction and with no relationship repeated.
-    Optionally restrict results to one or more relationship labels
-    (e.g. 'DRIVES_FOR').
-    """
+    """Delegates to AgeGraphRepository.get_node_neighbours and reshapes the (source, relationship, target) triplets via AgentSerializer.node_neighbours_to_dict. Requires node.id."""
     if node.id is None:
         raise ValueError("node.id is required to look up its relationships")
 
