@@ -187,6 +187,86 @@ class KnowledgeBaseService:
         await session.flush()
         return queries
 
+    async def create_graph(self, graph_name: str) -> str | None:
+        """Create an Apache Age graph, unless it already exists.
+
+        The counterpart of `delete_graph()`, so the graph lifecycle is driven
+        entirely through this service and callers never have to mix service and
+        repository calls. Takes no `session`: a brand new graph has no side-table
+        rows, so there is nothing to create alongside it. (If a graph name is being
+        *reused* after being dropped outside this service, call `delete_graph()`
+        first — it tolerates a missing graph and clears any orphaned rows.)
+
+        Args:
+            graph_name: The name of the Apache Age graph to create. Required.
+
+        Returns:
+            The SQL query that created the graph, or None if the graph already
+            existed and nothing was done.
+
+        Raises:
+            ValueError: If graph_name is not provided.
+        """
+        if not graph_name:
+            raise ValueError("graph_name is required when creating an Apache Age graph")
+
+        if await self.repository.graph_exists(graph_name):
+            return None
+
+        query = await self.repository.create_graph(graph_name)
+        await self.repository.commit()
+        return query
+
+    async def delete_graph(self, session: AsyncSession, graph_name: str) -> str | None:
+        """Drop an Apache Age graph and every side-table row belonging to it.
+
+        The inverse of `create_graph()` and the graph-wide counterpart of
+        `delete_knowledge_base()`. Drops the graph
+        itself (cascading, so all its nodes and edges go with it), then deletes
+        *all* `NodeEmbedding` and `GraphSchemaRegistry` rows for `graph_name`.
+        Unlike `delete_knowledge_base()`, the registry rows are deleted outright
+        rather than adjusted: the graph they describe no longer exists, so no
+        contributing knowledge base has a remaining claim on them.
+
+        A missing graph is not an error. Dropping a graph is precisely the case
+        that leaves the side-tables orphaned, so the rows are cleaned up either
+        way — refusing when the graph is already gone would make that orphaned
+        state unfixable through this API.
+
+        As in `delete_knowledge_base()`, the graph connection is committed but
+        `session` is not — committing it is the caller's responsibility.
+
+        Args:
+            session: SQLAlchemy async session used to delete the side-table rows.
+            graph_name: The name of the Apache Age graph to delete. Required.
+
+        Returns:
+            The SQL query that dropped the graph, or None if the graph did not
+            exist and only the side-tables were cleaned up.
+
+        Raises:
+            ValueError: If graph_name is not provided.
+        """
+        if not graph_name:
+            raise ValueError("graph_name is required when deleting an Apache Age graph")
+
+        query: str | None = None
+        if await self.repository.graph_exists(graph_name):
+            query = await self.repository.delete_graph(graph_name)
+            await self.repository.commit()
+
+        await session.execute(
+            delete(NodeEmbedding).where(NodeEmbedding.graph_name == graph_name)
+        )
+        await session.execute(
+            delete(GraphSchemaRegistry).where(
+                GraphSchemaRegistry.graph_name == graph_name
+            )
+        )
+
+        await session.flush()
+        return query
+
     async def upsert_graph_schema_registry(
         self,
         session: AsyncSession,

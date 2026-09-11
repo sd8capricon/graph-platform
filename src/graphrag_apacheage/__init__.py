@@ -46,10 +46,10 @@ async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSe
     from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
-    if not await repository.graph_exists("kb_graph"):
-        await repository.create_graph("kb_graph")
     knowledge_base = KnowledgeBase.from_json_file("dummy_data/f1_kb.json")
     knowledge_base_service = KnowledgeBaseService(repository)
+    # No-ops if the graph is already there.
+    await knowledge_base_service.create_graph("kb_graph")
     # Writes the graph, the schema registry and the node embeddings in one call;
     # committing the SQLAlchemy session is left to us.
     await knowledge_base_service.upsert_knowledge_base(
@@ -69,16 +69,20 @@ async def run():
         node_embedding,
     )
     from graphrag_apacheage.models.base import Base
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
     pg_connection = await create_connection()
     age_repository = AgeGraphRepository(pg_connection)
     engine = create_async_engine(_database_url())
     try:
-        if await age_repository.graph_exists("kb_graph"):
-            await age_repository.delete_graph("kb_graph")
+        # The tables must exist before the graph is dropped: dropping it also
+        # clears the graph's side-table rows, which would otherwise be left
+        # orphaned from the previous run.
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         async with AsyncSession(engine) as session:
+            await KnowledgeBaseService(age_repository).delete_graph(session, "kb_graph")
+            await session.commit()
             await create_knowledge_base(age_repository, session)
     finally:
         await engine.dispose()

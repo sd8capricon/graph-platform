@@ -208,13 +208,38 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
     plain JSON column and a graph holds one registry row per label, so the scan is cheap and works
     on SQLite. Do *not* reach for the jsonb `?|` operator `GraphSchemaRegistry.vector_search()` uses
     — that's PostgreSQL-only and would make these paths untestable on SQLite
-- Transaction split (both methods): the **graph** connection is committed inside the method
+- `create_graph(graph_name)` / `delete_graph(session, graph_name)` are the graph lifecycle pair.
+  Both live on the service so callers never mix service and repository calls for the same concern,
+  and both return `None` when there was nothing to do (graph already exists / graph already gone).
+  `AgeGraphRepository` keeps its own raw `create_graph()`/`delete_graph()` pair — the service
+  methods delegate to them; the asymmetry to avoid is a *layer* that owns one half of a pair
+  - `create_graph()` takes no `session` on purpose: a new graph has no side-table rows, so there is
+    nothing to create alongside it. Reusing a graph name dropped outside this service is the one gap
+    — call `delete_graph()` first to clear any orphaned rows
+- `delete_graph(session, graph_name)` drops the Apache Age graph
+  (cascading, so no per-node `DETACH DELETE` pass is needed) and then deletes **all**
+  `NodeEmbedding` and `GraphSchemaRegistry` rows for that graph. Registry rows are deleted outright
+  rather than adjusted, unlike `delete_knowledge_base()` — the graph they describe is gone, so no
+  contributing knowledge base has a remaining claim
+  - A missing graph is deliberately **not** an error: dropping a graph is exactly what orphans the
+    side-tables, so the rows are cleaned up either way. Returns the drop query, or `None` when the
+    graph didn't exist and only the side-tables were cleaned
+  - The side-table cleanup lives on the service and not on `AgeGraphRepository.delete_graph()` even though the
+    repository's psycopg connection *could* run the `DELETE`s (same database) — and in one
+    transaction with the drop, which this split does not get. The blocker is imports: naming the
+    tables via `NodeEmbedding.__tablename__` would make `repositories/age_graph_repository.py`
+    import the pgvector ORM models, and `__init__.py` imports that repository at **module level**,
+    before `main()` calls `load_config()` — so the embedding column would be sized from defaults.
+    Avoiding that means duplicating `"node_embedding"`/`"graph_registry"` as string literals, and
+    the cleanup would only be testable as pinned query strings against a fake cursor instead of as
+    real row deletion on SQLite
+- Transaction split (all three methods): the **graph** connection is committed inside the method
   (`repository.commit()`), the SQLAlchemy `session` is only flushed — committing it is the caller's
   job, so a caller can batch several knowledge bases into one side-table transaction. The two stores
   are not in a shared transaction, so a failure between them can leave the graph ahead of the
   side-tables; re-running the upsert is idempotent and recovers
 - See: `src/graphrag_apacheage/services/knowledge_base_service.py` and the
-  `test_delete_knowledge_base_*` tests in `tests/test_graph_registry_model.py`
+  `test_delete_knowledge_base_*` / `test_delete_graph_*` tests in `tests/test_graph_registry_model.py`
 
 ### Vector Embedding & Search Pattern
 - Both `GraphSchemaRegistry` and `NodeEmbedding` (`models/node_embedding.py`) store a pgvector `embedding` column (`Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`), sized from the `settings` singleton (`config.py`, `AppSettings.embedding_dimension`, default `1536`) — both ORM models import `settings` directly from `config.py` (not from `embedding_service.py`, and not from an env var) so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
@@ -363,14 +388,17 @@ embedding_model = Model(
 )
 
 service = KnowledgeBaseService(repository)
+await service.create_graph("my_age_graph")  # no-op if it already exists
+
 async with AsyncSession(engine) as session:
     # Writes the graph, the schema registry and the node embeddings; commits the
     # graph connection itself, leaves the session commit to us.
     await service.upsert_knowledge_base(session, kb, "my_age_graph", model=embedding_model)
     await session.commit()
 
-    # ...and the inverse, by knowledge base id:
+    # ...and the inverses: one knowledge base, or the whole graph plus its side-tables.
     await service.delete_knowledge_base(session, kb.id, "my_age_graph")
+    await service.delete_graph(session, "my_age_graph")
     await session.commit()
 ```
 
@@ -449,6 +477,12 @@ pytest tests/
   - `test_delete_knowledge_base_keeps_registry_rows_shared_with_another_base()` - deleting one of
     two knowledge bases sharing a label leaves the row with only the other's id, and leaves the
     other's node embeddings alone
+  - `test_delete_graph_drops_the_graph_and_all_its_side_table_rows()` - rows for the dropped graph
+    go, rows for another graph stay, and no per-node `DETACH DELETE` is issued
+  - `test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_gone()` - `graph_exists`
+    False still clears the side-tables and returns `None`
+  - `test_create_graph_creates_the_graph_and_is_a_no_op_when_it_exists()` - creates when absent,
+    returns `None` and issues no query when present
   - `_RecordingAgeRepository` (in `tests/test_graph_registry_model.py`) - the shared fake for
     service-level tests: records the Cypher it's asked to run and its commit count, with a
     `graph_exists=False` switch for the does-not-exist paths

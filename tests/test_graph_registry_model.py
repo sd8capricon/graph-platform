@@ -908,6 +908,11 @@ class _RecordingAgeRepository:
     async def graph_exists(self, graph_name):
         return self._graph_exists
 
+    async def create_graph(self, graph_name):
+        query = f"SELECT * FROM ag_catalog.create_graph('{graph_name}');"
+        self.queries.append(query)
+        return query
+
     async def create_node(self, graph_name, label, properties):
         query = f"CREATE (n:{label} {properties})"
         self.queries.append(query)
@@ -922,6 +927,11 @@ class _RecordingAgeRepository:
 
     async def delete_node(self, graph_name, node_id):
         query = f'MATCH (n {{id:"{node_id}"}}) DETACH DELETE n'
+        self.queries.append(query)
+        return query
+
+    async def delete_graph(self, graph_name):
+        query = f"SELECT * FROM ag_catalog.drop_graph('{graph_name}', true);"
         self.queries.append(query)
         return query
 
@@ -1054,3 +1064,109 @@ async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
 
     with pytest.raises(ValueError, match="does not exist in the database"):
         await service.delete_knowledge_base(None, "kb-1", "demo_graph")
+
+
+async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
+
+    async with await _sqlite_session() as session:
+        # Two knowledge bases in the graph being dropped, one in a graph that stays.
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-1"), "doomed_graph"
+        )
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-2"), "doomed_graph"
+        )
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-3"), "other_graph"
+        )
+        await session.commit()
+
+        repository.queries.clear()
+        query = await service.delete_graph(session, "doomed_graph")
+        await session.commit()
+
+        assert "drop_graph('doomed_graph', true)" in query
+        # The graph drop cascades, so no per-node DETACH DELETE is issued.
+        assert not any("DETACH DELETE" in issued for issued in repository.queries)
+
+        # Registry rows are deleted outright, not adjusted: no knowledge base has a
+        # remaining claim on a graph that no longer exists.
+        remaining_schema = (
+            (await session.execute(select(GraphSchemaRegistry))).scalars().all()
+        )
+        assert {row.graph_name for row in remaining_schema} == {"other_graph"}
+        assert all(row.knowledge_base_ids == ["kb-3"] for row in remaining_schema)
+
+        remaining_embeddings = (
+            (await session.execute(select(NodeEmbedding))).scalars().all()
+        )
+        assert {record.graph_name for record in remaining_embeddings} == {"other_graph"}
+
+
+async def test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_gone():
+    # Dropping a graph is exactly what orphans the side-tables, so a missing graph
+    # must still clean them up rather than raise.
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
+
+    async with await _sqlite_session() as session:
+        await service.upsert_knowledge_base(
+            session, _demo_knowledge_base("kb-1"), "demo_graph"
+        )
+        await session.commit()
+
+        repository._graph_exists = False
+        repository.queries.clear()
+        query = await service.delete_graph(session, "demo_graph")
+        await session.commit()
+
+        assert query is None
+        assert repository.queries == []
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+        assert (
+            await session.execute(select(GraphSchemaRegistry))
+        ).scalars().all() == []
+
+
+async def test_delete_graph_validates_graph_name():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    service = KnowledgeBaseService(_RecordingAgeRepository())
+
+    with pytest.raises(ValueError, match="graph_name is required"):
+        await service.delete_graph(None, "")
+
+
+async def test_create_graph_creates_the_graph_and_is_a_no_op_when_it_exists():
+    # The symmetric partner of delete_graph(): both return None when there is
+    # nothing to do, so the graph lifecycle is driven entirely through the service.
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    repository = _RecordingAgeRepository(graph_exists=False)
+    service = KnowledgeBaseService(repository)
+
+    query = await service.create_graph("demo_graph")
+    assert "create_graph('demo_graph')" in query
+    assert repository.commits == 1
+
+    repository._graph_exists = True
+    repository.queries.clear()
+    assert await service.create_graph("demo_graph") is None
+    assert repository.queries == []
+
+
+async def test_create_graph_validates_graph_name():
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    service = KnowledgeBaseService(_RecordingAgeRepository())
+
+    with pytest.raises(ValueError, match="graph_name is required"):
+        await service.create_graph("")
