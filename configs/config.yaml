@@ -5,6 +5,8 @@ embedding_dimensions: ""
 # Chat models are the entries *without* `embedding` in `type` — `agent/chat_model.py`'s
 # `build_chat_model()` maps such an entry to a `ChatLiteLLM`. There is no `chat` member in
 # `ModelType` and no selector helper yet, so callers pick the entry themselves.
+# `reasoning_effort` is optional and only valid on a chat (non-embedding) entry -
+# it is rejected when `embedding` is in `type`.
 # models:
 #   - display_name: "Chat GPT-4o"
 #     provider: openai
@@ -13,6 +15,7 @@ embedding_dimensions: ""
 #     auth_mode: api_key
 #     type: [vision, thinking]
 #     api_key_env: OPENAI_API_KEY
+#     reasoning_effort: low
 #   - display_name: "Text Embedding 3 Small"
 #     provider: openai
 #     name: text-embedding-3-small

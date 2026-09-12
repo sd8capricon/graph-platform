@@ -21,10 +21,16 @@
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
    - Schema extraction to `GraphSchemaRegistry` for database storage
    - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (display_name, name,
-     provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension) —
-     validates that `api_key` is set when `auth_mode` is `api_key` and `embedding_dimension`
-     is set when `embedding` is in `type`. Passed into `EmbeddingService.compute_embeddings()`
-     to describe which provider/model to call.
+     provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
+     reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
+     `embedding_dimension` is set when `embedding` is in `type`. Passed into
+     `EmbeddingService.compute_embeddings()` to describe which provider/model to call.
+   - `Model.reasoning_effort` is optional and only meaningful for a non-embedding (chat) entry — a
+     `@model_validator(mode="after")` (`ensure_reasoning_effort_not_for_embedding`) raises when it is
+     set alongside `embedding` in `type`, the same "reject at the boundary" convention as
+     `ensure_embedding_dimension_matches_type`'s inverse case (there, missing when required; here,
+     present when forbidden). Consumed only by `agent/chat_model.py`'s `build_chat_model()` — see the
+     "Agents" section below
    - Config entries name a secret indirectly via `api_key_env`; a `@model_validator(mode="before")`
      (`resolve_api_key_env`) pops it and reads that environment variable into `api_key`, so raw YAML
      entries validate straight into `Model`. There is no `Model.from_config()` — `AppSettings`
@@ -171,8 +177,14 @@
      `f"{provider}/{name}"` as the model string, `connection_string` as `api_base`,
      `api_key.get_secret_value()` only when `auth_mode` is `api_key` — so chat and embedding calls
      read the same config the same way. `embedding_dimension` is deliberately **not** forwarded (no
-     chat-completion meaning), and nothing else is set by default, so provider defaults apply unless
-     a caller passes `**overrides` (`temperature`, `max_tokens`, `profile`). The `model` parameter is
+     chat-completion meaning — and rejected on such a `Model` anyway by
+     `ensure_reasoning_effort_not_for_embedding`'s embedding counterpart, see "Schemas" above), and
+     nothing else is set by default, so provider defaults apply unless a caller passes `**overrides`
+     (`temperature`, `max_tokens`, `profile`). `reasoning_effort`, when set, is forwarded via
+     `model_kwargs={"reasoning_effort": ...}` rather than as a top-level `ChatLiteLLM` kwarg:
+     `ChatLiteLLM`'s pydantic config is `extra="ignore"`, so an unrecognized top-level kwarg is
+     silently dropped instead of reaching litellm's completion call, while `model_kwargs` is a
+     declared field whose contents `ChatLiteLLM` spreads into that call. The `model` parameter is
      **positional-only** (`/`) because `model` is also `ChatLiteLLM`'s own field name — without the
      marker, `build_chat_model(cfg, model=...)` raises `TypeError: got multiple values for argument
      'model'` instead of overriding the model string. Note the deviation: the convention-consistent
@@ -530,6 +542,8 @@ async with AsyncSession(engine) as session:
 - `tests/test_serializers.py` - test suite for `agent/serializers.py`'s dict-conversion helpers
 - `tests/test_deep_agent.py` - test suite for `agent/deep_agent.py`'s `build_deep_agent()` factory
 - `tests/test_chat_model.py` - test suite for `agent/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
+- `tests/test_model.py` - test suite for `schemas/model.py`'s `Model` validators (currently just
+  `reasoning_effort`'s embedding-exclusivity rule)
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests

@@ -48,6 +48,8 @@ class Model(BaseModel):
         api_key: The API key used to authenticate, required when auth_mode is 'api_key'.
             Stored as a SecretStr so it is masked in reprs/logs.
         embedding_dimension: The output vector size, required when 'embedding' is in type.
+        reasoning_effort: Optional reasoning effort level (e.g. 'low', 'medium', 'high')
+            for a non-embedding (chat) model. Invalid when 'embedding' is in type.
     """
 
     id: str | None = None
@@ -59,6 +61,7 @@ class Model(BaseModel):
     type: list[ModelType] = Field(default_factory=list)
     api_key: SecretStr | None = None
     embedding_dimension: int | None = None
+    reasoning_effort: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -124,6 +127,22 @@ class Model(BaseModel):
         if ModelType.EMBEDDING in self.type and self.embedding_dimension is None:
             raise ValueError(
                 "embedding_dimension is required when 'embedding' is in type"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def ensure_reasoning_effort_not_for_embedding(self) -> "Model":
+        """Ensure reasoning_effort is only set on non-embedding (chat) models.
+
+        Returns:
+            The validated Model instance.
+
+        Raises:
+            ValueError: If 'embedding' is in type but reasoning_effort was provided.
+        """
+        if ModelType.EMBEDDING in self.type and self.reasoning_effort is not None:
+            raise ValueError(
+                "reasoning_effort is invalid when 'embedding' is in type"
             )
         return self
 

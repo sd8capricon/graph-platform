@@ -64,3 +64,15 @@ def test_build_chat_model_applies_overrides_last():
 
     assert chat.model == "openai/gpt-5"
     assert chat.temperature == 0.0
+
+
+def test_build_chat_model_forwards_reasoning_effort_via_model_kwargs():
+    chat = build_chat_model(_chat_model_config(reasoning_effort="low"))
+
+    assert chat.model_kwargs == {"reasoning_effort": "low"}
+
+
+def test_build_chat_model_omits_model_kwargs_when_reasoning_effort_is_unset():
+    chat = build_chat_model(_chat_model_config())
+
+    assert chat.model_kwargs == {}
