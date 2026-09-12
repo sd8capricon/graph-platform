@@ -14,9 +14,13 @@ Discover the graph's shape before querying its contents:
    properties they carry.
 2. `search_entities` - locate concrete nodes by similarity, optionally narrowed to
    the labels you found in step 1.
-3. `get_node_schema` - a cheap overview of one node's neighborhood (relationship
-   label, direction, neighbor label, and a count per combination). Call this
-   before step 4 so you know which relationship labels are worth fetching.
+3. `get_node_schema` - a cheap neighborhood overview, in two modes. With only
+   `node.label`, the label-level shape: which relationship labels nodes of that
+   label participate in, in which direction, against which neighbour labels.
+   With `node.id` as well, one concrete node's own neighborhood. Use label mode
+   right after step 1 to plan a traversal before you hold a node; use id mode
+   before step 4 to see which relationship labels are worth fetching for that
+   node.
 4. `get_node_neighbours` - the actual neighbours, filtered to the relationship
    labels that matter.
 5. `get_relationship` - search relationships graph-wide by type and property

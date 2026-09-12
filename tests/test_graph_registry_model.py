@@ -897,6 +897,55 @@ async def test_age_graph_repository_get_node_schema_returns_empty_list_when_no_r
     assert await repository.get_node_schema("demo_graph", "driver-1") == []
 
 
+async def test_age_graph_repository_get_label_schema_queries_both_directions_by_label():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    await repository.get_label_schema("demo_graph", "Driver")
+
+    outgoing, incoming = connection.cursor_obj.queries
+    assert "MATCH (a:Driver)-[r]->(b)" in outgoing
+    assert "MATCH (a:Driver)<-[r]-(b)" in incoming
+    for query in (outgoing, incoming):
+        assert "demo_graph" in query
+        assert "RETURN type(r), label(b), count(*)" in query
+
+
+async def test_age_graph_repository_get_label_schema_parses_scalars_and_tags_direction():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection(
+        [
+            [('"RACED_FOR"', '"Team"', "20"), ('"RACED_FOR"', '"Academy"', "4")],
+            [('"SPONSORS"', '"Sponsor"', "7")],
+        ]
+    )
+    repository = AgeGraphRepository(connection)
+
+    # Counts are graph-wide totals across every Driver, not one driver's degree.
+    assert await repository.get_label_schema("demo_graph", "Driver") == [
+        ("RACED_FOR", "outgoing", "Academy", 4),
+        ("RACED_FOR", "outgoing", "Team", 20),
+        ("SPONSORS", "incoming", "Sponsor", 7),
+    ]
+
+
+@pytest.mark.parametrize(
+    "label", ["", "   ", "Driver) DETACH DELETE (a", "Driver-1", "1Driver"]
+)
+async def test_age_graph_repository_get_label_schema_rejects_unsafe_labels(label):
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedRowsConnection()
+    repository = AgeGraphRepository(connection)
+
+    with pytest.raises(ValueError, match="valid graph label"):
+        await repository.get_label_schema("demo_graph", label)
+    assert connection.cursor_obj.queries == []
+
+
 class _RecordingAgeRepository:
     """Stands in for AgeGraphRepository, recording the Cypher it is asked to run."""
 

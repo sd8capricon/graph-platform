@@ -72,6 +72,32 @@ class AgeGraphRepository:
         return " {" + ", ".join(entries) + "}"
 
     @staticmethod
+    def _validate_label(label: str) -> str:
+        """Reject a label that cannot be safely inlined into a Cypher pattern.
+
+        Node ids and property values go through `_age_properties_literal()`,
+        which quotes and escapes them. A label has no literal form — it must be
+        inlined bare as `:{label}` — so anything that is not a plain identifier
+        (empty, whitespace, `Driver) DETACH DELETE (a`) is rejected here rather
+        than concatenated into a query. `create_node()`/`search_relationships()`
+        inline labels unguarded, but their labels come from validated
+        `KnowledgeBase` data; `get_label_schema()`'s comes straight off an LLM
+        tool call, so it is checked.
+
+        Args:
+            label: The label to validate.
+
+        Returns:
+            The label unchanged, if it is safe to inline.
+
+        Raises:
+            ValueError: If `label` is empty or not a valid identifier.
+        """
+        if not label or not label.isidentifier():
+            raise ValueError(f"label must be a valid graph label, got {label!r}")
+        return label
+
+    @staticmethod
     def _parse_agtype(value: str) -> Any:
         """Parse a raw `agtype` column value into a plain Python value.
 
@@ -317,16 +343,23 @@ class AgeGraphRepository:
 
         return triplets
 
-    async def get_node_schema(
-        self, graph_name: str, node_id: str
+    async def _neighborhood_shape(
+        self, graph_name: str, anchor: str
     ) -> list[tuple[str, str, str, int]]:
-        """Summarize the shape of a node's neighborhood, aggregated by the database.
+        """Aggregate the relationship shape around an anchor pattern fragment.
+
+        `anchor` is the text appended to the pattern variable `a` in
+        `MATCH (a<anchor>)`: a property literal such as ` {id: 'driver-1'}` (one
+        node instance, from `get_node_schema()`) or a label fragment such as
+        `:Driver` (every node carrying that label, from `get_label_schema()`).
+        Everything after the anchor is identical for both, which is why they
+        share this helper rather than duplicating the two-direction query pair.
 
         Unlike `get_node_neighbours()`, which returns every relationship
         instance along with its neighbor's full properties, this returns only the
         distinct relationship label / neighbor label combinations and how many
         relationships match each. The counting is done by the database, so a
-        high-degree node costs a handful of rows rather than one per relationship.
+        high-degree anchor costs a handful of rows rather than one per relationship.
 
         Runs one query per direction (outgoing, then incoming) rather than a single
         undirected match, so each row's direction is known from the query that
@@ -335,7 +368,8 @@ class AgeGraphRepository:
 
         Args:
             graph_name: The name of the graph to query.
-            node_id: The `id` property value of the node to summarize.
+            anchor: The already-escaped/validated pattern fragment to append to
+                the anchor variable `a`.
 
         Returns:
             A list of `(relationship_label, direction, neighbor_label, count)`
@@ -343,13 +377,12 @@ class AgeGraphRepository:
             `(relationship_label, neighbor_label)` since the database does not
             guarantee row order.
         """
-        id_filter = self._age_properties_literal({"id": node_id})
         cursor = self.pg_connection.cursor()
 
         entries: list[tuple[str, str, str, int]] = []
         for direction, pattern in (
-            ("outgoing", f"MATCH (a{id_filter})-[r]->(b)"),
-            ("incoming", f"MATCH (a{id_filter})<-[r]-(b)"),
+            ("outgoing", f"MATCH (a{anchor})-[r]->(b)"),
+            ("incoming", f"MATCH (a{anchor})<-[r]-(b)"),
         ):
             query = (
                 f"SELECT * FROM cypher('{graph_name}', $$ "
@@ -373,6 +406,62 @@ class AgeGraphRepository:
             )
 
         return entries
+
+    async def get_node_schema(
+        self, graph_name: str, node_id: str
+    ) -> list[tuple[str, str, str, int]]:
+        """Summarize the shape of one node's neighborhood, aggregated by the database.
+
+        The label-level counterpart is `get_label_schema()`; both are
+        `_neighborhood_shape()` with a different anchor.
+
+        Args:
+            graph_name: The name of the graph to query.
+            node_id: The `id` property value of the node to summarize.
+
+        Returns:
+            A list of `(relationship_label, direction, neighbor_label, count)`
+            tuples, outgoing entries first then incoming, sorted within each
+            direction. `count` is this one node's degree per combination.
+        """
+        return await self._neighborhood_shape(
+            graph_name, self._age_properties_literal({"id": node_id})
+        )
+
+    async def get_label_schema(
+        self, graph_name: str, label: str
+    ) -> list[tuple[str, str, str, int]]:
+        """Summarize the shape of a whole label's neighborhood, aggregated by the database.
+
+        `get_node_schema()` anchored on a label instead of a node id: the same
+        `(relationship_label, direction, neighbor_label, count)` tuples, but
+        matched against *every* node carrying `label`. `count` is therefore a
+        graph-wide total across all those nodes, not one node's degree — a
+        `Driver` label with 20 drivers each in one `RACED_FOR` relationship
+        reports `count: 20`, not `1`.
+
+        This is the only way to enumerate every neighbour label a label
+        participates in: `GraphSchemaRegistry` stores a single
+        `source_label`/`target_label` pair per relationship label, so it cannot
+        represent a relationship used against several neighbour labels, and it
+        carries no counts at all.
+
+        Args:
+            graph_name: The name of the graph to query.
+            label: The node label to summarize. Must be a plain identifier —
+                it is inlined into the Cypher pattern as `:{label}`.
+
+        Returns:
+            A list of `(relationship_label, direction, neighbor_label, count)`
+            tuples, outgoing entries first then incoming, sorted within each
+            direction. Empty if no node carries `label` or none has relationships.
+
+        Raises:
+            ValueError: If `label` is empty or not a valid graph label.
+        """
+        return await self._neighborhood_shape(
+            graph_name, f":{self._validate_label(label)}"
+        )
 
     async def search_relationships(
         self,

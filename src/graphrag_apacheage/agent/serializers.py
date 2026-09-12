@@ -106,31 +106,39 @@ class AgentSerializer:
 
     @staticmethod
     def node_schema_to_dict(
-        node_id: str,
+        node_id: str | None,
         label: str,
         entries: list[tuple[str, str, str, int]],
         node_properties: list[str] | None = None,
         relationship_properties: dict[str, list[str]] | None = None,
         neighbor_properties: dict[str, list[str]] | None = None,
     ) -> dict:
-        """Group a node's (relationship, direction, neighbor label, count) entries under it.
+        """Group a node's or label's (relationship, direction, neighbor label, count) entries under it.
 
-        The node appears once rather than per entry, mirroring
-        `node_neighbours_to_dict`. `node_properties`/`relationship_properties`/
-        `neighbor_properties` are property-name lists (from
-        `GraphSchemaRegistry`), not instance values — this is a summary of the
-        node's neighborhood *shape*, not its data. `relationship_properties` and
+        The anchor (node or label) appears once rather than per entry,
+        mirroring `node_neighbours_to_dict`. `node_properties`/
+        `relationship_properties`/`neighbor_properties` are property-name lists
+        (from `GraphSchemaRegistry`), not instance values — this is a summary of
+        the neighborhood *shape*, not its data. `relationship_properties` and
         `neighbor_properties` are keyed by label since the same label can repeat
         across entries (once per direction, or for different neighbor labels).
+
+        `node_id` is `None` in label mode (`get_node_schema` called without an
+        id, via `AgeGraphRepository.get_label_schema`). The `node` block then
+        omits the `node_id` key entirely rather than carrying a `null`,
+        matching `schema_registry_record_to_dict`'s drop-None convention, so
+        the model never sees a null it might echo back as a real id. In that
+        mode each `count` is a total across *every* node carrying `label` —
+        the label's aggregate traffic on that relationship, not any one node's
+        degree — so it must not be read as "this node has N neighbours".
         """
         relationship_properties = relationship_properties or {}
         neighbor_properties = neighbor_properties or {}
+        node: dict[str, Any] = {"label": label, "properties": node_properties or []}
+        if node_id is not None:
+            node = {"node_id": node_id, **node}
         return {
-            "node": {
-                "node_id": node_id,
-                "label": label,
-                "properties": node_properties or [],
-            },
+            "node": node,
             "relationships": [
                 {
                     "label": relationship_label,

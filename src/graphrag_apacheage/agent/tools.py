@@ -67,21 +67,49 @@ async def search_entities(
 
 @tool(
     description=(
-        "Summarize a node's neighborhood before fetching its relationships. "
-        "For the given `node.id`, return relationship types, direction, neighbor "
-        "labels, counts, and known property names (not values). Use this to "
-        "decide what to fetch with `get_node_neighbours`. `node.id` is required "
-        "and must be an existing node id, such as one returned by "
-        "`search_entities`; an unknown id returns an empty neighborhood."
+        "Overview of how a node label, or one specific node, connects in the "
+        "graph — cheap to call, returns shape not data. Two modes. Pass only "
+        "`node.label` for the label-level schema: the label's property names, "
+        "plus every relationship label that nodes of that label participate "
+        "in, its direction, the neighbour labels on the other end, their "
+        "property names, and a graph-wide count summed over all nodes of that "
+        "label. Also pass `node.id` to get the same shape for that one node, "
+        "where each count is that node's own degree. Use label mode to plan a "
+        "traversal before you hold a concrete node; use id mode once "
+        "`search_entities` has given you a real node id, to decide what to "
+        "fetch with `get_node_neighbours`. Property names only, never values. "
+        "An unknown label or id returns an empty neighborhood."
     )
 )
 async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
-    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema and enriches it with GraphSchemaRegistry property-name lists. `node.id` must be an existing node's id, not a placeholder — an unrecognized id matches no node and returns an empty neighborhood instead of raising."""
-    if not node.id or not node.id.strip():
-        raise ValueError("node.id is required to look up its schema")
+    """Cheap overview counterpart to get_node_neighbours, in two modes.
+
+    With `node.id`, delegates to `AgeGraphRepository.get_node_schema()` for
+    that one instance; without it, to `AgeGraphRepository.get_label_schema()`
+    for every node carrying `node.label`. Both return the same
+    `(relationship_label, direction, neighbor_label, count)` tuples, so the
+    `GraphSchemaRegistry` property-name enrichment and the serializer call
+    below are mode-independent — only `count`'s meaning differs (one node's
+    degree vs. a total across every node of the label).
+
+    A blank-but-present `node.id` is a malformed instance reference and
+    raises, rather than silently degrading to label mode and answering a
+    broader question. An unrecognized id or label is not an error: it matches
+    no node and returns an empty neighborhood.
+    """
+    if node.id is not None and not node.id.strip():
+        raise ValueError(
+            "node.id must not be blank - omit it entirely for the label schema"
+        )
+    if not node.label.strip():
+        raise ValueError("node.label is required to look up a schema")
 
     context = runtime.context
-    entries = await context.repository.get_node_schema(context.graph_name, node.id)
+    entries = (
+        await context.repository.get_node_schema(context.graph_name, node.id)
+        if node.id
+        else await context.repository.get_label_schema(context.graph_name, node.label)
+    )
 
     relationship_labels = {
         relationship_label for relationship_label, _, _, _ in entries

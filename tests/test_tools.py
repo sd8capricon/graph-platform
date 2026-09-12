@@ -2,7 +2,6 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.tools import ToolRuntime
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.agent.context import AgentContext
@@ -165,21 +164,79 @@ async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node
     }
 
 
+async def test_get_node_schema_returns_label_schema_when_id_is_omitted(monkeypatch):
+    repository = MagicMock(spec=AgeGraphRepository)
+    repository.get_label_schema.return_value = [
+        ("RACED_FOR", "outgoing", "Team", 20),
+        ("RACED_FOR", "outgoing", "Academy", 4),
+    ]
+    node = NodeRef(label="Driver")
+
+    properties_by_type = {
+        SchemaType.NODE: {
+            "Driver": ["name", "number"],
+            "Team": ["name"],
+            "Academy": ["name"],
+        },
+        SchemaType.RELATIONSHIP: {"RACED_FOR": ["season"]},
+    }
+
+    async def fake_get_properties_by_name(session, graph_name, names, type=None):
+        available = properties_by_type[type]
+        return {name: available[name] for name in names if name in available}
+
+    monkeypatch.setattr(
+        GraphSchemaRegistry, "get_properties_by_name", fake_get_properties_by_name
+    )
+
+    result = await get_node_schema.coroutine(
+        node=node, runtime=_runtime(_context(repository))
+    )
+
+    repository.get_label_schema.assert_called_once_with("demo_graph", "Driver")
+    repository.get_node_schema.assert_not_called()
+    # No `node_id` key at all in label mode, not `node_id: None`.
+    assert result["node"] == {"label": "Driver", "properties": ["name", "number"]}
+    assert [entry["neighbor_label"] for entry in result["relationships"]] == [
+        "Team",
+        "Academy",
+    ]
+    assert result["relationships"][0]["neighbor_properties"] == ["name"]
+
+
+@pytest.mark.parametrize("label", ["", "   "])
+async def test_get_node_schema_raises_on_empty_label(label):
+    repository = MagicMock(spec=AgeGraphRepository)
+
+    with pytest.raises(ValueError, match="node.label is required"):
+        await get_node_schema.coroutine(
+            node=NodeRef(label=label), runtime=_runtime(_context(repository))
+        )
+    repository.get_label_schema.assert_not_called()
+
+
 @pytest.mark.parametrize("node_id", ["", "   "])
-async def test_get_node_schema_raises_on_empty_id(node_id):
+async def test_get_node_schema_raises_on_blank_id(node_id):
+    """A blank `id` is a malformed instance reference, not a request for the
+    label schema — omitting the field entirely is how you ask for that."""
+    repository = MagicMock(spec=AgeGraphRepository)
     node = NodeRef(id=node_id, label="Driver")
 
-    with pytest.raises(ValueError, match="node.id is required"):
+    with pytest.raises(ValueError, match="node.id must not be blank"):
         await get_node_schema.coroutine(
-            node=node, runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
+            node=node, runtime=_runtime(_context(repository))
         )
+    repository.get_node_schema.assert_not_called()
+    repository.get_label_schema.assert_not_called()
 
 
-def test_node_ref_requires_id():
-    """`NodeRef.id` has no default and is not auto-generated, unlike `KnowledgeNode.id` —
-    omitting it must fail schema validation rather than silently fabricating one."""
-    with pytest.raises(ValidationError):
-        NodeRef(label="Driver")
+def test_node_ref_id_is_optional_but_never_generated():
+    """`NodeRef.id` is optional (omitting it selects `get_node_schema`'s label
+    mode) but, unlike `KnowledgeNode.id`, is never auto-generated — an omitted
+    `id` stays `None` rather than becoming a UUID that matches nothing in the
+    graph."""
+    assert NodeRef(label="Driver").id is None
+    assert KnowledgeNode(label="Driver").id is not None
 
 
 async def test_get_relationship_reshapes_matches_via_serializer():

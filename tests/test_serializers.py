@@ -162,3 +162,16 @@ def test_node_schema_to_dict_returns_empty_relationships_list_when_no_entries():
         "node": {"node_id": "driver-1", "label": "Driver", "properties": []},
         "relationships": [],
     }
+
+
+def test_node_schema_to_dict_omits_node_id_key_entirely_in_label_mode():
+    result = AgentSerializer.node_schema_to_dict(
+        None,
+        "Driver",
+        [("RACED_FOR", "outgoing", "Team", 20)],
+        node_properties=["name", "number"],
+    )
+
+    assert "node_id" not in result["node"]
+    assert result["node"] == {"label": "Driver", "properties": ["name", "number"]}
+    assert result["relationships"][0]["count"] == 20
