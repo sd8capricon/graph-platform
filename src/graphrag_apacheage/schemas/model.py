@@ -146,5 +146,21 @@ class Model(BaseModel):
             )
         return self
 
+    @property
+    def identifier(self) -> str:
+        """The litellm-style `f"{provider}/{name}"` string identifying this model.
+
+        Shared by every caller that needs to name which provider/model produced
+        something - the litellm model string in `EmbeddingService.compute_embeddings()`
+        and `agent/chat_model.py`'s `build_chat_model()`, and the `embedding_model`
+        provenance stamped onto `GraphSchemaRegistry`/`NodeEmbedding` rows (see
+        ADR-0001 option (1), as rescoped by ADR-0002) - so all four read the same
+        identifier the same way.
+
+        Returns:
+            `f"{self.provider}/{self.name}"`.
+        """
+        return f"{self.provider}/{self.name}"
+
 
 __all__ = ["Model", "AuthMode", "ModelType"]

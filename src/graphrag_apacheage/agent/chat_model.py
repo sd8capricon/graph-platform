@@ -36,7 +36,7 @@ def build_chat_model(model: Model, /, **overrides: Any) -> ChatLiteLLM:
     Returns:
         A `ChatLiteLLM` bound to the given provider.
     """
-    call_kwargs: dict[str, Any] = {"model": f"{model.provider}/{model.name}"}
+    call_kwargs: dict[str, Any] = {"model": model.identifier}
     if model.connection_string:
         call_kwargs["api_base"] = model.connection_string
     if model.auth_mode == AuthMode.API_KEY and model.api_key is not None:

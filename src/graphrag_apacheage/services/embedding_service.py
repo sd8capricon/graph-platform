@@ -33,7 +33,7 @@ class EmbeddingService:
             return None
 
         call_kwargs: dict[str, Any] = {
-            "model": f"{model.provider}/{model.name}",
+            "model": model.identifier,
             "input": texts,
         }
         if model.connection_string:

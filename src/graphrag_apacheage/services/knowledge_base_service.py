@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
+from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
 from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
 from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
 from graphrag_apacheage.schemas.model import Model
@@ -29,6 +30,7 @@ class KnowledgeBaseService:
         session: AsyncSession,
         knowledge_base: KnowledgeBase,
         graph_name: str,
+        organization_id: str,
         model: Model | None = None,
     ) -> list[str]:
         """Upsert a knowledge base into the Apache Age graph and its side-tables.
@@ -51,6 +53,9 @@ class KnowledgeBaseService:
                 records and node embeddings.
             knowledge_base: The KnowledgeBase instance containing nodes and relationships.
             graph_name: The name of the target Apache Age graph. Required.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Stamped onto every schema registry and node
+                embedding row written.
             model: The embedding provider configuration used to embed the schema
                 registry records and node embeddings. If None, embedding computation
                 is skipped and rows are stored without an embedding.
@@ -98,16 +103,20 @@ class KnowledgeBaseService:
         await self.repository.commit()
 
         await self.upsert_graph_schema_registry(
-            session, knowledge_base, graph_name, model=model
+            session, knowledge_base, graph_name, organization_id, model=model
         )
         await self.upsert_node_embeddings(
-            session, knowledge_base, graph_name, model=model
+            session, knowledge_base, graph_name, organization_id, model=model
         )
 
         return queries
 
     async def delete_knowledge_base(
-        self, session: AsyncSession, knowledge_base_id: str, graph_name: str
+        self,
+        session: AsyncSession,
+        knowledge_base_id: str,
+        graph_name: str,
+        organization_id: str,
     ) -> list[str]:
         """Delete a knowledge base from the Apache Age graph and its side-tables.
 
@@ -134,6 +143,8 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to read and delete the side-table rows.
             knowledge_base_id: The id of the KnowledgeBase to delete.
             graph_name: The name of the Apache Age graph to delete it from. Required.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Scopes every side-table read/delete below.
 
         Returns:
             A list of SQL queries that were executed against the Apache Age graph,
@@ -160,6 +171,7 @@ class KnowledgeBaseService:
             (
                 await session.execute(
                     select(NodeEmbedding.node_id).where(
+                        NodeEmbedding.organization_id == organization_id,
                         NodeEmbedding.graph_name == graph_name,
                         NodeEmbedding.knowledge_base_id == knowledge_base_id,
                     )
@@ -177,12 +189,15 @@ class KnowledgeBaseService:
 
         await session.execute(
             delete(NodeEmbedding).where(
+                NodeEmbedding.organization_id == organization_id,
                 NodeEmbedding.graph_name == graph_name,
                 NodeEmbedding.knowledge_base_id == knowledge_base_id,
             )
         )
 
-        await self.delete_graph_schema_registry(session, knowledge_base_id, graph_name)
+        await self.delete_graph_schema_registry(
+            session, knowledge_base_id, graph_name, organization_id
+        )
 
         await session.flush()
         return queries
@@ -217,16 +232,26 @@ class KnowledgeBaseService:
         await self.repository.commit()
         return query
 
-    async def delete_graph(self, session: AsyncSession, graph_name: str) -> str | None:
+    async def delete_graph(
+        self, session: AsyncSession, graph_name: str, organization_id: str
+    ) -> str | None:
         """Drop an Apache Age graph and every side-table row belonging to it.
 
         The inverse of `create_graph()` and the graph-wide counterpart of
         `delete_knowledge_base()`. Drops the graph
         itself (cascading, so all its nodes and edges go with it), then deletes
-        *all* `NodeEmbedding` and `GraphSchemaRegistry` rows for `graph_name`.
-        Unlike `delete_knowledge_base()`, the registry rows are deleted outright
-        rather than adjusted: the graph they describe no longer exists, so no
-        contributing knowledge base has a remaining claim on them.
+        *all* `NodeEmbedding` and `GraphSchemaRegistry` (plus its `SchemaEmbedding`
+        children) rows for `graph_name`. Unlike `delete_knowledge_base()`, the
+        registry rows are deleted outright rather than adjusted: the graph they
+        describe no longer exists, so no contributing knowledge base has a
+        remaining claim on them.
+
+        The `SchemaEmbedding` rows must be deleted with their own statement,
+        before the `GraphSchemaRegistry` delete: both deletes here are bulk
+        `delete()` statements, which bypass the ORM's `cascade="all,
+        delete-orphan"` on `GraphSchemaRegistry.embedding_row` entirely (that
+        cascade only fires for `session.delete()` on a loaded instance, which
+        `delete_graph_schema_registry()` uses but this method does not).
 
         A missing graph is not an error. Dropping a graph is precisely the case
         that leaves the side-tables orphaned, so the rows are cleaned up either
@@ -239,6 +264,8 @@ class KnowledgeBaseService:
         Args:
             session: SQLAlchemy async session used to delete the side-table rows.
             graph_name: The name of the Apache Age graph to delete. Required.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Scopes every side-table delete below.
 
         Returns:
             The SQL query that dropped the graph, or None if the graph did not
@@ -256,11 +283,25 @@ class KnowledgeBaseService:
             await self.repository.commit()
 
         await session.execute(
-            delete(NodeEmbedding).where(NodeEmbedding.graph_name == graph_name)
+            delete(NodeEmbedding).where(
+                NodeEmbedding.organization_id == organization_id,
+                NodeEmbedding.graph_name == graph_name,
+            )
+        )
+        await session.execute(
+            delete(SchemaEmbedding).where(
+                SchemaEmbedding.graph_registry_id.in_(
+                    select(GraphSchemaRegistry.id).where(
+                        GraphSchemaRegistry.organization_id == organization_id,
+                        GraphSchemaRegistry.graph_name == graph_name,
+                    )
+                )
+            )
         )
         await session.execute(
             delete(GraphSchemaRegistry).where(
-                GraphSchemaRegistry.graph_name == graph_name
+                GraphSchemaRegistry.organization_id == organization_id,
+                GraphSchemaRegistry.graph_name == graph_name,
             )
         )
 
@@ -272,6 +313,7 @@ class KnowledgeBaseService:
         session: AsyncSession,
         knowledge_base: KnowledgeBase,
         graph_name: str,
+        organization_id: str,
         model: Model | None = None,
     ) -> list[GraphSchemaRegistry]:
         """Extract and store a knowledge base's node/relationship type definitions.
@@ -280,6 +322,8 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to persist the schema records.
             knowledge_base: The KnowledgeBase whose schema should be registered.
             graph_name: The name of the Apache Age graph these schemas belong to. Required.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Stamped onto every constructed record.
             model: The embedding provider configuration to use. If None, embedding
                 computation is skipped and records are stored without an embedding.
 
@@ -295,11 +339,17 @@ class KnowledgeBaseService:
                 "graph_name is required when upserting graph schema registry records"
             )
 
-        records = knowledge_base.get_graph_schema_registry_records(graph_name)
+        records = knowledge_base.get_graph_schema_registry_records(
+            graph_name, organization_id
+        )
         return await GraphSchemaRegistry.upsert_records(session, records, model=model)
 
     async def delete_graph_schema_registry(
-        self, session: AsyncSession, knowledge_base_id: str, graph_name: str
+        self,
+        session: AsyncSession,
+        knowledge_base_id: str,
+        graph_name: str,
+        organization_id: str,
     ) -> list[GraphSchemaRegistry]:
         """Drop a knowledge base's claim on a graph's schema registry rows.
 
@@ -318,6 +368,8 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to read and update the rows.
             knowledge_base_id: The id of the KnowledgeBase to remove.
             graph_name: The name of the Apache Age graph whose registry to adjust.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Scopes which rows are read/adjusted.
 
         Returns:
             A list of the surviving GraphSchemaRegistry rows the id was removed from.
@@ -327,7 +379,8 @@ class KnowledgeBaseService:
             (
                 await session.execute(
                     select(GraphSchemaRegistry).where(
-                        GraphSchemaRegistry.graph_name == graph_name
+                        GraphSchemaRegistry.organization_id == organization_id,
+                        GraphSchemaRegistry.graph_name == graph_name,
                     )
                 )
             )
@@ -358,6 +411,7 @@ class KnowledgeBaseService:
         session: AsyncSession,
         knowledge_base: KnowledgeBase,
         graph_name: str,
+        organization_id: str,
         model: Model | None = None,
     ) -> list[NodeEmbedding]:
         """Compute and store vector embeddings for a knowledge base's nodes.
@@ -366,6 +420,8 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to persist node embeddings.
             knowledge_base: The KnowledgeBase whose nodes should be embedded.
             graph_name: The name of the Apache Age graph these nodes belong to. Required.
+            organization_id: Id of the organization this graph belongs to (see
+                ADR-0002, Decision 1). Stamped onto every constructed record.
             model: The embedding provider configuration to use. If None, embedding
                 computation is skipped and nodes are stored without an embedding.
 
@@ -379,7 +435,7 @@ class KnowledgeBaseService:
         if not graph_name:
             raise ValueError("graph_name is required when upserting node embeddings")
 
-        records = knowledge_base.get_node_embedding_records(graph_name)
+        records = knowledge_base.get_node_embedding_records(graph_name, organization_id)
         return await NodeEmbedding.upsert_records(session, records, model=model)
 
     async def search_nodes(
@@ -387,9 +443,11 @@ class KnowledgeBaseService:
         session: AsyncSession,
         query: str,
         graph_name: str,
+        organization_id: str,
         model: Model,
         labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
+        embedding_model: str | None = None,
         limit: int = 5,
     ) -> list[NodeEmbedding]:
         """Find knowledge base nodes whose embedding is closest to a text query.
@@ -398,9 +456,13 @@ class KnowledgeBaseService:
             session: SQLAlchemy async session used to execute the search.
             query: Free-text query to embed and compare stored node embeddings against.
             graph_name: Restrict the search to nodes belonging to this graph.
+            organization_id: Restrict the search to this organization's rows (see
+                ADR-0002, Decision 1).
             model: The embedding provider configuration used to embed `query`.
             labels: Optional node labels to filter by.
             knowledge_base_id: Optional KnowledgeBase id to restrict the search to.
+            embedding_model: Optional `Model.identifier` to restrict the search to
+                rows embedded by that model (see `NodeEmbedding.embedding_model`).
             limit: Maximum number of nodes to return, ordered by similarity.
 
         Returns:
@@ -410,8 +472,10 @@ class KnowledgeBaseService:
             session,
             query,
             graph_name,
+            organization_id,
             model,
             labels=labels,
             knowledge_base_id=knowledge_base_id,
+            embedding_model=embedding_model,
             limit=limit,
         )

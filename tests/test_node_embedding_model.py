@@ -38,11 +38,13 @@ def test_node_embedding_table_exists_and_tracks_graph_and_node():
     columns = {column["name"] for column in inspector.get_columns("node_embedding")}
     expected = {
         "id",
+        "organization_id",
         "graph_name",
         "knowledge_base_id",
         "node_id",
         "label",
         "properties",
+        "embedding_model",
         "embedding",
     }
     assert expected.issubset(columns)
@@ -55,6 +57,7 @@ def test_node_embedding_round_trips_on_sqlite():
     Base.metadata.create_all(engine)
 
     record = NodeEmbedding(
+        organization_id="org-1",
         graph_name="demo",
         knowledge_base_id="kb-1",
         node_id="node-1",
@@ -80,15 +83,22 @@ async def test_upsert_node_embeddings_skips_embedding_when_model_not_provided():
         await conn.run_sync(Base.metadata.create_all)
 
     record = NodeEmbedding(
-        graph_name="demo", knowledge_base_id="kb-1", node_id="node-1", label="Driver", properties={}
+        organization_id="org-1",
+        graph_name="demo",
+        knowledge_base_id="kb-1",
+        node_id="node-1",
+        label="Driver",
+        properties={},
     )
 
     async with AsyncSession(engine) as session:
         persisted = await NodeEmbedding.upsert_records(session, [record])
         embedding = persisted[0].embedding
+        embedding_model = persisted[0].embedding_model
         await session.commit()
 
     assert embedding is None
+    assert embedding_model is None
 
 
 async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured(
@@ -112,6 +122,7 @@ async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_config
         await conn.run_sync(Base.metadata.create_all)
 
     record = NodeEmbedding(
+        organization_id="org-1",
         graph_name="demo",
         knowledge_base_id="kb-1",
         node_id="node-1",
@@ -124,9 +135,11 @@ async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_config
             session, [record], model=_embedding_model()
         )
         embedding = persisted[0].embedding
+        embedding_model = persisted[0].embedding_model
         await session.commit()
 
     assert embedding == [0.1, 0.2, 0.3]
+    assert embedding_model == "openai/text-embedding-3-small"
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["Driver name: Max Verstappen"]
 
@@ -141,6 +154,7 @@ async def test_upsert_node_embeddings_updates_existing_record_for_same_node():
             session,
             [
                 NodeEmbedding(
+                    organization_id="org-1",
                     graph_name="demo",
                     knowledge_base_id="kb-1",
                     node_id="node-1",
@@ -155,6 +169,7 @@ async def test_upsert_node_embeddings_updates_existing_record_for_same_node():
             session,
             [
                 NodeEmbedding(
+                    organization_id="org-1",
                     graph_name="demo",
                     knowledge_base_id="kb-1",
                     node_id="node-1",
@@ -212,6 +227,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
         FakeSession(),
         query="fast driver",
         graph_name="demo",
+        organization_id="org-1",
         model=_embedding_model(),
         labels=["Driver"],
         limit=3,
@@ -221,6 +237,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
     assert "<=>" in compiled
     assert "node_embedding.graph_name" in compiled
+    assert "node_embedding.organization_id" in compiled
     assert "LIMIT" in compiled
 
 
@@ -253,6 +270,7 @@ async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatc
         FakeSession(),
         query="fast driver",
         graph_name="demo",
+        organization_id="org-1",
         model=_embedding_model(),
         labels=["Driver", "Team"],
         limit=3,
@@ -263,6 +281,46 @@ async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatc
     assert "node_embedding.label IN" in compiled
 
 
+async def test_vector_search_filters_by_embedding_model_when_provided(monkeypatch):
+    import graphrag_apacheage.services.embedding_service as embedding_service
+
+    class FakeResponse:
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
+
+    async def fake_aembedding(**kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
+
+    captured = {}
+
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class FakeSession:
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return FakeResult()
+
+    results = await NodeEmbedding.vector_search(
+        FakeSession(),
+        query="fast driver",
+        graph_name="demo",
+        organization_id="org-1",
+        model=_embedding_model(),
+        embedding_model="openai/text-embedding-3-small",
+        limit=3,
+    )
+
+    assert results == []
+    compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
+    assert "node_embedding.embedding_model" in compiled
+
+
 async def test_vector_search_raises_when_model_not_provided():
     class FakeSession:
         async def execute(self, stmt):
@@ -270,7 +328,11 @@ async def test_vector_search_raises_when_model_not_provided():
 
     with pytest.raises(ValueError, match="model is required"):
         await NodeEmbedding.vector_search(
-            FakeSession(), query="fast driver", graph_name="demo", model=None
+            FakeSession(),
+            query="fast driver",
+            graph_name="demo",
+            organization_id="org-1",
+            model=None,
         )
 
 
@@ -280,10 +342,11 @@ def test_knowledge_base_extracts_one_node_embedding_record_per_node():
 
     assert knowledge_base.id == "b7c9e1a4-3f28-4d65-9e07-1a2b3c4d5e6f"
 
-    records = knowledge_base.get_node_embedding_records("F1 kb")
+    records = knowledge_base.get_node_embedding_records("F1 kb", "org-1")
 
     assert len(records) == len(knowledge_base.nodes)
     assert all(record.graph_name == "F1 kb" for record in records)
+    assert all(record.organization_id == "org-1" for record in records)
     assert all(record.knowledge_base_id == knowledge_base.id for record in records)
     node_ids = {node.id for node in knowledge_base.nodes}
     assert {record.node_id for record in records} == node_ids
@@ -310,9 +373,12 @@ async def test_knowledge_base_service_upserts_node_embeddings():
     service = KnowledgeBaseService(repository=None)
 
     async with AsyncSession(engine) as session:
-        persisted = await service.upsert_node_embeddings(session, knowledge_base, "demo_kb")
+        persisted = await service.upsert_node_embeddings(
+            session, knowledge_base, "demo_kb", "org-1"
+        )
         assert len(persisted) == 1
         assert persisted[0].node_id == "node-1"
+        assert persisted[0].organization_id == "org-1"
         assert persisted[0].knowledge_base_id == knowledge_base.id
         await session.commit()
 
@@ -324,7 +390,7 @@ async def test_knowledge_base_service_raises_error_if_graph_name_not_provided_fo
     service = KnowledgeBaseService(repository=None)
 
     with pytest.raises(ValueError, match="graph_name is required"):
-        await service.upsert_node_embeddings(None, knowledge_base, "")
+        await service.upsert_node_embeddings(None, knowledge_base, "", "org-1")
 
 
 async def test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base():
@@ -337,6 +403,7 @@ async def test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base():
 
     def _node(knowledge_base_id: str) -> NodeEmbedding:
         return NodeEmbedding(
+            organization_id="org-1",
             graph_name="demo",
             knowledge_base_id=knowledge_base_id,
             node_id="node-1",
@@ -363,6 +430,45 @@ async def test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base():
 
     assert len(rows) == 2
     assert {row.knowledge_base_id for row in rows} == {"kb-a", "kb-b"}
+
+
+async def test_upsert_node_embeddings_keeps_separate_rows_per_organization():
+    # organization_id is part of the row identity too: two organizations
+    # contributing the same node_id/graph_name/knowledge_base_id combination
+    # (e.g. both feeding a shared demo graph) must not collide into one row.
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    def _node(organization_id: str) -> NodeEmbedding:
+        return NodeEmbedding(
+            organization_id=organization_id,
+            graph_name="demo",
+            knowledge_base_id="kb-1",
+            node_id="node-1",
+            label="Driver",
+            properties={"name": "Max Verstappen"},
+        )
+
+    async with AsyncSession(engine) as session:
+        await NodeEmbedding.upsert_records(session, [_node("org-1")])
+        await session.commit()
+
+        await NodeEmbedding.upsert_records(session, [_node("org-2")])
+        await session.commit()
+
+        rows = (
+            (
+                await session.execute(
+                    select(NodeEmbedding).where(NodeEmbedding.node_id == "node-1")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 2
+    assert {row.organization_id for row in rows} == {"org-1", "org-2"}
 
 
 async def test_vector_search_filters_by_knowledge_base_id_when_provided(monkeypatch):
@@ -394,6 +500,7 @@ async def test_vector_search_filters_by_knowledge_base_id_when_provided(monkeypa
         FakeSession(),
         query="fast driver",
         graph_name="demo",
+        organization_id="org-1",
         model=_embedding_model(),
         knowledge_base_id="kb-a",
         limit=3,
@@ -410,7 +517,16 @@ def test_get_node_embedding_records_requires_knowledge_base_id():
     )
 
     with pytest.raises(ValueError, match="id is required"):
-        knowledge_base.get_node_embedding_records("demo")
+        knowledge_base.get_node_embedding_records("demo", "org-1")
+
+
+def test_get_node_embedding_records_requires_organization_id():
+    knowledge_base = KnowledgeBase.model_validate(
+        {"name": "demo_kb", "nodes": [{"label": "Driver"}]}
+    )
+
+    with pytest.raises(ValueError, match="organization_id is required"):
+        knowledge_base.get_node_embedding_records("demo", "")
 
 
 async def test_knowledge_base_service_raises_error_if_knowledge_base_id_missing():
@@ -420,4 +536,4 @@ async def test_knowledge_base_service_raises_error_if_knowledge_base_id_missing(
     service = KnowledgeBaseService(repository=None)
 
     with pytest.raises(ValueError, match="id is required"):
-        await service.upsert_node_embeddings(None, knowledge_base, "demo")
+        await service.upsert_node_embeddings(None, knowledge_base, "demo", "org-1")

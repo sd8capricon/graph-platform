@@ -50,7 +50,9 @@
 3. **Agents** (`src/graphrag_apacheage/agent/`)
    - `context.py` - `AgentContext`: pydantic model passed as `context_schema` to LangChain's
      `create_agent()`; holds run-scoped, static data (not conversational state), separate from
-     graph state and made available to tools via LangGraph's runtime. Fields: `graph_name: str`
+     graph state and made available to tools via LangGraph's runtime. Fields: `organization_id: str`
+     (required — see ADR-0002, Decision 1; scopes every side-table read/write a run's tools perform
+     to one organization), `graph_name: str`
      (required, the Apache Age graph the run's tools operate against), `attached_kb_ids: list[str]`
      (the knowledge base IDs a run's tools may operate against), `session: AsyncSession` (required
      — how tools reach the NodeEmbedding/GraphSchemaRegistry side-tables; needs `model_config =
@@ -147,7 +149,7 @@
      `(relationship_label, direction, neighbor_label, count)` tuples with property-**name** lists
      (not values) for the anchor label (`node.label`), each distinct relationship label, and each
      distinct neighbor label appearing in the entries — sourced from `GraphSchemaRegistry` via its
-     `get_properties_by_name(session, graph_name, names, type=None)` classmethod, not from the live
+     `get_properties_by_name(session, graph_name, organization_id, names, type=None)` classmethod, not from the live
      Apache Age graph, since `GraphSchemaRegistry.properties` already **is** a property-name list
      (see "Schema Registry Pattern"); no new Cypher is needed and the already-fragile,
      unverified-against-a-live-instance `get_node_schema`/`get_label_schema` Cypher (see "Direct Graph
@@ -222,17 +224,20 @@
 
 ```
 JSON File → KnowledgeBase.from_json_file() → KnowledgeBaseService.upsert_knowledge_base(
-    session, kb, graph_name, model) → 3 writes in one call:
+    session, kb, graph_name, organization_id, model) → 3 writes in one call:
   1. nodes/relationships → AgeGraphRepository.create_node()/create_relationship() → Apache Age graph
-  2. get_graph_schema_registry_records(graph_name) → GraphSchemaRegistry.upsert_records()
-  3. get_node_embedding_records(graph_name) → NodeEmbedding.upsert_records() (embeds via litellm)
+  2. get_graph_schema_registry_records(graph_name, organization_id) → GraphSchemaRegistry.upsert_records()
+     (embedding stored on the row's `embedding_row`, a SchemaEmbedding — see "Vector Embedding &
+     Search Pattern")
+  3. get_node_embedding_records(graph_name, organization_id) → NodeEmbedding.upsert_records() (embeds via litellm)
 
-KnowledgeBaseService.delete_knowledge_base(session, kb_id, graph_name) → the inverse:
-  1. NodeEmbedding rows (kb_id, graph_name) → node ids → repository.delete_node() (DETACH DELETE)
+KnowledgeBaseService.delete_knowledge_base(session, kb_id, graph_name, organization_id) → the inverse:
+  1. NodeEmbedding rows (organization_id, kb_id, graph_name) → node ids → repository.delete_node() (DETACH DELETE)
   2. DELETE those NodeEmbedding rows
-  3. GraphSchemaRegistry: drop kb_id from knowledge_base_ids; delete rows left with none
+  3. GraphSchemaRegistry: drop kb_id from knowledge_base_ids; delete rows left with none (their
+     SchemaEmbedding child cascades via the ORM delete)
 
-NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
+NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked by similarity
 ```
 
 ## Key Patterns & Conventions
@@ -244,32 +249,40 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
 - `KnowledgeBase.id` is required by `get_graph_schema_registry_records()` / `get_node_embedding_records()` — both raise `ValueError` when it is falsy. The id is auto-generated when the `id` key is absent from input, but an explicit `"id": null` survives `setdefault` and still raises
 
 ### Schema Registry Pattern
-- One row per `(graph_name, type, name)` — the same label (e.g. `Driver`) may legitimately be
-  defined by more than one knowledge base feeding the same graph, so the match key does **not**
-  include the knowledge base id; instead the row is shared and accumulates every contributing
-  knowledge base's id
+- One row per `(organization_id, graph_name, type, name)` — `organization_id` is part of the match key
+  (see ADR-0002, Decision 1: every graph belongs to exactly one organization) so two organizations
+  defining a schema under the same `graph_name` never collide; the same label (e.g. `Driver`) may
+  still legitimately be defined by more than one knowledge base feeding the same graph *within* one
+  organization, so the match key does **not** include the knowledge base id — instead the row is
+  shared and accumulates every contributing knowledge base's id
 - `GraphSchemaRegistry.upsert_records()` performs smart merging:
   - Creates new records if not found
   - Merges aliases: `existing.aliases = sorted(set(existing.aliases) | set(record.aliases))`
   - Merges properties: `existing.properties = sorted(set(existing.properties) | set(record.properties))`
   - Merges knowledge_base_ids: `existing.knowledge_base_ids = sorted(set(existing.knowledge_base_ids) | set(record.knowledge_base_ids))`
   - Preserves source/target labels if not yet set
-- `KnowledgeBase.get_graph_schema_registry_records(graph_name)` extracts schema records
-  - Requires `graph_name` parameter (not stored on model, passed to method)
+  - (Re)computes each persisted record's embedding via `EmbeddingService.compute_embeddings()`, but
+    stores the vector on the record's `embedding_row` (a `SchemaEmbedding`, see "Vector Embedding &
+    Search Pattern" below) rather than on `GraphSchemaRegistry` itself — reading/assigning
+    `record.embedding_row` before the record is flushed is load-bearing, see that section
+- `KnowledgeBase.get_graph_schema_registry_records(graph_name, organization_id)` extracts schema records
+  - Requires both `graph_name` and `organization_id` (neither stored on the model, both passed to the
+    method); stamps `organization_id` onto every constructed record
   - Requires `self.id` to be set (raises `ValueError` otherwise); sets `knowledge_base_ids=[self.id]` on each constructed record
   - Returns list of `GraphSchemaRegistry` records for nodes and relationships
   - Both node and relationship records always get `aliases=[]` — there is deliberately no alias
     source for either yet (a node's own `id` previously leaked into `aliases` by mistake, and
     relationship records were seeding `aliases` with `relationship.label`, which is redundant with
     `name`). Revisit once there's a real alias source (e.g. alternate display names)
-- `GraphSchemaRegistry.get_properties_by_name(session, graph_name, names, type=None)` looks up the
-  stored `properties` list for a batch of names in one query (`name.in_(names)`, optionally filtered
-  by `type`), returning a `dict[name, list[str]]` that omits any name with no matching row (rather
-  than mapping it to `[]`) — the caller decides the default for a schema-less label. This is what
-  `agent/tools.py`'s `get_node_schema` tool uses to attach property-**name** lists to its neighborhood
-  summary (see the `agent/tools.py` bullet under "Agents" above); the same `type` value is shared
-  across all `names` passed in one call, so a caller needing both node and relationship labels'
-  properties makes two calls, not one
+- `GraphSchemaRegistry.get_properties_by_name(session, graph_name, organization_id, names, type=None)`
+  looks up the stored `properties` list for a batch of names in one query (`name.in_(names)`, scoped
+  by `organization_id` and `graph_name`, optionally filtered by `type`), returning a
+  `dict[name, list[str]]` that omits any name with no matching row (rather than mapping it to `[]`) —
+  the caller decides the default for a schema-less label. This is what `agent/tools.py`'s
+  `get_node_schema` tool uses to attach property-**name** lists to its neighborhood summary (see the
+  `agent/tools.py` bullet under "Agents" above); the same `type` value is shared across all `names`
+  passed in one call, so a caller needing both node and relationship labels' properties makes two
+  calls, not one
 - See: `src/graphrag_apacheage/models/graph_schema_registry.py` and `src/graphrag_apacheage/schemas/knowledge_base.py`
 
 ### Knowledge Base Lifecycle Pattern
@@ -277,16 +290,19 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
   orchestrating methods; the four single-concern methods they call
   (`upsert_graph_schema_registry()`, `delete_graph_schema_registry()`, `upsert_node_embeddings()`,
   `search_nodes()`) stay public so a caller can drive one side-table alone
-- `upsert_knowledge_base(session, knowledge_base, graph_name, model=None)` does three writes:
-  the graph (`create_node`/`create_relationship` + `repository.commit()`), then
+- `upsert_knowledge_base(session, knowledge_base, graph_name, organization_id, model=None)` does
+  three writes: the graph (`create_node`/`create_relationship` + `repository.commit()`), then
   `GraphSchemaRegistry.upsert_records()`, then `NodeEmbedding.upsert_records()`. It returns only the
   list of executed Cypher queries (the graph audit trail) — call the single-concern methods directly
-  if you need the persisted side-table records back
-- `delete_knowledge_base(session, knowledge_base_id, graph_name)` is the inverse and takes an **id**,
-  not a `KnowledgeBase`: at delete time the source JSON is usually long gone. It gets the node ids
-  to delete from the knowledge base's own `NodeEmbedding` rows, which are the service's record of
-  what it wrote to the graph — so a knowledge base written by something *other* than
-  `upsert_knowledge_base()` (no `NodeEmbedding` rows) will not have its graph nodes removed
+  if you need the persisted side-table records back. `organization_id` (see ADR-0002, Decision 1) is
+  stamped onto every schema registry and node embedding row written, via
+  `KnowledgeBase.get_graph_schema_registry_records()`/`get_node_embedding_records()`
+- `delete_knowledge_base(session, knowledge_base_id, graph_name, organization_id)` is the inverse and
+  takes an **id**, not a `KnowledgeBase`: at delete time the source JSON is usually long gone. It
+  gets the node ids to delete from the knowledge base's own `NodeEmbedding` rows (scoped to
+  `organization_id`), which are the service's record of what it wrote to the graph — so a knowledge
+  base written by something *other* than `upsert_knowledge_base()` (no `NodeEmbedding` rows) will not
+  have its graph nodes removed
   - Nodes are removed with `repository.delete_node()`, i.e. `DETACH DELETE`, so relationships go
     with their nodes and no separate relationship pass is needed
   - Schema registry adjustment removes `knowledge_base_id` from each row's `knowledge_base_ids` and
@@ -299,19 +315,25 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
     plain JSON column and a graph holds one registry row per label, so the scan is cheap and works
     on SQLite. Do *not* reach for the jsonb `?|` operator `GraphSchemaRegistry.vector_search()` uses
     — that's PostgreSQL-only and would make these paths untestable on SQLite
-- `create_graph(graph_name)` / `delete_graph(session, graph_name)` are the graph lifecycle pair.
-  Both live on the service so callers never mix service and repository calls for the same concern,
-  and both return `None` when there was nothing to do (graph already exists / graph already gone).
-  `AgeGraphRepository` keeps its own raw `create_graph()`/`delete_graph()` pair — the service
-  methods delegate to them; the asymmetry to avoid is a *layer* that owns one half of a pair
+- `create_graph(graph_name)` / `delete_graph(session, graph_name, organization_id)` are the graph
+  lifecycle pair. Both live on the service so callers never mix service and repository calls for the
+  same concern, and both return `None` when there was nothing to do (graph already exists / graph
+  already gone). `AgeGraphRepository` keeps its own raw `create_graph()`/`delete_graph()` pair — the
+  service methods delegate to them; the asymmetry to avoid is a *layer* that owns one half of a pair
   - `create_graph()` takes no `session` on purpose: a new graph has no side-table rows, so there is
     nothing to create alongside it. Reusing a graph name dropped outside this service is the one gap
     — call `delete_graph()` first to clear any orphaned rows
-- `delete_graph(session, graph_name)` drops the Apache Age graph
+- `delete_graph(session, graph_name, organization_id)` drops the Apache Age graph
   (cascading, so no per-node `DETACH DELETE` pass is needed) and then deletes **all**
-  `NodeEmbedding` and `GraphSchemaRegistry` rows for that graph. Registry rows are deleted outright
-  rather than adjusted, unlike `delete_knowledge_base()` — the graph they describe is gone, so no
-  contributing knowledge base has a remaining claim
+  `NodeEmbedding` and `GraphSchemaRegistry` rows for that graph (scoped to `organization_id`).
+  Registry rows are deleted outright rather than adjusted, unlike `delete_knowledge_base()` — the
+  graph they describe is gone, so no contributing knowledge base has a remaining claim
+  - The `SchemaEmbedding` rows belonging to those registry rows are deleted **first**, via their own
+    bulk `delete()` statement (`SchemaEmbedding.graph_registry_id.in_(select(GraphSchemaRegistry.id)...)`).
+    This method's `GraphSchemaRegistry` delete is a bulk `delete()`, which bypasses the ORM's
+    `cascade="all, delete-orphan"` on `GraphSchemaRegistry.embedding_row` entirely — that cascade
+    only fires for `session.delete()` on a loaded instance (which `delete_graph_schema_registry()`
+    below uses), not for a bulk statement. Skipping this leaves orphaned `SchemaEmbedding` rows
   - A missing graph is deliberately **not** an error: dropping a graph is exactly what orphans the
     side-tables, so the rows are cleaned up either way. Returns the drop query, or `None` when the
     graph didn't exist and only the side-tables were cleaned
@@ -333,21 +355,72 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
   `test_delete_knowledge_base_*` / `test_delete_graph_*` tests in `tests/test_graph_registry_model.py`
 
 ### Vector Embedding & Search Pattern
-- Both `GraphSchemaRegistry` and `NodeEmbedding` (`models/node_embedding.py`) store a pgvector `embedding` column (`Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`), sized from the `settings` singleton (`config.py`, `AppSettings.embedding_dimension`, default `1536`) — both ORM models import `settings` directly from `config.py` (not from `embedding_service.py`, and not from an env var) so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
+- **Schema-registry embeddings live in their own table, `SchemaEmbedding`** (`models/schema_embedding.py`,
+  table `schema_embedding`), not inline on `GraphSchemaRegistry` — this is ADR-0002 Decision 5,
+  implemented: `graph_registry` describes only schema (types, names, properties, aliases,
+  source/target labels); the vector used for `vector_search()` similarity is a separate row, 1:1,
+  keyed back via `graph_registry_id: Mapped[int] = mapped_column(ForeignKey("graph_registry.id",
+  ondelete="CASCADE"), unique=True)`. `NodeEmbedding` (`models/node_embedding.py`) keeps its
+  pre-existing separate-table split from the Apache Age graph itself — the two embeddings now share
+  the same "own table, not inline" shape for different reasons (schema metadata vs. graph content)
+  - `GraphSchemaRegistry.embedding_row: Mapped[SchemaEmbedding | None]` is the ORM relationship,
+    `cascade="all, delete-orphan"`, `lazy="selectin"`, `uselist=False`. **Do not set
+    `passive_deletes=True`** — with it, `await session.delete(parent)` leaves the child row behind
+    on SQLite (no `PRAGMA foreign_keys=ON` in tests, so the DB-level `ON DELETE CASCADE` is
+    Postgres-only belt-and-braces; the ORM cascade is what actually deletes the child in tests)
+  - **Autoflush/lazy-load trap in `upsert_records()`:** for a brand-new record, `record.embedding_row = None`
+    must be assigned *before* `session.add(record)` — the loop's next `select()` autoflushes the
+    previous record to persistent state, and reading an *unloaded* relationship on a persistent
+    object under `AsyncSession` raises `MissingGreenlet`. `lazy="selectin"` does not prevent this: it
+    is a query-time loader and does nothing for a row that became persistent via autoflush. Only an
+    explicit assignment marks the attribute loaded; reading it while pending does not
+  - **Mutate the child in place, never replace it:** assigning a fresh `SchemaEmbedding` to a row
+    that already has one raises `IntegrityError: UNIQUE constraint failed:
+    schema_embedding.graph_registry_id`, because the unit of work orders INSERTs before DELETEs
+    within a table, so the new child's insert races the pending delete-orphan of the old one
+  - `vector_search()` reads the child via `.join(SchemaEmbedding, ...)` plus
+    `.options(contains_eager(cls.embedding_row))` (folding the child into one SELECT instead of a
+    second query the default `lazy="selectin"` would otherwise fire) and still returns
+    `list[GraphSchemaRegistry]` — a 1:1 inner join cannot multiply rows, so no `.unique()` is needed
+  - `delete_graph()` (`KnowledgeBaseService`) must delete `SchemaEmbedding` rows with their own bulk
+    `delete()` statement, **before** the `GraphSchemaRegistry` delete — see "Knowledge Base Lifecycle
+    Pattern" above. `delete_graph_schema_registry()` needs no such statement: it uses ORM
+    `await session.delete(row)`, and the `cascade="all, delete-orphan"` relationship deletes the
+    child automatically
+- **Every row on both embedding tables is scoped by a required `organization_id`** (ADR-0002 Decision 1
+  and its Open Questions recommendation): one shared table across all organizations, not a table per
+  organization, with `organization_id` as an indexed, denormalized column rather than derived via a
+  join. `GraphSchemaRegistry.organization_id` is part of its upsert match key
+  (`organization_id, graph_name, type, name`) — see "Schema Registry Pattern" — and
+  `SchemaEmbedding.organization_id` is the ADR's isolation filter on the embedding row itself;
+  `vector_search()` asserts both agree (`cls.organization_id == organization_id` **and**
+  `SchemaEmbedding.organization_id == organization_id`), so a mismatch (a bug) returns nothing rather
+  than leaking across organizations. `NodeEmbedding.organization_id` is denormalized directly onto
+  the row the same way `graph_name` already is (not derived via a join) and is part of its
+  `UniqueConstraint("organization_id", "graph_name", "knowledge_base_id", "node_id")`
+- **Row-level embedding-model provenance** (ADR-0001 option (1), rescoped by ADR-0002): both
+  `SchemaEmbedding.embedding_model` and `NodeEmbedding.embedding_model` store the `Model.identifier`
+  (`f"{provider}/{name}"`, see below) that produced the row's vector, stamped by `upsert_records()`
+  whenever an embedding is computed. Both `vector_search()` methods take an optional
+  `embedding_model: str | None` filter — during the window between an organization admin changing the
+  org's active embedding model and ADR-0002 Decision 4's mandatory recalculation finishing, this lets
+  a caller filter to rows already migrated to the new model instead of ranking old- and new-model
+  embeddings together. Not implemented here: the recalculation job itself
+- Both embedding tables store a pgvector `embedding` column (`Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`), sized from the `settings` singleton (`config.py`, `AppSettings.embedding_dimension`, default `1536`) — both modules import `settings` directly from `config.py` (not from `embedding_service.py`, and not from an env var) so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector
   - `AppSettings` (`config.py`) is a pydantic `BaseModel` holding all app config, and loads YAML in its constructor: `AppSettings(path)` reads `embedding_dimensions` into `embedding_dimension` and the top-level `models:` list into `models: list[Model]`, so the config file is parsed exactly once at startup. `AppSettings()` (no path) touches no disk and uses field defaults; explicit kwargs (`AppSettings(path, embedding_dimension=768)`) win over the file
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from graphrag_apacheage.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
-  - Ordering gotcha: `load_config()` must run before `models/graph_schema_registry.py` or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time; a later reload cannot resize an already-defined column
+  - Ordering gotcha: `load_config()` must run before `models/graph_schema_registry.py`, `models/schema_embedding.py`, or `models/node_embedding.py` are first imported anywhere, since pgvector's `Vector` column size is fixed at class-definition time; a later reload cannot resize an already-defined column
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
-  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle. `agent/deep_agent.py` imports `agent/tools.py` and so inherits the `load_config()`-before-import constraint too; sanity-check it with `python -c "from graphrag_apacheage.agent.deep_agent import build_deep_agent"` in a fresh interpreter
+  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `config.settings`/`models.base.Base`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle. `agent/deep_agent.py` imports `agent/tools.py` and so inherits the `load_config()`-before-import constraint too; sanity-check it with `python -c "from graphrag_apacheage.agent.deep_agent import build_deep_agent"` in a fresh interpreter
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
-  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `f"{model.provider}/{model.name}"`, passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
+  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent/chat_model.py`'s `build_chat_model()` and as the `embedding_model` provenance value stamped by both `upsert_records()` methods, so all three read the same identifier the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
-- Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)`
-- `vector_search(session, query, graph_name, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator: `cls.embedding.cosine_distance(embedding)` — requires PostgreSQL, raises `ValueError` if `model` is `None`
-- `NodeEmbedding` rows are keyed by `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping it onto each record as `knowledge_base_id`; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, model=None)` / `.search_nodes(session, query, graph_name, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
-- `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since `?|` doesn't run on SQLite
+- Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `GraphSchemaRegistry.upsert_records()` stores the result on `record.embedding_row` (see above), `NodeEmbedding.upsert_records()` stores it directly on the record, as before
+- `vector_search(session, query, graph_name, organization_id, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator (`SchemaEmbedding.embedding.cosine_distance(embedding)` / `NodeEmbedding.embedding.cosine_distance(embedding)`) — requires PostgreSQL, raises `ValueError` if `model` is `None`
+- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, organization_id, model=None)` / `.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, embedding_model=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
+- `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since neither `?|` nor `<=>` runs on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
-- See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_node_embedding_model.py`
+- See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/graph_schema_registry.py`, `src/graphrag_apacheage/models/schema_embedding.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
 
 ### Direct Graph Query & Async Repository Pattern
 - `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; `KnowledgeBaseService.upsert_knowledge_base()` is `async def` too, since it awaits repository calls internally
@@ -471,7 +544,7 @@ NodeEmbedding.vector_search(query, graph_name) → nodes ranked by similarity
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
 - Tests verify this constraint is enforced: `test_graph_registry_type_accepts_only_node_or_relationship()`
-- `NodeEmbedding` has a `UniqueConstraint("graph_name", "knowledge_base_id", "node_id")` — one row per node per knowledge base per graph
+- `NodeEmbedding` has a `UniqueConstraint("organization_id", "graph_name", "knowledge_base_id", "node_id")` — one row per node per knowledge base per graph per organization
 - `KnowledgeBase.get_graph_schema_registry_records()` / `get_node_embedding_records()` raise `ValueError` if `self.id` is falsy
 
 ## Common Tasks
@@ -500,25 +573,47 @@ embedding_model = Model(
 service = KnowledgeBaseService(repository)
 await service.create_graph("my_age_graph")  # no-op if it already exists
 
+organization_id = "org-1"  # see ADR-0002, Decision 1 - no Organization entity exists yet
+
 async with AsyncSession(engine) as session:
     # Writes the graph, the schema registry and the node embeddings; commits the
     # graph connection itself, leaves the session commit to us.
-    await service.upsert_knowledge_base(session, kb, "my_age_graph", model=embedding_model)
+    await service.upsert_knowledge_base(
+        session, kb, "my_age_graph", organization_id, model=embedding_model
+    )
     await session.commit()
 
     # ...and the inverses: one knowledge base, or the whole graph plus its side-tables.
-    await service.delete_knowledge_base(session, kb.id, "my_age_graph")
-    await service.delete_graph(session, "my_age_graph")
+    await service.delete_knowledge_base(session, kb.id, "my_age_graph", organization_id)
+    await service.delete_graph(session, "my_age_graph", organization_id)
     await session.commit()
 ```
 
 ### Adding Vector Search for a New Entity
 1. Subclass `Base` from `models/base.py` (don't redefine a new declarative base)
-2. Add an `embedding` column: `Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")` (import `settings` from `config.py`)
-3. Implement `embedding_text()` to build the text that gets embedded
-4. Implement `upsert_records(session, records, model=None)` and `vector_search(session, query, graph_name, model, ...)` following the `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from `services/embedding_service.py` — don't duplicate the litellm call)
-5. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session)
-6. Ensure `config.load_config()` runs before the new model module is first imported, otherwise the column is sized from `AppSettings`' default rather than the config file
+2. Decide inline vs. side table for the `embedding` column. If the entity's other columns are
+   themselves a merge target (like `GraphSchemaRegistry`'s schema metadata), prefer a dedicated
+   embedding table (see `models/schema_embedding.py`) so recalculation doesn't rewrite the
+   entity's source-of-truth row — this is ADR-0002 Decision 5. Otherwise inline is fine (see
+   `NodeEmbedding`)
+3. Add a required, indexed `organization_id: Mapped[str]` column (ADR-0002 Decision 1/Open
+   Questions: one shared table across organizations, not table-per-organization), a nullable
+   `embedding_model: Mapped[str | None]` column for row-level provenance (ADR-0001 option (1)), and
+   the `embedding` column itself: `Vector(settings.embedding_dimension).with_variant(JSON, "sqlite")`
+   (import `settings` from `config.py`)
+4. Implement `embedding_text()` to build the text that gets embedded
+5. Implement `upsert_records(session, records, model=None)` and
+   `vector_search(session, query, graph_name, organization_id, model, ...)` following the
+   `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from
+   `services/embedding_service.py` — don't duplicate the litellm call; stamp
+   `record.embedding_model = model.identifier` alongside the vector). `organization_id` is always
+   applied in `vector_search()`, not an optional filter — a row outside the caller's organization is
+   never a valid match. If using a side table (step 2), see `GraphSchemaRegistry.upsert_records()`'s
+   two documented traps: assign `record.embedding_row = None` before `session.add()` on a new record
+   (autoflush + `MissingGreenlet` otherwise), and mutate an existing child in place rather than
+   replacing it (`IntegrityError` otherwise)
+6. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session) plus an organization-isolation test (two organizations sharing the same natural key must not collide into one row) and a provenance test (`embedding_model` gets stamped)
+7. Ensure `config.load_config()` runs before the new model module is first imported, otherwise the column is sized from `AppSettings`' default rather than the config file
 
 ### Testing New Features
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`
@@ -536,6 +631,7 @@ async with AsyncSession(engine) as session:
 - `pyproject.toml` - project metadata, dependencies, build config
 - `src/graphrag_apacheage/` - main source directory
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
+- `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
 - `tests/test_tools.py` - test suite for `agent/tools.py`'s `@tool`-decorated functions
@@ -576,11 +672,14 @@ pytest tests/
   - `test_knowledge_base_parses_json_and_upserts_registry_rows()` - end-to-end JSON→DB flow
   - `test_graph_registry_type_accepts_only_node_or_relationship()` - constraint validation
   - `test_knowledge_base_graph_name_is_provided_to_service_not_stored()` - graph_name parameter pattern
-  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls
-  - `test_vector_search_embeds_query_and_builds_cosine_distance_statement()` - asserts on the compiled `postgresql` dialect SQL (via a fake async session) since pgvector's `<=>` operator can't run on SQLite
+  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls; also asserts `embedding_model` is stamped with `model.identifier`
+  - `test_vector_search_embeds_query_and_builds_cosine_distance_statement()` - asserts on the compiled `postgresql` dialect SQL (via a fake async session) since pgvector's `<=>` operator can't run on SQLite; for `GraphSchemaRegistry` also asserts `JOIN schema_embedding` and both tables' `organization_id` columns appear
   - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
+  - `test_vector_search_filters_by_embedding_model_when_provided()` - asserts the optional `embedding_model` filter (ADR-0001 provenance) compiles, for both `GraphSchemaRegistry` and `NodeEmbedding`
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
+  - `test_upsert_node_embeddings_keeps_separate_rows_per_organization()` / `test_upsert_records_keeps_separate_embedding_rows_per_organization()` (`tests/test_schema_embedding_model.py`) - two organizations sharing the same otherwise-identical natural key (graph_name/node_id, or graph_name/type/name) upsert to 2 rows, not 1 — `organization_id` is part of the identity, not just a filter
   - `test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases()` - same label from two knowledge bases upserts to 1 shared row with both ids in `knowledge_base_ids`
+  - `test_deleting_the_registry_row_cascades_to_its_embedding_row()` (`tests/test_schema_embedding_model.py`) - `session.delete()` on a `GraphSchemaRegistry` row deletes its `SchemaEmbedding` child via the ORM `cascade="all, delete-orphan"`, without relying on SQLite's (disabled-by-default) foreign key enforcement
   - `test_knowledge_base_can_write_nodes_and_relationships_to_age_graph()` - one
     `upsert_knowledge_base()` call writes the graph (recording fake repository) *and* both
     side-tables (real async SQLite session)

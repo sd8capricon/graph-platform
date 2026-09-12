@@ -2,8 +2,13 @@
 
 ## Status
 
-Proposed. Roles/privileges and embedding-model governance are decided; the API/build framework and
-the concrete enforcement/migration mechanics are open questions (see "Open Questions").
+Proposed, partially implemented. Roles/privileges and embedding-model governance are decided; the
+API/build framework and the concrete enforcement/migration mechanics are open questions (see "Open
+Questions"). Decision 5 (embedding split into its own table) and the `organization_id`
+data-model recommendation from "Open Questions" are implemented — see the note at the end of
+Decision 5 below. Decisions 1-4 (the Organization entity itself, roles/privileges, per-org embedding
+configuration replacing `AppSettings`, and mandatory recalculation) remain unimplemented: there is no
+Organization entity, user, or role anywhere in the codebase yet.
 
 ## Context
 
@@ -124,9 +129,23 @@ Rationale:
   embeddings (graph content vs. `NodeEmbedding` side table); doing the same for schema registry
   embeddings removes the asymmetry of one embedding living inline and the other living alongside.
 
-This is a data-model decision, not yet an implemented migration — the current `embedding` column on
-`GraphSchemaRegistry` and its `vector_search()`/`upsert_records()` methods still exist in code as of
-this ADR; the split described here is the target shape, to be executed as its own change.
+**Implemented.** `GraphSchemaRegistry` no longer has an `embedding` column; the vector lives on
+`SchemaEmbedding` (`src/graphrag_apacheage/models/schema_embedding.py`), a 1:1 side table keyed by
+`graph_registry_id` (`ForeignKey("graph_registry.id", ondelete="CASCADE")`, `unique=True`), with
+`cascade="all, delete-orphan"` on `GraphSchemaRegistry.embedding_row` so an ORM-level delete of the
+parent takes its embedding with it. `GraphSchemaRegistry.upsert_records()`/`vector_search()` were
+updated to read/write through this relationship (see "Vector Embedding & Search Pattern" in
+`CLAUDE.md`/`AGENTS.md` for the mechanics — two non-obvious traps: assigning `embedding_row = None`
+before `session.add()` on a new record to avoid an autoflush-triggered `MissingGreenlet`, and
+mutating an existing child in place rather than replacing it to avoid a `unique` constraint
+violation). Both this table and `NodeEmbedding` also picked up the two columns the Open Questions
+section below recommends: a required, indexed `organization_id` (also added to `GraphSchemaRegistry`
+itself, so its upsert match key and every read/delete path are organization-scoped — see below) and
+a nullable `embedding_model` provenance column (ADR-0001 option (1)). What is **not** implemented:
+the recalculation job that would populate/refresh `embedding_model` at scale (ADR-0002 Decision 4),
+and there is still no migration path for an existing Postgres deployment — `Base.metadata.create_all`
+only creates missing tables, it does not `ALTER` existing ones, so this change is dev-only until a
+migration is written.
 
 ## Consequences
 
@@ -140,10 +159,10 @@ this ADR; the split described here is the target shape, to be executed as its ow
 - Recalculation (Decision 4) is potentially expensive (re-embedding every row an org owns) and needs
   a job/queue mechanism this codebase does not yet have; until that exists, this ADR's mandatory
   trigger is a requirement to design against, not a working feature.
-- Splitting the embedding out of `graph_registry` (Decision 5) means `GraphSchemaRegistry.upsert_records()`
-  and `.vector_search()` both need to change to read/write the new table instead of `cls.embedding`,
-  and any test asserting on `GraphSchemaRegistry.embedding` directly (see `tests/test_graph_registry_model.py`)
-  needs to move with it.
+- **Done:** splitting the embedding out of `graph_registry` (Decision 5) changed
+  `GraphSchemaRegistry.upsert_records()` and `.vector_search()` to read/write the new
+  `SchemaEmbedding` table instead of `cls.embedding`, and the tests that asserted on
+  `GraphSchemaRegistry.embedding` directly moved to `tests/test_schema_embedding_model.py`.
 - Contributors gain broad authoring power (Models, Agents, knowledge bases) with no governance
   checks beyond "not an org Admin action" — if finer-grained limits are needed later (e.g. a
   Contributor quota, or restricting which providers a Contributor may configure), that's a
@@ -163,12 +182,17 @@ this ADR; the split described here is the target shape, to be executed as its ow
   behave against an organization mid-recalculation (serve stale results, block, filter to
   already-migrated rows), and how failures/partial progress are surfaced are all unresolved — see
   Decision 4.
-- **Embedding tables' exact shape — schema-registry embeddings *and* `NodeEmbedding`.** Decision 5
-  settles that the schema-registry embedding moves out of `graph_registry` into its own table; it does
-  not settle that new table's columns/keys/constraints, and it says nothing about `NodeEmbedding`'s
-  table itself (only that its rows are recalculated, per Decision 4). Both are implementation work,
-  analogous to `NodeEmbedding`'s existing `UniqueConstraint("graph_name", "knowledge_base_id", "node_id")`
-  pattern, to be designed when this is implemented.
+- **Embedding tables' exact shape — schema-registry embeddings *and* `NodeEmbedding`. Implemented,**
+  following the recommendation below to the letter, plus row-level `embedding_model` provenance
+  (ADR-0001 option (1)) on both tables. `SchemaEmbedding` (`models/schema_embedding.py`) is the new
+  schema-registry embedding table: `graph_registry_id` (`ForeignKey("graph_registry.id",
+  ondelete="CASCADE")`, `unique=True` — a 1:1 side table), `organization_id` (required, indexed),
+  `embedding_model` (nullable, indexed), `embedding`. `NodeEmbedding` gained `organization_id`
+  (required, indexed, folded into its `UniqueConstraint` alongside `graph_name`/
+  `knowledge_base_id`/`node_id`) and `embedding_model` (nullable, indexed). Both `vector_search()`
+  methods gained an optional `embedding_model` filter for use during a future recalculation window,
+  matching this ADR's Decision 4 rationale — though the recalculation job itself remains
+  unimplemented (see the Status line above and Decision 4's note below).
   - **Recommendation:** for both the new schema-registry embedding table and the existing
     `NodeEmbedding` table, one shared table across all organizations, scoped by an indexed
     `organization_id` column, not a separate physical table per organization. Table-per-organization
@@ -190,4 +214,12 @@ this ADR; the split described here is the target shape, to be executed as its ow
       exactly one organization) — but the recommendation is to denormalize it directly onto
       `NodeEmbedding` as its own column, the same way `graph_name` is already stored directly rather
       than looked up, so `vector_search()`'s isolation filter doesn't depend on a join (and thus on a
-      separate graph-to-organization mapping being correct) to stay safe.
+      separate graph-to-organization mapping being correct) to stay safe. **Done** — `NodeEmbedding.organization_id`
+      is a plain column, not derived via a join.
+    - `GraphSchemaRegistry` itself also gained a required, indexed `organization_id` column, folded
+      into its upsert match key (`organization_id, graph_name, type, name`) — this was necessary to
+      make `SchemaEmbedding`'s 1:1 FK actually tenant-safe: without it, two organizations sharing a
+      `graph_name` could have one silently overwrite the other's schema row and its embedding. This
+      goes beyond what this ADR's Open Questions section asked for on `NodeEmbedding` alone, but
+      follows the same "denormalized column, not a join" reasoning, applied to the row `SchemaEmbedding`
+      keys off of rather than to `SchemaEmbedding` itself.

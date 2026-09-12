@@ -23,6 +23,7 @@ from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
 def _context(repository) -> AgentContext:
     return AgentContext(
+        organization_id="org-1",
         graph_name="demo_graph",
         session=MagicMock(spec=AsyncSession),
         repository=repository,
@@ -124,7 +125,9 @@ async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node
         SchemaType.RELATIONSHIP: {"RACED_FOR": ["season"], "SPONSORS": []},
     }
 
-    async def fake_get_properties_by_name(session, graph_name, names, type=None):
+    async def fake_get_properties_by_name(
+        session, graph_name, organization_id, names, type=None
+    ):
         available = properties_by_type[type]
         return {name: available[name] for name in names if name in available}
 
@@ -181,7 +184,9 @@ async def test_get_node_schema_returns_label_schema_when_id_is_omitted(monkeypat
         SchemaType.RELATIONSHIP: {"RACED_FOR": ["season"]},
     }
 
-    async def fake_get_properties_by_name(session, graph_name, names, type=None):
+    async def fake_get_properties_by_name(
+        session, graph_name, organization_id, names, type=None
+    ):
         available = properties_by_type[type]
         return {name: available[name] for name in names if name in available}
 

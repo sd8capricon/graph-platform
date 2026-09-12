@@ -2,9 +2,14 @@
 
 ## Status
 
-Identified limitation. No solution implemented yet. Scope narrowed by decisions in ADR
+Identified limitation. Scope narrowed by decisions in ADR
 [0002](0002-organization-roles-privileges-and-embedding-model-governance.md) — see "Update (ADR-0002)"
-below.
+below. Option (1), rescoped, is now partially implemented: both `GraphSchemaRegistry` (via the new
+`SchemaEmbedding` side table) and `NodeEmbedding` stamp a row-level `embedding_model` column, and
+`vector_search()` on both accepts an optional `embedding_model` filter. What is **not** implemented:
+the recalculation job that would make this filter operationally meaningful (nothing currently
+changes an organization's active embedding model, since there is no Organization entity), and options
+(2)/(3)/(4) below remain unimplemented.
 
 ## Context
 

@@ -25,6 +25,11 @@ def _embedding_model() -> Model | None:
     return next((m for m in settings.models if ModelType.EMBEDDING in m.type), None)
 
 
+# Placeholder until the Organization entity (ADR-0002) exists: every write/read
+# path now requires an organization_id, and this demo has exactly one org.
+_DEMO_ORGANIZATION_ID = "demo-org"
+
+
 async def create_connection() -> AsyncConnection:
     host = os.environ["PGHOST"]
     connection = await AsyncConnection.connect(
@@ -57,7 +62,11 @@ async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSe
     # Writes the graph, the schema registry and the node embeddings in one call;
     # committing the SQLAlchemy session is left to us.
     await knowledge_base_service.upsert_knowledge_base(
-        session, knowledge_base, "kb_graph", model=_embedding_model()
+        session,
+        knowledge_base,
+        "kb_graph",
+        _DEMO_ORGANIZATION_ID,
+        model=_embedding_model(),
     )
     await session.commit()
 
@@ -71,6 +80,7 @@ async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
     deep_agent = build_deep_agent(_chat_model(), name="deep_graph_agent")
     react_agent = build_react_agent(_chat_model(), name="react_graph_agent")
     context = AgentContext(
+        organization_id=_DEMO_ORGANIZATION_ID,
         graph_name="kb_graph",
         attached_kb_ids=["b7c9e1a4-3f28-4d65-9e07-1a2b3c4d5e6f"],
         session=session,
@@ -118,6 +128,7 @@ async def run():
     # which is what create_all below actually reads.
     from graphrag_apacheage.models import graph_schema_registry  # noqa: F401
     from graphrag_apacheage.models import node_embedding
+    from graphrag_apacheage.models import schema_embedding  # noqa: F401
     from graphrag_apacheage.models.base import Base
     from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
 
@@ -132,7 +143,9 @@ async def run():
             await conn.run_sync(Base.metadata.create_all)
         async with AsyncSession(engine) as session:
             # SETUP KB
-            # await KnowledgeBaseService(age_repository).delete_graph(session, "kb_graph")
+            # await KnowledgeBaseService(age_repository).delete_graph(
+            #     session, "kb_graph", _DEMO_ORGANIZATION_ID
+            # )
             # await session.commit()
             # await create_knowledge_base(age_repository, session)
             await check_agent(session, age_repository)

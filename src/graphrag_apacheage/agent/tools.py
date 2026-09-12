@@ -28,6 +28,7 @@ async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext])
         context.session,
         query,
         context.graph_name,
+        context.organization_id,
         context.model,
         knowledge_base_ids=context.attached_kb_ids,
     )
@@ -55,6 +56,7 @@ async def search_entities(
         context.session,
         query,
         context.graph_name,
+        context.organization_id,
         context.model,
         labels=labels,
     )
@@ -92,16 +94,25 @@ async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
 
     node_properties, relationship_properties, neighbor_properties = (
         await GraphSchemaRegistry.get_properties_by_name(
-            context.session, context.graph_name, [node.label], type=SchemaType.NODE
+            context.session,
+            context.graph_name,
+            context.organization_id,
+            [node.label],
+            type=SchemaType.NODE,
         ),
         await GraphSchemaRegistry.get_properties_by_name(
             context.session,
             context.graph_name,
+            context.organization_id,
             relationship_labels,
             type=SchemaType.RELATIONSHIP,
         ),
         await GraphSchemaRegistry.get_properties_by_name(
-            context.session, context.graph_name, neighbor_labels, type=SchemaType.NODE
+            context.session,
+            context.graph_name,
+            context.organization_id,
+            neighbor_labels,
+            type=SchemaType.NODE,
         ),
     )
 

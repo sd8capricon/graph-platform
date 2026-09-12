@@ -1,14 +1,13 @@
 from collections.abc import Iterable
 from enum import Enum
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, cast, select
 from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, contains_eager, mapped_column, relationship
 
-from graphrag_apacheage.config import settings
 from graphrag_apacheage.models.base import Base
+from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
 from graphrag_apacheage.schemas.model import Model
 from graphrag_apacheage.services.embedding_service import EmbeddingService
 
@@ -30,14 +29,23 @@ class GraphSchemaRegistry(Base):
 
     Tracks and manages metadata about entity types (nodes) and relationship types
     in Apache Age graphs, including their properties, aliases, and interconnections.
+    The embedding used for `vector_search()` similarity is not stored here - see
+    `SchemaEmbedding` (`models/schema_embedding.py`) - so this table describes only
+    schema, per ADR-0002 Decision 5.
 
     Attributes:
         id: Primary key, auto-incrementing integer identifier.
+        organization_id: Id of the organization this schema row belongs to (see
+            ADR-0002, Decision 1: every graph belongs to exactly one
+            organization). Part of the row's identity alongside graph_name/type/
+            name, so two organizations can define a schema under the same
+            graph_name without colliding.
         graph_name: Name of the Apache Age graph this schema belongs to (indexed for fast lookup).
         knowledge_base_ids: Ids of every KnowledgeBase that contributed this schema
-            type. The same label (e.g. 'Driver') may legitimately be defined by more
-            than one knowledge base feeding the same graph, so this row is shared and
-            accumulates every contributing knowledge base's id on upsert.
+            type. The same label (e.g. 'Driver') may legitimately be defined by
+            more than one knowledge base feeding the same graph, so this row is
+            shared and accumulates every contributing knowledge base's id on
+            upsert.
         type: Schema type ('node' or 'relationship'). Enforced by CheckConstraint.
         name: Name/label of the entity or relationship type (e.g., 'Person', 'knows').
         description: Human-readable description of the schema type.
@@ -45,8 +53,10 @@ class GraphSchemaRegistry(Base):
         properties: List of property names associated with this schema type.
         source_label: For relationship types, the label of the source node type.
         target_label: For relationship types, the label of the target node type.
-        embedding: Optional vector embedding of the schema type (e.g. derived from
-            name/description/aliases) used for similarity search via `vector_search()`.
+        embedding_row: The SchemaEmbedding row holding this schema's vector
+            embedding (derived from name/description/aliases), used for
+            similarity search via `vector_search()`. One-to-one; None until an
+            embedding has been computed for this row.
     """
 
     __tablename__ = "graph_registry"
@@ -57,6 +67,9 @@ class GraphSchemaRegistry(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    organization_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
     graph_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     knowledge_base_ids: Mapped[list[str]] = mapped_column(
         JSON, nullable=False, default=list
@@ -68,8 +81,11 @@ class GraphSchemaRegistry(Base):
     properties: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     source_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     target_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(settings.embedding_dimension).with_variant(JSON, "sqlite"), nullable=True
+    embedding_row: Mapped[SchemaEmbedding | None] = relationship(
+        back_populates="graph_registry",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        uselist=False,
     )
 
     def embedding_text(self) -> str:
@@ -85,23 +101,26 @@ class GraphSchemaRegistry(Base):
     async def upsert_records(
         cls,
         session: AsyncSession,
-        records: Iterable[GraphSchemaRegistry],
+        records: Iterable["GraphSchemaRegistry"],
         model: Model | None = None,
-    ) -> list[GraphSchemaRegistry]:
+    ) -> list["GraphSchemaRegistry"]:
         """Upsert (insert or update) schema registry records into the database.
 
-        For each record, checks if it already exists based on (graph_name, type, name).
+        For each record, checks if it already exists based on
+        (organization_id, graph_name, type, name).
         - If not found: inserts the new record.
         - If found: merges the data by combining aliases, properties, and
           knowledge_base_ids (each deduped and sorted), and preserving source/target
           labels if not already set.
         Also (re)computes each persisted record's embedding from its post-merge
         name/description/aliases via litellm, provided an embedding `model` is
-        passed; otherwise embeddings are left untouched.
+        passed, storing it on the record's `embedding_row` (see `SchemaEmbedding`)
+        rather than on the record itself; otherwise embeddings are left untouched.
 
         Args:
             session: SQLAlchemy database session for executing queries.
-            records: An iterable of GraphSchemaRegistry records to upsert.
+            records: An iterable of GraphSchemaRegistry records to upsert. Each
+                record's `organization_id` must already be set.
             model: The embedding provider configuration to use. If None, embedding
                 computation is skipped and existing embeddings are left untouched.
 
@@ -114,6 +133,7 @@ class GraphSchemaRegistry(Base):
             existing = (
                 await session.execute(
                     select(cls).where(
+                        cls.organization_id == record.organization_id,
                         cls.graph_name == record.graph_name,
                         cls.type
                         == (
@@ -127,6 +147,13 @@ class GraphSchemaRegistry(Base):
             ).scalar_one_or_none()
 
             if existing is None:
+                # Load-bearing: marks `embedding_row` as loaded (== None) before
+                # this record becomes persistent. Without this, the next
+                # iteration's `select()` above autoflushes it, and reading
+                # `record.embedding_row` after that (below) raises
+                # MissingGreenlet - `lazy="selectin"` only helps on rows loaded
+                # by a query, not on a row that became persistent via autoflush.
+                record.embedding_row = None
                 session.add(record)
                 persisted.append(record)
                 continue
@@ -147,8 +174,24 @@ class GraphSchemaRegistry(Base):
             model, [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
+            embedding_model = model.identifier if model is not None else None
             for record, embedding in zip(persisted, embeddings):
-                record.embedding = embedding
+                child = record.embedding_row
+                if child is None:
+                    record.embedding_row = SchemaEmbedding(
+                        organization_id=record.organization_id,
+                        embedding_model=embedding_model,
+                        embedding=embedding,
+                    )
+                else:
+                    # Mutate in place - never replace: the unit of work orders
+                    # INSERTs before DELETEs within a table, so assigning a new
+                    # SchemaEmbedding to a row that already has one races the
+                    # pending delete-orphan of the old child and raises
+                    # IntegrityError on the unique graph_registry_id.
+                    child.organization_id = record.organization_id
+                    child.embedding_model = embedding_model
+                    child.embedding = embedding
 
         await session.flush()
         return persisted
@@ -159,28 +202,41 @@ class GraphSchemaRegistry(Base):
         session: AsyncSession,
         query: str,
         graph_name: str,
+        organization_id: str,
         model: Model,
         type: SchemaType | None = None,
         knowledge_base_ids: list[str] | None = None,
+        embedding_model: str | None = None,
         top_k: int = 5,
-    ) -> list[GraphSchemaRegistry]:
+    ) -> list["GraphSchemaRegistry"]:
         """Find the schema registry records whose embedding is closest to a text query.
 
         Embeds the query text via litellm (see `EmbeddingService.compute_embeddings`) and orders stored
         records by pgvector's cosine distance operator, so this requires a PostgreSQL
         database with the pgvector extension installed and records that already
-        have an `embedding` set (via upsert or direct assignment).
+        have an embedding (via `SchemaEmbedding`, upserted or assigned directly).
 
         Args:
             session: SQLAlchemy database session for executing the query.
             query: Free-text query to embed and compare stored records against.
             graph_name: Restrict the search to records belonging to this graph.
+            organization_id: Restrict the search to this organization's rows.
+                Applied on both `GraphSchemaRegistry.organization_id` (the
+                authoritative scope of the schema row) and
+                `SchemaEmbedding.organization_id` (the ADR-0002 denormalized
+                isolation filter on the embedding row) - a mismatch between the
+                two (a bug) returns nothing rather than leaking across
+                organizations.
             model: The embedding provider configuration used to embed `query`.
             type: Optional schema type ('node' or 'relationship') to filter by.
             knowledge_base_ids: Optional knowledge base ids to restrict the search to.
                 A record matches if its `knowledge_base_ids` overlaps with any of these
                 (via PostgreSQL's jsonb `?|` operator), since a schema row may be shared
                 by several contributing knowledge bases.
+            embedding_model: Optional `Model.identifier` to restrict the search to
+                rows whose embedding was computed by that model (see
+                `SchemaEmbedding.embedding_model`) - useful during an ADR-0002
+                recalculation window to exclude not-yet-migrated rows.
             top_k: Maximum number of records to return, ordered by similarity.
 
         Returns:
@@ -197,8 +253,15 @@ class GraphSchemaRegistry(Base):
 
         stmt = (
             select(cls)
-            .where(cls.graph_name == graph_name, cls.embedding.is_not(None))
-            .order_by(cls.embedding.cosine_distance(embedding))
+            .join(SchemaEmbedding, SchemaEmbedding.graph_registry_id == cls.id)
+            .options(contains_eager(cls.embedding_row))
+            .where(
+                cls.organization_id == organization_id,
+                SchemaEmbedding.organization_id == organization_id,
+                cls.graph_name == graph_name,
+                SchemaEmbedding.embedding.is_not(None),
+            )
+            .order_by(SchemaEmbedding.embedding.cosine_distance(embedding))
             .limit(top_k)
         )
         if type is not None:
@@ -209,6 +272,8 @@ class GraphSchemaRegistry(Base):
             stmt = stmt.where(
                 cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))
             )
+        if embedding_model is not None:
+            stmt = stmt.where(SchemaEmbedding.embedding_model == embedding_model)
 
         return list((await session.execute(stmt)).scalars().all())
 
@@ -217,6 +282,7 @@ class GraphSchemaRegistry(Base):
         cls,
         session: AsyncSession,
         graph_name: str,
+        organization_id: str,
         names: Iterable[str],
         type: SchemaType | None = None,
     ) -> dict[str, list[str]]:
@@ -225,6 +291,7 @@ class GraphSchemaRegistry(Base):
         Args:
             session: SQLAlchemy database session for executing the query.
             graph_name: Restrict the lookup to records belonging to this graph.
+            organization_id: Restrict the lookup to this organization's rows.
             names: Schema names (node or relationship labels) to look up.
             type: Optional schema type ('node' or 'relationship') to filter by.
 
@@ -237,7 +304,11 @@ class GraphSchemaRegistry(Base):
         if not names:
             return {}
 
-        stmt = select(cls).where(cls.graph_name == graph_name, cls.name.in_(names))
+        stmt = select(cls).where(
+            cls.organization_id == organization_id,
+            cls.graph_name == graph_name,
+            cls.name.in_(names),
+        )
         if type is not None:
             stmt = stmt.where(
                 cls.type == (type.value if isinstance(type, SchemaType) else type)
@@ -249,10 +320,12 @@ class GraphSchemaRegistry(Base):
         """Return a developer-friendly string representation of the schema registry record.
 
         Returns:
-            A string showing the key identifying fields: id, graph_name, type, and name.
+            A string showing the key identifying fields: id, organization_id,
+            graph_name, type, and name.
         """
         return (
-            f"GraphRegistry(id={self.id!r}, graph_name={self.graph_name!r}, "
+            f"GraphRegistry(id={self.id!r}, organization_id={self.organization_id!r}, "
+            f"graph_name={self.graph_name!r}, "
             f"type={self.type.value if isinstance(self.type, SchemaType) else self.type!r}, "
             f"name={self.name!r})"
         )

@@ -41,6 +41,7 @@ def test_graph_registry_table_exists_and_tracks_graph_name():
     columns = {column["name"] for column in inspector.get_columns("graph_registry")}
     expected = {
         "id",
+        "organization_id",
         "graph_name",
         "knowledge_base_ids",
         "type",
@@ -50,37 +51,8 @@ def test_graph_registry_table_exists_and_tracks_graph_name():
         "properties",
         "source_label",
         "target_label",
-        "embedding",
     }
     assert expected.issubset(columns)
-
-
-def test_graph_registry_embedding_round_trips_on_sqlite():
-    # The embedding column uses a JSON fallback on SQLite (via with_variant),
-    # since pgvector's Vector type only compiles on PostgreSQL.
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-
-    record = GraphSchemaRegistry(
-        graph_name="demo",
-        knowledge_base_ids=["kb-1"],
-        type=SchemaType.NODE,
-        name="Driver",
-        description="A racer",
-        aliases=[],
-        properties=[],
-        embedding=[0.1, 0.2, 0.3],
-    )
-
-    with Session(engine) as session:
-        session.add(record)
-        session.commit()
-
-        stored = session.execute(
-            select(GraphSchemaRegistry).where(GraphSchemaRegistry.name == "Driver")
-        ).scalar_one()
-
-    assert stored.embedding == [0.1, 0.2, 0.3]
 
 
 async def test_upsert_records_skips_embedding_when_model_not_provided():
@@ -89,6 +61,7 @@ async def test_upsert_records_skips_embedding_when_model_not_provided():
         await conn.run_sync(Base.metadata.create_all)
 
     record = GraphSchemaRegistry(
+        organization_id="org-1",
         graph_name="demo",
         knowledge_base_ids=["kb-1"],
         type=SchemaType.NODE,
@@ -100,10 +73,10 @@ async def test_upsert_records_skips_embedding_when_model_not_provided():
 
     async with AsyncSession(engine) as session:
         persisted = await GraphSchemaRegistry.upsert_records(session, [record])
-        embedding = persisted[0].embedding
+        embedding_row = persisted[0].embedding_row
         await session.commit()
 
-    assert embedding is None
+    assert embedding_row is None
 
 
 async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
@@ -125,6 +98,7 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
         await conn.run_sync(Base.metadata.create_all)
 
     record = GraphSchemaRegistry(
+        organization_id="org-1",
         graph_name="demo",
         knowledge_base_ids=["kb-1"],
         type=SchemaType.NODE,
@@ -138,10 +112,12 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
         persisted = await GraphSchemaRegistry.upsert_records(
             session, [record], model=_embedding_model()
         )
-        embedding = persisted[0].embedding
+        embedding = persisted[0].embedding_row.embedding
+        embedding_model = persisted[0].embedding_row.embedding_model
         await session.commit()
 
     assert embedding == [0.1, 0.2, 0.3]
+    assert embedding_model == "openai/text-embedding-3-small"
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["Driver A racer Racer"]
 
@@ -178,6 +154,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
         FakeSession(),
         query="fast driver",
         graph_name="demo",
+        organization_id="org-1",
         model=_embedding_model(),
         type=SchemaType.NODE,
         top_k=3,
@@ -186,7 +163,10 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     assert results == []
     compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
     assert "<=>" in compiled
+    assert "JOIN schema_embedding" in compiled
     assert "graph_registry.graph_name" in compiled
+    assert "graph_registry.organization_id" in compiled
+    assert "schema_embedding.organization_id" in compiled
     assert "LIMIT" in compiled
 
 
@@ -221,6 +201,7 @@ async def test_vector_search_filters_by_knowledge_base_ids(monkeypatch):
         FakeSession(),
         query="fast driver",
         graph_name="demo",
+        organization_id="org-1",
         model=_embedding_model(),
         knowledge_base_ids=["kb-1", "kb-2"],
         top_k=3,
@@ -239,7 +220,11 @@ async def test_vector_search_raises_when_model_not_provided():
 
     with pytest.raises(ValueError, match="model is required"):
         await GraphSchemaRegistry.vector_search(
-            FakeSession(), query="fast driver", graph_name="demo", model=None
+            FakeSession(),
+            query="fast driver",
+            graph_name="demo",
+            organization_id="org-1",
+            model=None,
         )
 
 
@@ -251,8 +236,8 @@ def test_graph_registry_type_accepts_only_node_or_relationship():
         conn.execute(
             text(
                 "INSERT INTO graph_registry "
-                "(graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
-                "VALUES ('demo', '[\"kb-1\"]', 'node', 'Demo Node', 'Example', '[]', '[]')"
+                "(organization_id, graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
+                "VALUES ('org-1', 'demo', '[\"kb-1\"]', 'node', 'Demo Node', 'Example', '[]', '[]')"
             )
         )
 
@@ -261,8 +246,8 @@ def test_graph_registry_type_accepts_only_node_or_relationship():
             conn.execute(
                 text(
                     "INSERT INTO graph_registry "
-                    "(graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
-                    "VALUES ('demo', '[\"kb-1\"]', 'edge', 'Bad Node', 'Example', '[]', '[]')"
+                    "(organization_id, graph_name, knowledge_base_ids, type, name, description, aliases, properties) "
+                    "VALUES ('org-1', 'demo', '[\"kb-1\"]', 'edge', 'Bad Node', 'Example', '[]', '[]')"
                 )
             )
 
@@ -296,7 +281,7 @@ async def test_knowledge_base_parses_json_and_upserts_registry_rows():
     knowledge_base = KnowledgeBase.model_validate_json(payload_path.read_text())
 
     # Pass graph_name to the method instead of storing it on model
-    node_records = knowledge_base.get_graph_schema_registry_records("F1 kb")
+    node_records = knowledge_base.get_graph_schema_registry_records("F1 kb", "org-1")
     assert any(
         record.type == SchemaType.NODE and record.name == "Driver"
         for record in node_records
@@ -348,8 +333,11 @@ def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
     # graph_name is not stored on model, only passed to methods
     assert knowledge_base.name == "custom_kb"
 
-    records = knowledge_base.get_graph_schema_registry_records("shared_age_graph")
+    records = knowledge_base.get_graph_schema_registry_records(
+        "shared_age_graph", "org-1"
+    )
     assert records[0].graph_name == "shared_age_graph"
+    assert records[0].organization_id == "org-1"
     assert records[0].knowledge_base_ids == [knowledge_base.id]
 
 
@@ -377,7 +365,7 @@ async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
 
     with pytest.raises(ValueError, match="graph_name is required"):
         # graph_name is a mandatory parameter; an empty value should still raise ValueError
-        await service.upsert_knowledge_base(None, knowledge_base, "")
+        await service.upsert_knowledge_base(None, knowledge_base, "", "org-1")
 
 
 async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
@@ -404,7 +392,7 @@ async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
 
     with pytest.raises(ValueError, match="does not exist in the database"):
         await service.upsert_knowledge_base(
-            None, knowledge_base, graph_name="nonexistent_graph"
+            None, knowledge_base, graph_name="nonexistent_graph", organization_id="org-1"
         )
 
 
@@ -500,7 +488,7 @@ async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
 
     async with AsyncSession(engine) as session:
         await service.upsert_knowledge_base(
-            session, knowledge_base, graph_name="demo_graph"
+            session, knowledge_base, graph_name="demo_graph", organization_id="org-1"
         )
         await session.commit()
 
@@ -791,6 +779,7 @@ async def test_upsert_records_merges_knowledge_base_ids_for_same_label_across_kn
 
     def _driver(knowledge_base_id: str) -> GraphSchemaRegistry:
         return GraphSchemaRegistry(
+            organization_id="org-1",
             graph_name="shared_graph",
             knowledge_base_ids=[knowledge_base_id],
             type=SchemaType.NODE,
@@ -827,7 +816,16 @@ def test_get_graph_schema_registry_records_requires_knowledge_base_id():
     )
 
     with pytest.raises(ValueError, match="id is required"):
-        knowledge_base.get_graph_schema_registry_records("demo")
+        knowledge_base.get_graph_schema_registry_records("demo", "org-1")
+
+
+def test_get_graph_schema_registry_records_requires_organization_id():
+    knowledge_base = KnowledgeBase.model_validate(
+        {"name": "demo", "nodes": [{"label": "Driver"}]}
+    )
+
+    with pytest.raises(ValueError, match="organization_id is required"):
+        knowledge_base.get_graph_schema_registry_records("demo", "")
 
 
 async def test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property():
@@ -1033,11 +1031,15 @@ async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows(
     knowledge_base = _demo_knowledge_base("kb-1")
 
     async with await _sqlite_session() as session:
-        await service.upsert_knowledge_base(session, knowledge_base, "demo_graph")
+        await service.upsert_knowledge_base(
+            session, knowledge_base, "demo_graph", "org-1"
+        )
         await session.commit()
 
         repository.queries.clear()
-        queries = await service.delete_knowledge_base(session, "kb-1", "demo_graph")
+        queries = await service.delete_knowledge_base(
+            session, "kb-1", "demo_graph", "org-1"
+        )
         await session.commit()
 
         # Every node this knowledge base wrote is detach-deleted from the graph;
@@ -1070,10 +1072,10 @@ async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_bas
 
     async with await _sqlite_session() as session:
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "demo_graph"
+            session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1"
         )
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-2"), "demo_graph"
+            session, _demo_knowledge_base("kb-2"), "demo_graph", "org-1"
         )
         await session.commit()
 
@@ -1082,7 +1084,7 @@ async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_bas
             sorted(row.knowledge_base_ids) == ["kb-1", "kb-2"] for row in rows
         )
 
-        await service.delete_knowledge_base(session, "kb-1", "demo_graph")
+        await service.delete_knowledge_base(session, "kb-1", "demo_graph", "org-1")
         await session.commit()
 
         rows = (await session.execute(select(GraphSchemaRegistry))).scalars().all()
@@ -1100,10 +1102,10 @@ async def test_delete_knowledge_base_validates_graph_name_and_knowledge_base_id(
     service = KnowledgeBaseService(_RecordingAgeRepository())
 
     with pytest.raises(ValueError, match="graph_name is required"):
-        await service.delete_knowledge_base(None, "kb-1", "")
+        await service.delete_knowledge_base(None, "kb-1", "", "org-1")
 
     with pytest.raises(ValueError, match="knowledge_base_id is required"):
-        await service.delete_knowledge_base(None, "", "demo_graph")
+        await service.delete_knowledge_base(None, "", "demo_graph", "org-1")
 
 
 async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
@@ -1112,7 +1114,7 @@ async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
     service = KnowledgeBaseService(_RecordingAgeRepository(graph_exists=False))
 
     with pytest.raises(ValueError, match="does not exist in the database"):
-        await service.delete_knowledge_base(None, "kb-1", "demo_graph")
+        await service.delete_knowledge_base(None, "kb-1", "demo_graph", "org-1")
 
 
 async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
@@ -1125,18 +1127,18 @@ async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
     async with await _sqlite_session() as session:
         # Two knowledge bases in the graph being dropped, one in a graph that stays.
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "doomed_graph"
+            session, _demo_knowledge_base("kb-1"), "doomed_graph", "org-1"
         )
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-2"), "doomed_graph"
+            session, _demo_knowledge_base("kb-2"), "doomed_graph", "org-1"
         )
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-3"), "other_graph"
+            session, _demo_knowledge_base("kb-3"), "other_graph", "org-1"
         )
         await session.commit()
 
         repository.queries.clear()
-        query = await service.delete_graph(session, "doomed_graph")
+        query = await service.delete_graph(session, "doomed_graph", "org-1")
         await session.commit()
 
         assert "drop_graph('doomed_graph', true)" in query
@@ -1168,13 +1170,13 @@ async def test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_go
 
     async with await _sqlite_session() as session:
         await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "demo_graph"
+            session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1"
         )
         await session.commit()
 
         repository._graph_exists = False
         repository.queries.clear()
-        query = await service.delete_graph(session, "demo_graph")
+        query = await service.delete_graph(session, "demo_graph", "org-1")
         await session.commit()
 
         assert query is None
@@ -1191,7 +1193,7 @@ async def test_delete_graph_validates_graph_name():
     service = KnowledgeBaseService(_RecordingAgeRepository())
 
     with pytest.raises(ValueError, match="graph_name is required"):
-        await service.delete_graph(None, "")
+        await service.delete_graph(None, "", "org-1")
 
 
 async def test_create_graph_creates_the_graph_and_is_a_no_op_when_it_exists():
@@ -1315,6 +1317,7 @@ async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_typ
         session.add_all(
             [
                 GraphSchemaRegistry(
+                    organization_id="org-1",
                     graph_name="demo_graph",
                     knowledge_base_ids=["kb-1"],
                     type=SchemaType.NODE,
@@ -1324,6 +1327,7 @@ async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_typ
                     properties=["name", "number"],
                 ),
                 GraphSchemaRegistry(
+                    organization_id="org-1",
                     graph_name="demo_graph",
                     knowledge_base_ids=["kb-1"],
                     type=SchemaType.RELATIONSHIP,
@@ -1334,8 +1338,20 @@ async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_typ
                 ),
                 # Same name, different graph: must not leak into the lookup below.
                 GraphSchemaRegistry(
+                    organization_id="org-1",
                     graph_name="other_graph",
                     knowledge_base_ids=["kb-2"],
+                    type=SchemaType.NODE,
+                    name="Driver",
+                    description="A racer",
+                    aliases=[],
+                    properties=["unrelated"],
+                ),
+                # Same name and graph, different organization: must not leak either.
+                GraphSchemaRegistry(
+                    organization_id="org-2",
+                    graph_name="demo_graph",
+                    knowledge_base_ids=["kb-3"],
                     type=SchemaType.NODE,
                     name="Driver",
                     description="A racer",
@@ -1347,13 +1363,13 @@ async def test_get_properties_by_name_returns_properties_scoped_by_graph_and_typ
         await session.commit()
 
         node_properties = await GraphSchemaRegistry.get_properties_by_name(
-            session, "demo_graph", ["Driver", "Team"], type=SchemaType.NODE
+            session, "demo_graph", "org-1", ["Driver", "Team"], type=SchemaType.NODE
         )
         relationship_properties = await GraphSchemaRegistry.get_properties_by_name(
-            session, "demo_graph", ["RACED_FOR"], type=SchemaType.RELATIONSHIP
+            session, "demo_graph", "org-1", ["RACED_FOR"], type=SchemaType.RELATIONSHIP
         )
         empty = await GraphSchemaRegistry.get_properties_by_name(
-            session, "demo_graph", []
+            session, "demo_graph", "org-1", []
         )
 
     assert node_properties == {"Driver": ["name", "number"]}

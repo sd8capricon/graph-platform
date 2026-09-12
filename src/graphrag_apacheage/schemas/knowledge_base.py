@@ -132,7 +132,7 @@ class KnowledgeBase(BaseModel):
         return cls.model_validate_json(Path(file_path).read_text())
 
     def get_graph_schema_registry_records(
-        self, graph_name: str
+        self, graph_name: str, organization_id: str
     ) -> list[GraphSchemaRegistry]:
         """Extract schema registry records from the knowledge base.
 
@@ -142,18 +142,26 @@ class KnowledgeBase(BaseModel):
 
         Args:
             graph_name: The name of the Apache Age graph these schemas belong to.
+            organization_id: Id of the organization these schemas belong to (see
+                ADR-0002, Decision 1). Stamped onto every constructed record.
 
         Returns:
             A list of GraphSchemaRegistry records representing node and relationship
             type definitions extracted from the knowledge base.
 
         Raises:
-            ValueError: If this knowledge base has no id.
+            ValueError: If this knowledge base has no id, or if organization_id
+                is not provided.
         """
         if not self.id:
             raise ValueError(
                 "id is required on the knowledge base when building graph schema "
                 "registry records"
+            )
+        if not organization_id:
+            raise ValueError(
+                "organization_id is required when building graph schema registry "
+                "records"
             )
         knowledge_base_id = self.id
 
@@ -164,6 +172,7 @@ class KnowledgeBase(BaseModel):
             row = grouped.setdefault(
                 key,
                 GraphSchemaRegistry(
+                    organization_id=organization_id,
                     graph_name=graph_name,
                     knowledge_base_ids=[knowledge_base_id],
                     type=SchemaType.NODE,
@@ -198,6 +207,7 @@ class KnowledgeBase(BaseModel):
             row = grouped.setdefault(
                 key,
                 GraphSchemaRegistry(
+                    organization_id=organization_id,
                     graph_name=graph_name,
                     knowledge_base_ids=[knowledge_base_id],
                     type=SchemaType.RELATIONSHIP,
@@ -217,7 +227,9 @@ class KnowledgeBase(BaseModel):
 
         return list(grouped.values())
 
-    def get_node_embedding_records(self, graph_name: str) -> list[NodeEmbedding]:
+    def get_node_embedding_records(
+        self, graph_name: str, organization_id: str
+    ) -> list[NodeEmbedding]:
         """Extract node embedding records from the knowledge base.
 
         Builds one NodeEmbedding record per node, capturing its label and properties
@@ -225,22 +237,30 @@ class KnowledgeBase(BaseModel):
 
         Args:
             graph_name: The name of the Apache Age graph these nodes belong to.
+            organization_id: Id of the organization these nodes belong to (see
+                ADR-0002, Decision 1). Stamped onto every constructed record.
 
         Returns:
             A list of NodeEmbedding records, one per node in the knowledge base.
 
         Raises:
-            ValueError: If this knowledge base has no id.
+            ValueError: If this knowledge base has no id, or if organization_id
+                is not provided.
         """
         if not self.id:
             raise ValueError(
                 "id is required on the knowledge base when building node embedding "
                 "records"
             )
+        if not organization_id:
+            raise ValueError(
+                "organization_id is required when building node embedding records"
+            )
         knowledge_base_id = self.id
 
         return [
             NodeEmbedding(
+                organization_id=organization_id,
                 graph_name=graph_name,
                 knowledge_base_id=knowledge_base_id,
                 node_id=node.id,
