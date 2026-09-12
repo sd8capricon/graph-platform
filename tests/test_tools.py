@@ -2,9 +2,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.tools import ToolRuntime
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from graphrag_apacheage.agent.context import AgentContext
+from graphrag_apacheage.agent.models import NodeRef
 from graphrag_apacheage.agent.tools import (
     get_node_neighbours,
     get_node_schema,
@@ -112,7 +114,7 @@ async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node
         ("RACED_FOR", "outgoing", "Team", 3),
         ("SPONSORS", "incoming", "Sponsor", 1),
     ]
-    node = KnowledgeNode(id="driver-1", label="Driver", properties={"name": "Lewis"})
+    node = NodeRef(id="driver-1", label="Driver")
 
     properties_by_type = {
         SchemaType.NODE: {
@@ -163,13 +165,21 @@ async def test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node
     }
 
 
-async def test_get_node_schema_raises_when_node_has_no_id():
-    node = KnowledgeNode.model_construct(id=None, label="Driver", properties={})
+@pytest.mark.parametrize("node_id", ["", "   "])
+async def test_get_node_schema_raises_on_empty_id(node_id):
+    node = NodeRef(id=node_id, label="Driver")
 
     with pytest.raises(ValueError, match="node.id is required"):
         await get_node_schema.coroutine(
             node=node, runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
         )
+
+
+def test_node_ref_requires_id():
+    """`NodeRef.id` has no default and is not auto-generated, unlike `KnowledgeNode.id` —
+    omitting it must fail schema validation rather than silently fabricating one."""
+    with pytest.raises(ValidationError):
+        NodeRef(label="Driver")
 
 
 async def test_get_relationship_reshapes_matches_via_serializer():

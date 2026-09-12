@@ -1,6 +1,7 @@
 from langchain.tools import ToolRuntime, tool
 
 from graphrag_apacheage.agent.context import AgentContext
+from graphrag_apacheage.agent.models import NodeRef
 from graphrag_apacheage.agent.serializers import AgentSerializer
 from graphrag_apacheage.models.graph_schema_registry import (
     GraphSchemaRegistry,
@@ -72,12 +73,17 @@ async def search_entities(
         "match — plus the property names (not values) known for the node, "
         "each relationship type, and each neighbor label. Use this to "
         "understand a node's neighborhood before fetching the actual "
-        "relationships with get_node_neighbours."
+        "relationships with get_node_neighbours. `node.id` is required and "
+        "must be the id of a node that already exists in the graph — e.g. "
+        "one returned by search_entities. Do not guess or omit it: an id "
+        "that doesn't match any node returns an empty neighborhood (no "
+        "relationships) rather than an error, since the query simply finds "
+        "nothing to summarize."
     )
 )
-async def get_node_schema(node: KnowledgeNode, runtime: ToolRuntime[AgentContext]):
-    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema and enriches it with GraphSchemaRegistry property-name lists. Requires node.id."""
-    if node.id is None:
+async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
+    """Cheap overview counterpart to get_node_neighbours; delegates to AgeGraphRepository.get_node_schema and enriches it with GraphSchemaRegistry property-name lists. `node.id` must be an existing node's id, not a placeholder — an unrecognized id matches no node and returns an empty neighborhood instead of raising."""
+    if not node.id or not node.id.strip():
         raise ValueError("node.id is required to look up its schema")
 
     context = runtime.context
