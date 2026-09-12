@@ -13,13 +13,9 @@ from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
 
 @tool(
     description=(
-        "Search the graph's schema for node and relationship types matching a "
-        "text query. Each result describes a type (not an instance): its "
-        "name, whether it is a node or relationship, a description, known "
-        "aliases, its properties, and for relationships the source/target "
-        "node labels. Use this to discover which labels and properties exist "
-        "in the graph before querying actual data with search_entities or "
-        "get_node_neighbours."
+        "Vector-search the graph schema to discover node and relationship types. "
+        "Use this first when you need to understand which labels, properties, "
+        "aliases, or relationship types are available."
     )
 )
 async def search_schema_registry(query: str, runtime: ToolRuntime[AgentContext]):
@@ -67,18 +63,10 @@ async def search_entities(
 
 @tool(
     description=(
-        "Overview of how a node label, or one specific node, connects in the "
-        "graph — cheap to call, returns shape not data. Two modes. Pass only "
-        "`node.label` for the label-level schema: the label's property names, "
-        "plus every relationship label that nodes of that label participate "
-        "in, its direction, the neighbour labels on the other end, their "
-        "property names, and a graph-wide count summed over all nodes of that "
-        "label. Also pass `node.id` to get the same shape for that one node, "
-        "where each count is that node's own degree. Use label mode to plan a "
-        "traversal before you hold a concrete node; use id mode once "
-        "`search_entities` has given you a real node id, to decide what to "
-        "fetch with `get_node_neighbours`. Property names only, never values. "
-        "An unknown label or id returns an empty neighborhood."
+        "Inspect the graph structure around a node label or specific node. "
+        "Use this to plan a traversal and see available relationship types, "
+        "directions, neighbour labels, properties, and counts. This does not "
+        "return property values."
     )
 )
 async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
@@ -143,10 +131,9 @@ async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
 
 @tool(
     description=(
-        "Get a knowledge graph node's neighbours. Returns every relationship "
-        "incident to the node, grouped under the node itself, regardless of "
-        "direction and with no relationship repeated. Optionally restrict "
-        "results to one or more relationship labels."
+        "Get relationships and neighbouring nodes for a specific node. "
+        "Use this to traverse the graph after finding an entity. "
+        "Optionally filter by one or more relationship labels."
     )
 )
 async def get_node_neighbours(
@@ -169,9 +156,10 @@ async def get_node_neighbours(
 
 @tool(
     description=(
-        "Search graph relationships by relationship type and property filters. "
-        "Can restrict the source and target node labels and optionally source/target "
-        "node IDs. Returns source node, relationship properties, and target node."
+        "Search graph relationships by relationship type and optional property filters. "
+        "Use this to find specific connections between nodes when you know the "
+        "relationship type. You can filter by source/target labels, node IDs, "
+        "or relationship properties."
     )
 )
 async def get_relationship(
