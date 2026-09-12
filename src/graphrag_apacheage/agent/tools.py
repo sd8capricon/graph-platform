@@ -67,18 +67,12 @@ async def search_entities(
 
 @tool(
     description=(
-        "Summarize how a node connects to the rest of the graph: the "
-        "distinct relationship types on the node, each with its direction, "
-        "the label of the node on the other end, and how many relationships "
-        "match — plus the property names (not values) known for the node, "
-        "each relationship type, and each neighbor label. Use this to "
-        "understand a node's neighborhood before fetching the actual "
-        "relationships with get_node_neighbours. `node.id` is required and "
-        "must be the id of a node that already exists in the graph — e.g. "
-        "one returned by search_entities. Do not guess or omit it: an id "
-        "that doesn't match any node returns an empty neighborhood (no "
-        "relationships) rather than an error, since the query simply finds "
-        "nothing to summarize."
+        "Summarize a node's neighborhood before fetching its relationships. "
+        "For the given `node.id`, return relationship types, direction, neighbor "
+        "labels, counts, and known property names (not values). Use this to "
+        "decide what to fetch with `get_node_neighbours`. `node.id` is required "
+        "and must be an existing node id, such as one returned by "
+        "`search_entities`; an unknown id returns an empty neighborhood."
     )
 )
 async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
@@ -89,7 +83,9 @@ async def get_node_schema(node: NodeRef, runtime: ToolRuntime[AgentContext]):
     context = runtime.context
     entries = await context.repository.get_node_schema(context.graph_name, node.id)
 
-    relationship_labels = {relationship_label for relationship_label, _, _, _ in entries}
+    relationship_labels = {
+        relationship_label for relationship_label, _, _, _ in entries
+    }
     neighbor_labels = {neighbor_label for _, _, neighbor_label, _ in entries}
 
     node_properties, relationship_properties, neighbor_properties = (
