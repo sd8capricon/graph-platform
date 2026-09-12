@@ -66,8 +66,10 @@ async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
     from langchain.messages import HumanMessage
     from graphrag_apacheage.agent.context import AgentContext
     from graphrag_apacheage.agent.deep_agent import build_deep_agent
+    from graphrag_apacheage.agent.react_agent import build_react_agent
 
-    agent = build_deep_agent(_chat_model(), name="graph_agent")
+    deep_agent = build_deep_agent(_chat_model(), name="deep_graph_agent")
+    react_agent = build_react_agent(_chat_model(), name="react_graph_agent")
     context = AgentContext(
         graph_name="kb_graph",
         attached_kb_ids=["b7c9e1a4-3f28-4d65-9e07-1a2b3c4d5e6f"],
@@ -75,7 +77,7 @@ async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
         repository=respository,
         model=_embedding_model(),
     )
-    async for chunk in agent.astream(
+    async for chunk in react_agent.astream(
         {
             "messages": [
                 HumanMessage(
@@ -106,32 +108,6 @@ async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
             if message.content:
                 print("\n🤖 AI RESPONSE")
                 print(message.content)
-
-            # Thinking/reasoning, if the provider exposes it
-            additional_kwargs = getattr(message, "additional_kwargs", {})
-
-            thinking = (
-                additional_kwargs.get("thinking")
-                or additional_kwargs.get("reasoning")
-                or additional_kwargs.get("reasoning_content")
-            )
-
-            if thinking:
-                print("\n🧠 THINKING")
-                print(thinking)
-
-            # Some integrations expose reasoning in response_metadata
-            response_metadata = getattr(message, "response_metadata", {})
-
-            reasoning = (
-                response_metadata.get("thinking")
-                or response_metadata.get("reasoning")
-                or response_metadata.get("reasoning_content")
-            )
-
-            if reasoning:
-                print("\n🧠 THINKING")
-                print(reasoning)
 
 
 async def run():
