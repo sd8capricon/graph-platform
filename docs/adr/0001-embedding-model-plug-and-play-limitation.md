@@ -2,7 +2,9 @@
 
 ## Status
 
-Identified limitation. No solution implemented yet.
+Identified limitation. No solution implemented yet. Scope narrowed by decisions in ADR
+[0002](0002-organization-roles-privileges-and-embedding-model-governance.md) — see "Update (ADR-0002)"
+below.
 
 ## Context
 
@@ -35,6 +37,43 @@ This makes it *look* like swapping embedding models is safe as long as the new m
 Today, "model plug-and-play" only holds if the operator manually guarantees that every `Model`
 ever passed to `upsert_records()`/`vector_search()` for a given `graph_name` is the *same* model
 (not just same-dimension). Nothing in the code enforces this.
+
+## Update (ADR-0002)
+
+ADR-0002 decided that the embedding model is no longer a free per-call/per-graph/per-knowledge-base
+choice — it's a single organization-wide setting, changed only by an Organization Admin, with a
+mandatory automatic recalculation triggered by the change. This changes the shape of the problem
+described above without fully closing it:
+
+- **The "no model provenance" gap narrows but doesn't close.** With one active embedding model per
+  organization, there's no longer a per-call opportunity to mix vector spaces the way an unrestricted
+  `Model` argument allowed. But the window between an Admin changing the setting and recalculation
+  finishing (ADR-0002 Decision 4) still has old-model and new-model embeddings coexisting for the same
+  organization, so row-level provenance (option 1 below) is still needed there — just scoped to "which
+  rows have been migrated yet," not "which of arbitrarily many models produced this row."
+- **Option 2 (explicit re-embed migration) is now mandatory and automatic**, not an operator-triggered
+  maintenance task — ADR-0002 makes the setting change itself the trigger.
+- **Option 3 (fail-fast dimension validation) is unaffected** by ADR-0002 and remains a cheap,
+  independent guardrail worth adding regardless of organization scoping.
+- **Option 4 (`EMBEDDING_DIM` as config instead of a hardcoded constant) becomes org-level config**
+  under ADR-0002 rather than a single process-wide value, since each organization now has its own
+  active embedding model (and thus potentially its own dimension).
+- ADR-0002 also decided the embedding column moves out of `GraphSchemaRegistry` into its own table
+  (mirroring `NodeEmbedding`'s existing split from the graph). Whatever tracks row-level provenance
+  during a recalculation window belongs on that new table, not as an added column back onto
+  `GraphSchemaRegistry`.
+- ADR-0002's open questions recommend that new schema-registry embedding table, and the existing
+  `NodeEmbedding` table, each stay a single table shared across all organizations — scoped by an
+  indexed `organization_id` column (denormalized directly onto the row, not derived via a join) —
+  rather than a separate physical table per organization. Row-level provenance (option 1 below) and
+  this `organization_id` column are two different filters on the same rows: `organization_id` scopes a
+  row to its tenant, provenance scopes it to "already-migrated vs. not" during a recalculation. Both
+  belong on these tables together.
+
+Recommended path, updated: (1), narrowed to "track which rows belong to the org's current model vs.
+mid-migration," is what makes ADR-0002's mandatory recalculation (2) safe to read against while it's
+in progress. (3) remains a cheap addition independent of either ADR. (4) is superseded by ADR-0002's
+per-organization embedding configuration.
 
 ## Possible Solutions (not yet implemented)
 
