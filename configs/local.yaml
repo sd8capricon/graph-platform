@@ -7,18 +7,18 @@ models:
   #   auth_mode: api_key
   #   type: [thinking]
   #   api_key_env: GROQ_API_KEY
-  - display_name: "Openrouter"
-    provider: openrouter
-    name: google/gemma-4-26b-a4b-it:free
-    auth_mode: api_key
-    type: [thinking]
-    api_key_env: OPENROUTER_API_KEY
-  # - display_name: "Gemini"
-  #   provider: gemini
-  #   name: gemma-4-26b-a4b-it
+  # - display_name: "Openrouter"
+  #   provider: openrouter
+  #   name: google/gemma-4-26b-a4b-it
   #   auth_mode: api_key
   #   type: [thinking]
-  #   api_key_env: GEMINI_API_KEY
+  #   api_key_env: OPENROUTER_API_KEY
+  - display_name: "Gemini"
+    provider: gemini
+    name: gemma-4-26b-a4b-it
+    auth_mode: api_key
+    type: [thinking]
+    api_key_env: GEMINI_API_KEY
   - display_name: "Gemini Embedding 2"
     provider: gemini
     name: gemini-embedding-2
