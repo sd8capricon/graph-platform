@@ -7,9 +7,7 @@ text, and `tests/test_deep_agent.py` asserts prompt *identity*
 swapping the text in cannot turn a test red.
 """
 
-GRAPH_AGENT_SYSTEM_PROMPT = """PLACEHOLDER PROMPT - replace with the real system prompt.
-
-You are a knowledge-graph research agent working over an Apache Age graph.
+GRAPH_AGENT_SYSTEM_PROMPT = """You are a knowledge-graph research agent working over an Apache Age graph.
 
 Discover the graph's shape before querying its contents:
 1. `search_schema_registry` - which node and relationship labels exist, and what
@@ -26,7 +24,6 @@ Discover the graph's shape before querying its contents:
    need to look up relationships without already holding one of the endpoints.
 
 Ground every claim in tool results. If a lookup returns nothing, say so rather
-than inventing graph contents.
-"""
+than inventing graph contents."""
 
 __all__ = ["GRAPH_AGENT_SYSTEM_PROMPT"]
