@@ -1,3 +1,5 @@
+import pytest
+
 from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 from graphrag_apacheage.services.embedding_service import EmbeddingService
 
@@ -35,7 +37,7 @@ async def test_compute_embeddings_calls_litellm_with_model_details(monkeypatch):
     captured = {}
 
     class FakeResponse:
-        data = [{"embedding": [0.1, 0.2]}, {"embedding": [0.3, 0.4]}]
+        data = [{"embedding": [0.1, 0.2, 0.3]}, {"embedding": [0.4, 0.5, 0.6]}]
 
     async def fake_aembedding(**kwargs):
         captured.update(kwargs)
@@ -45,7 +47,7 @@ async def test_compute_embeddings_calls_litellm_with_model_details(monkeypatch):
 
     result = await EmbeddingService.compute_embeddings(_embedding_model(), ["a", "b"])
 
-    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    assert result == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["a", "b"]
     assert captured["api_base"] == "https://api.openai.com/v1"
@@ -59,7 +61,7 @@ async def test_compute_embeddings_omits_api_key_for_managed_identity(monkeypatch
     captured = {}
 
     class FakeResponse:
-        data = [{"embedding": [0.1, 0.2]}]
+        data = [{"embedding": [0.1, 0.2, 0.3]}]
 
     async def fake_aembedding(**kwargs):
         captured.update(kwargs)
@@ -71,3 +73,21 @@ async def test_compute_embeddings_omits_api_key_for_managed_identity(monkeypatch
     await EmbeddingService.compute_embeddings(model, ["a"])
 
     assert "api_key" not in captured
+
+
+async def test_compute_embeddings_raises_when_provider_returns_wrong_width(monkeypatch):
+    """The embedding columns are dimensionless (ADR-0003), so the database no
+    longer rejects a mis-sized vector - this check is the only thing that does."""
+    import graphrag_apacheage.services.embedding_service as embedding_service
+
+    class FakeResponse:
+        # The model below declares embedding_dimension=3.
+        data = [{"embedding": [0.1, 0.2, 0.3]}, {"embedding": [0.4, 0.5]}]
+
+    async def fake_aembedding(**kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
+
+    with pytest.raises(ValueError, match="returned a 2-dimension vector, expected 3"):
+        await EmbeddingService.compute_embeddings(_embedding_model(), ["a", "b"])

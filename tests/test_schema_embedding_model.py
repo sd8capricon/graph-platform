@@ -1,10 +1,25 @@
 from sqlalchemy import create_engine, inspect, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateTable
 
 from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
 from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
+
+
+def test_schema_embedding_column_is_dimensionless():
+    """Per ADR-0003 the column is `vector`, not `vector(n)`, so organizations on
+    embedding models of different widths can share the table. Asserted on the
+    compiled PostgreSQL DDL because SQLite never uses the pgvector type at all
+    (it falls back to JSON via with_variant), so the width is invisible there."""
+    ddl = str(
+        CreateTable(SchemaEmbedding.__table__).compile(dialect=postgresql.dialect())
+    )
+
+    assert "embedding VECTOR," in ddl or ddl.rstrip().endswith("embedding VECTOR")
+    assert "VECTOR(" not in ddl
 
 
 def test_schema_embedding_table_exists_and_tracks_the_registry_row():

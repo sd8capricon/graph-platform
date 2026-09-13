@@ -1,9 +1,11 @@
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from graphrag_apacheage.config import settings
 from graphrag_apacheage.models.base import Base
+from graphrag_apacheage.models.embedding_index import ensure_embedding_index
+from graphrag_apacheage.schemas.model import Model
 
 
 class SchemaEmbedding(Base):
@@ -33,14 +35,21 @@ class SchemaEmbedding(Base):
         embedding_model: The `f"{provider}/{name}"` identifier (see
             `Model.identifier`) of the embedding model that produced `embedding`,
             or None if no embedding has been computed yet. Row-level provenance
-            per ADR-0001 option (1), rescoped by ADR-0002: during the window
-            between an organization admin changing the active embedding model and
-            recalculation finishing, this lets a caller filter to rows already
-            migrated to the new model instead of ranking old- and new-model
-            embeddings together.
+            per ADR-0001 option (1), rescoped by ADR-0002. Load-bearing for two
+            things beyond provenance (ADR-0003): it is what
+            `GraphSchemaRegistry.vector_search()` filters on so a query never
+            compares vectors from two different models' spaces, and it is the
+            predicate of this table's partial indexes, so it is also what makes
+            those indexes usable at all.
         embedding: Vector embedding derived from the owning GraphSchemaRegistry
             row's name/description/aliases, used for similarity search via
-            `GraphSchemaRegistry.vector_search()`.
+            `GraphSchemaRegistry.vector_search()`. The column is deliberately
+            **dimensionless** (`vector`, no width) per ADR-0003, so organizations
+            using embedding models of different widths can share this table. The
+            cost is that the width is no longer enforced by the database - see
+            `EmbeddingService.compute_embeddings()`'s fail-fast check - and that
+            an ANN index needs an expression+partial form, see
+            `ensure_embedding_index()` below.
     """
 
     __tablename__ = "schema_embedding"
@@ -59,13 +68,34 @@ class SchemaEmbedding(Base):
         String(255), nullable=True, index=True
     )
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(settings.embedding_dimension).with_variant(JSON, "sqlite"),
+        Vector().with_variant(JSON, "sqlite"),
         nullable=True,
     )
 
     graph_registry: Mapped["GraphSchemaRegistry"] = relationship(  # noqa: F821
         back_populates="embedding_row"
     )
+
+    @classmethod
+    async def ensure_embedding_index(cls, session: AsyncSession, model: Model) -> str:
+        """Create this table's per-model partial HNSW index, if it does not exist.
+
+        See `models/embedding_index.py` for what the index looks like and why one
+        is needed per embedding model rather than one for the whole table.
+
+        Args:
+            session: SQLAlchemy async session used to execute the DDL. Must be
+                bound to PostgreSQL.
+            model: The embedding provider configuration whose rows to index.
+
+        Returns:
+            The executed `CREATE INDEX` statement.
+
+        Raises:
+            ValueError: If `model` has no `embedding_dimension`, or that dimension
+                exceeds what pgvector's HNSW index supports for the `vector` type.
+        """
+        return await ensure_embedding_index(session, cls.__tablename__, model)
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the embedding row.

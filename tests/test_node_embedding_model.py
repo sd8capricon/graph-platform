@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateTable
 
 from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.models.node_embedding import NodeEmbedding
@@ -26,6 +27,17 @@ def _embedding_model(**overrides) -> Model:
     }
     fields.update(overrides)
     return Model.model_validate(fields)
+
+
+def test_node_embedding_column_is_dimensionless():
+    """Per ADR-0003 the column is `vector`, not `vector(n)`, so organizations on
+    embedding models of different widths can share the table. Asserted on the
+    compiled PostgreSQL DDL because SQLite never uses the pgvector type at all
+    (it falls back to JSON via with_variant), so the width is invisible there."""
+    ddl = str(CreateTable(NodeEmbedding.__table__).compile(dialect=postgresql.dialect()))
+
+    assert "embedding VECTOR," in ddl or ddl.rstrip().endswith("embedding VECTOR")
+    assert "VECTOR(" not in ddl
 
 
 def test_node_embedding_table_exists_and_tracks_graph_and_node():
@@ -281,7 +293,11 @@ async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatc
     assert "node_embedding.label IN" in compiled
 
 
-async def test_vector_search_filters_by_embedding_model_when_provided(monkeypatch):
+async def test_vector_search_scopes_to_the_query_model_without_being_asked(monkeypatch):
+    """The `embedding_model` predicate and the `::vector(n)` cast are derived from
+    the `model` argument, not passed separately (ADR-0003). Together they keep a
+    search inside one model's vector space *and* make the partial expression
+    index (see `models/embedding_index.py`) matchable."""
     import graphrag_apacheage.services.embedding_service as embedding_service
 
     class FakeResponse:
@@ -306,19 +322,40 @@ async def test_vector_search_filters_by_embedding_model_when_provided(monkeypatc
             captured["stmt"] = stmt
             return FakeResult()
 
+    # Note: no embedding_model= and no dimension argument.
     results = await NodeEmbedding.vector_search(
         FakeSession(),
         query="fast driver",
         graph_name="demo",
         organization_id="org-1",
         model=_embedding_model(),
-        embedding_model="openai/text-embedding-3-small",
         limit=3,
     )
 
     assert results == []
     compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
     assert "node_embedding.embedding_model" in compiled
+    assert "CAST(node_embedding.embedding AS VECTOR(3))" in compiled
+
+
+async def test_vector_search_raises_when_model_is_not_an_embedding_model():
+    """A chat-only Model has no embedding_dimension, so there is no width to cast
+    to - catch that at the boundary rather than emitting a no-op cast."""
+    model = _embedding_model()
+    object.__setattr__(model, "embedding_dimension", None)
+
+    class FakeSession:
+        async def execute(self, stmt):
+            raise AssertionError("should not query the database")
+
+    with pytest.raises(ValueError, match="has no embedding_dimension"):
+        await NodeEmbedding.vector_search(
+            FakeSession(),
+            query="fast driver",
+            graph_name="demo",
+            organization_id="org-1",
+            model=model,
+        )
 
 
 async def test_vector_search_raises_when_model_not_provided():

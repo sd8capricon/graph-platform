@@ -168,6 +168,11 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     assert "graph_registry.organization_id" in compiled
     assert "schema_embedding.organization_id" in compiled
     assert "LIMIT" in compiled
+    # Derived from the `model` argument, not passed in (ADR-0003): together the
+    # predicate and the cast keep the search inside one model's vector space and
+    # make the partial expression index matchable.
+    assert "schema_embedding.embedding_model" in compiled
+    assert "CAST(schema_embedding.embedding AS VECTOR(3))" in compiled
 
 
 async def test_vector_search_filters_by_knowledge_base_ids(monkeypatch):

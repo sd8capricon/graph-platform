@@ -2,14 +2,16 @@
 
 ## Status
 
-Identified limitation. Scope narrowed by decisions in ADR
+Identified limitation, largely addressed. Scope narrowed by decisions in ADR
 [0002](0002-organization-roles-privileges-and-embedding-model-governance.md) — see "Update (ADR-0002)"
-below. Option (1), rescoped, is now partially implemented: both `GraphSchemaRegistry` (via the new
-`SchemaEmbedding` side table) and `NodeEmbedding` stamp a row-level `embedding_model` column, and
-`vector_search()` on both accepts an optional `embedding_model` filter. What is **not** implemented:
-the recalculation job that would make this filter operationally meaningful (nothing currently
-changes an organization's active embedding model, since there is no Organization entity), and options
-(2)/(3)/(4) below remain unimplemented.
+below — and then by ADR [0003](0003-variable-dimension-embedding-storage.md), see "Update (ADR-0003)".
+
+Current state of the four options below: **(1) implemented** and now load-bearing rather than
+advisory — `vector_search()` filters on it unconditionally. **(3) implemented** — ADR-0003 made it
+necessary rather than merely cheap. **(4) superseded** by ADR-0003, which removed the global
+dimension outright instead of making it configurable. **(2) still unimplemented**: nothing changes an
+organization's active embedding model yet, because there is no Organization entity, so there is
+nothing to trigger a re-embed.
 
 ## Context
 
@@ -80,7 +82,36 @@ mid-migration," is what makes ADR-0002's mandatory recalculation (2) safe to rea
 in progress. (3) remains a cheap addition independent of either ADR. (4) is superseded by ADR-0002's
 per-organization embedding configuration.
 
-## Possible Solutions (not yet implemented)
+## Update (ADR-0003)
+
+ADR-0003 made the embedding columns dimensionless so organizations can use models of differing
+widths. That changed the standing of three of the four options below:
+
+- **Option (1) is implemented, and is no longer optional at the call site.** `vector_search()` does
+  not merely *offer* an `embedding_model` filter — it always applies one, derived from the `model`
+  argument used to embed the query, and orders by the vector cast to that same model's width. The
+  silent-wrong-answer failure this ADR describes is now unrepresentable through that API: a search
+  can only ever compare vectors the query's own model produced. The mixed-model state described
+  above is still *stored* (that is what makes a recalculation window survivable), it simply cannot
+  be read across.
+- **Option (3) is implemented, and was promoted from "cheap guardrail" to load-bearing.** The
+  original text assumed the fixed-width column would catch a dimension mismatch at insert and that
+  an explicit check merely improved the error message. Dimensionless columns removed that backstop —
+  a mis-sized vector now inserts cleanly and fails much later, at read time. The check in
+  `EmbeddingService.compute_embeddings()` is now the only thing standing between a misbehaving
+  provider and silently corrupt rows.
+- **Option (4) is superseded outright**, not just rescoped as the ADR-0002 update suggested. There is
+  no `EMBEDDING_DIM`-equivalent left to make configurable at any level: the database stores no width
+  at all, and `Model.embedding_dimension` — per provider entry, already required for embedding
+  models — is the single remaining dimension knob.
+- **Option (2) is unchanged and still unimplemented.**
+
+One caveat this ADR's framing did not anticipate: provenance now does double duty. `embedding_model`
+is not only "which model produced this row" but also the predicate of the partial indexes that make
+these searches indexable at all (ADR-0003, Decision 2). A change to how it is written or filtered is
+now also an index-invalidating change.
+
+## Possible Solutions
 
 1. **Track model provenance per row.** Add an `embedding_model` column (e.g. `f"{provider}/{name}"`,
    or a version-qualified identifier) to `GraphSchemaRegistry` and `NodeEmbedding`. `upsert_records()`

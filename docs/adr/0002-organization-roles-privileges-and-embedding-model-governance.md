@@ -10,6 +10,13 @@ Decision 5 below. Decisions 1-4 (the Organization entity itself, roles/privilege
 configuration replacing `AppSettings`, and mandatory recalculation) remain unimplemented: there is no
 Organization entity, user, or role anywhere in the codebase yet.
 
+ADR [0003](0003-variable-dimension-embedding-storage.md) removed a storage-level obstacle to
+Decision 3 that this ADR did not identify: the embedding columns had a single fixed width shared by
+every organization, so "each organization picks its own embedding model" only held for models that
+happened to emit the same number of dimensions. Those columns are now dimensionless. Decision 3
+itself — resolving *which* model an organization currently uses — is still unimplemented and still
+blocked on the Organization entity.
+
 ## Context
 
 Today the codebase has no multi-tenancy concept at all: `AppSettings` (`src/graphrag_apacheage/config.py`)
@@ -189,10 +196,17 @@ migration is written.
   ondelete="CASCADE")`, `unique=True` — a 1:1 side table), `organization_id` (required, indexed),
   `embedding_model` (nullable, indexed), `embedding`. `NodeEmbedding` gained `organization_id`
   (required, indexed, folded into its `UniqueConstraint` alongside `graph_name`/
-  `knowledge_base_id`/`node_id`) and `embedding_model` (nullable, indexed). Both `vector_search()`
-  methods gained an optional `embedding_model` filter for use during a future recalculation window,
-  matching this ADR's Decision 4 rationale — though the recalculation job itself remains
-  unimplemented (see the Status line above and Decision 4's note below).
+  `knowledge_base_id`/`node_id`) and `embedding_model` (nullable, indexed). The recalculation job
+  itself remains unimplemented (see the Status line above and Decision 4's note below).
+
+  **Amended by ADR-0003.** The `embedding` column on both tables is now dimensionless (`vector`, no
+  width) so organizations on models of differing widths can share these tables — this ADR's shared
+  table recommendation only actually held for same-width models before that. Two follow-on changes
+  worth noting here because they alter the API this section describes: `vector_search()` no longer
+  takes an optional `embedding_model` filter — it derives the filter (and a width cast) from the
+  `model` argument and always applies both — and ANN indexes are now created per embedding model via
+  `ensure_embedding_index()` rather than declared on the table, since a dimensionless column cannot
+  be indexed directly.
   - **Recommendation:** for both the new schema-registry embedding table and the existing
     `NodeEmbedding` table, one shared table across all organizations, scoped by an indexed
     `organization_id` column, not a separate physical table per organization. Table-per-organization

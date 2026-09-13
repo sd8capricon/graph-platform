@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from enum import Enum
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, cast, select
 from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,7 +207,6 @@ class GraphSchemaRegistry(Base):
         model: Model,
         type: SchemaType | None = None,
         knowledge_base_ids: list[str] | None = None,
-        embedding_model: str | None = None,
         top_k: int = 5,
     ) -> list["GraphSchemaRegistry"]:
         """Find the schema registry records whose embedding is closest to a text query.
@@ -215,6 +215,16 @@ class GraphSchemaRegistry(Base):
         records by pgvector's cosine distance operator, so this requires a PostgreSQL
         database with the pgvector extension installed and records that already
         have an embedding (via `SchemaEmbedding`, upserted or assigned directly).
+
+        The search is confined to rows `model` itself produced:
+        `SchemaEmbedding.embedding_model` is filtered on `model.identifier`, and
+        the distance is taken over `embedding` cast to `model.embedding_dimension`.
+        Both are derived from `model` rather than taken as separate arguments,
+        because both must agree with it to be meaningful - a cosine distance
+        between two different models' vectors is a number without meaning
+        (ADR-0001), and between two different *widths* it is an error. This
+        pairing is also exactly what makes the partial expression indexes usable;
+        see `models/embedding_index.py`.
 
         Args:
             session: SQLAlchemy database session for executing the query.
@@ -227,16 +237,15 @@ class GraphSchemaRegistry(Base):
                 isolation filter on the embedding row) - a mismatch between the
                 two (a bug) returns nothing rather than leaking across
                 organizations.
-            model: The embedding provider configuration used to embed `query`.
+            model: The embedding provider configuration used to embed `query`, and
+                the one whose rows are searched. Rows embedded by any other model
+                are excluded, so during an ADR-0002 recalculation window this
+                naturally sees only the rows already migrated to `model`.
             type: Optional schema type ('node' or 'relationship') to filter by.
             knowledge_base_ids: Optional knowledge base ids to restrict the search to.
                 A record matches if its `knowledge_base_ids` overlaps with any of these
                 (via PostgreSQL's jsonb `?|` operator), since a schema row may be shared
                 by several contributing knowledge bases.
-            embedding_model: Optional `Model.identifier` to restrict the search to
-                rows whose embedding was computed by that model (see
-                `SchemaEmbedding.embedding_model`) - useful during an ADR-0002
-                recalculation window to exclude not-yet-migrated rows.
             top_k: Maximum number of records to return, ordered by similarity.
 
         Returns:
@@ -244,8 +253,20 @@ class GraphSchemaRegistry(Base):
 
         Raises:
             ValueError: If `model` is None, since no embedding provider is configured
-                to embed the query.
+                to embed the query, or if it has no `embedding_dimension` and so
+                is not an embedding model at all.
         """
+        # Validate before embedding, not after: `compute_embeddings()` is a real
+        # (billed) provider call, and a model we cannot search against should
+        # never get that far.
+        if model is None:
+            raise ValueError("model is required to perform vector_search")
+        if model.embedding_dimension is None:
+            raise ValueError(
+                f"{model.identifier} has no embedding_dimension; it is not an "
+                "embedding model and cannot be searched against"
+            )
+
         embeddings = await EmbeddingService.compute_embeddings(model, [query])
         if embeddings is None:
             raise ValueError("model is required to perform vector_search")
@@ -259,9 +280,14 @@ class GraphSchemaRegistry(Base):
                 cls.organization_id == organization_id,
                 SchemaEmbedding.organization_id == organization_id,
                 cls.graph_name == graph_name,
+                SchemaEmbedding.embedding_model == model.identifier,
                 SchemaEmbedding.embedding.is_not(None),
             )
-            .order_by(SchemaEmbedding.embedding.cosine_distance(embedding))
+            .order_by(
+                cast(
+                    SchemaEmbedding.embedding, Vector(model.embedding_dimension)
+                ).cosine_distance(embedding)
+            )
             .limit(top_k)
         )
         if type is not None:
@@ -272,8 +298,6 @@ class GraphSchemaRegistry(Base):
             stmt = stmt.where(
                 cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))
             )
-        if embedding_model is not None:
-            stmt = stmt.where(SchemaEmbedding.embedding_model == embedding_model)
 
         return list((await session.execute(stmt)).scalars().all())
 

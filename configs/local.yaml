@@ -1,5 +1,3 @@
-embedding_dimensions: 768
-
 models:
   - display_name: "Openrouter"
     provider: openrouter

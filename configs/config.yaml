@@ -1,5 +1,3 @@
-embedding_dimensions: ""
-
 # Configured model providers. Uncomment and fill in to use; `api_key_env` names an
 # environment variable that must be set (it is read at load time into `api_key`).
 # Chat models are the entries *without* `embedding` in `type` — `agent/chat_model.py`'s

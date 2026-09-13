@@ -2,12 +2,12 @@ from collections.abc import Iterable
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, String, UniqueConstraint, select
+from sqlalchemy import JSON, String, UniqueConstraint, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from graphrag_apacheage.config import settings
 from graphrag_apacheage.models.base import Base
+from graphrag_apacheage.models.embedding_index import ensure_embedding_index
 from graphrag_apacheage.schemas.model import Model
 from graphrag_apacheage.services.embedding_service import EmbeddingService
 
@@ -40,13 +40,19 @@ class NodeEmbedding(Base):
         embedding_model: The `f"{provider}/{name}"` identifier (see
             `Model.identifier`) of the embedding model that produced `embedding`,
             or None if no embedding has been computed yet. Row-level provenance
-            per ADR-0001 option (1), rescoped by ADR-0002: during the window
-            between an organization admin changing the active embedding model and
-            recalculation finishing, this lets a caller filter to rows already
-            migrated to the new model instead of ranking old- and new-model
-            embeddings together.
+            per ADR-0001 option (1), rescoped by ADR-0002. Load-bearing for two
+            things beyond provenance (ADR-0003): it is what `vector_search()`
+            filters on so a query never compares vectors from two different
+            models' spaces, and it is the predicate of this table's partial
+            indexes, so it is also what makes those indexes usable at all.
         embedding: Vector embedding derived from label/properties, used for similarity
-            search via `vector_search()`.
+            search via `vector_search()`. The column is deliberately
+            **dimensionless** (`vector`, no width) per ADR-0003, so organizations
+            using embedding models of different widths can share this table. The
+            cost is that the width is no longer enforced by the database - see
+            `EmbeddingService.compute_embeddings()`'s fail-fast check - and that
+            an ANN index needs an expression+partial form, see
+            `ensure_embedding_index()` below.
     """
 
     __tablename__ = "node_embedding"
@@ -75,7 +81,7 @@ class NodeEmbedding(Base):
         String(255), nullable=True, index=True
     )
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(settings.embedding_dimension).with_variant(JSON, "sqlite"), nullable=True
+        Vector().with_variant(JSON, "sqlite"), nullable=True
     )
 
     def embedding_text(self) -> str:
@@ -163,7 +169,6 @@ class NodeEmbedding(Base):
         model: Model,
         labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
-        embedding_model: str | None = None,
         limit: int = 5,
     ) -> list["NodeEmbedding"]:
         """Find the node embedding records whose embedding is closest to a text query.
@@ -173,6 +178,15 @@ class NodeEmbedding(Base):
         database with the pgvector extension installed and records that already
         have an `embedding` set (via upsert or direct assignment).
 
+        The search is confined to rows `model` itself produced: `embedding_model`
+        is filtered on `model.identifier`, and the distance is taken over
+        `embedding` cast to `model.embedding_dimension`. Both are derived from
+        `model` rather than taken as separate arguments, because both must agree
+        with it to be meaningful - a cosine distance between two different models'
+        vectors is a number without meaning (ADR-0001), and between two different
+        *widths* it is an error. This pairing is also exactly what makes the
+        partial expression indexes usable; see `models/embedding_index.py`.
+
         Args:
             session: SQLAlchemy database session for executing the query.
             query: Free-text query to embed and compare stored records against.
@@ -180,15 +194,14 @@ class NodeEmbedding(Base):
             organization_id: Restrict the search to this organization's rows.
                 Always applied, unlike `labels`/`knowledge_base_id` - a row
                 outside the caller's organization is never a valid match.
-            model: The embedding provider configuration used to embed `query`.
+            model: The embedding provider configuration used to embed `query`, and
+                the one whose rows are searched. Rows embedded by any other model
+                are excluded, so during an ADR-0002 recalculation window this
+                naturally sees only the rows already migrated to `model`.
             labels: Optional node labels to filter by. A record matches if its
                 label is any of these.
             knowledge_base_id: Optional KnowledgeBase id to restrict the search to, so a
                 graph fed by several knowledge bases can be searched one base at a time.
-            embedding_model: Optional `Model.identifier` to restrict the search to
-                rows whose embedding was computed by that model (see
-                `embedding_model` on this class) - useful during an ADR-0002
-                recalculation window to exclude not-yet-migrated rows.
             limit: Maximum number of records to return, ordered by similarity.
 
         Returns:
@@ -196,8 +209,20 @@ class NodeEmbedding(Base):
 
         Raises:
             ValueError: If `model` is None, since no embedding provider is configured
-                to embed the query.
+                to embed the query, or if it has no `embedding_dimension` and so
+                is not an embedding model at all.
         """
+        # Validate before embedding, not after: `compute_embeddings()` is a real
+        # (billed) provider call, and a model we cannot search against should
+        # never get that far.
+        if model is None:
+            raise ValueError("model is required to perform vector_search")
+        if model.embedding_dimension is None:
+            raise ValueError(
+                f"{model.identifier} has no embedding_dimension; it is not an "
+                "embedding model and cannot be searched against"
+            )
+
         embeddings = await EmbeddingService.compute_embeddings(model, [query])
         if embeddings is None:
             raise ValueError("model is required to perform vector_search")
@@ -208,19 +233,43 @@ class NodeEmbedding(Base):
             .where(
                 cls.organization_id == organization_id,
                 cls.graph_name == graph_name,
+                cls.embedding_model == model.identifier,
                 cls.embedding.is_not(None),
             )
-            .order_by(cls.embedding.cosine_distance(embedding))
+            .order_by(
+                cast(cls.embedding, Vector(model.embedding_dimension)).cosine_distance(
+                    embedding
+                )
+            )
             .limit(limit)
         )
         if labels:
             stmt = stmt.where(cls.label.in_(labels))
         if knowledge_base_id is not None:
             stmt = stmt.where(cls.knowledge_base_id == knowledge_base_id)
-        if embedding_model is not None:
-            stmt = stmt.where(cls.embedding_model == embedding_model)
 
         return list((await session.execute(stmt)).scalars().all())
+
+    @classmethod
+    async def ensure_embedding_index(cls, session: AsyncSession, model: Model) -> str:
+        """Create this table's per-model partial HNSW index, if it does not exist.
+
+        See `models/embedding_index.py` for what the index looks like and why one
+        is needed per embedding model rather than one for the whole table.
+
+        Args:
+            session: SQLAlchemy async session used to execute the DDL. Must be
+                bound to PostgreSQL.
+            model: The embedding provider configuration whose rows to index.
+
+        Returns:
+            The executed `CREATE INDEX` statement.
+
+        Raises:
+            ValueError: If `model` has no `embedding_dimension`, or that dimension
+                exceeds what pgvector's HNSW index supports for the `vector` type.
+        """
+        return await ensure_embedding_index(session, cls.__tablename__, model)
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the node embedding record.

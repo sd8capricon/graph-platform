@@ -13,13 +13,9 @@ class AppSettings(BaseModel):
     """Application configuration loaded from a YAML file (see `configs/local.yaml`).
 
     Attributes:
-        embedding_dimension: Vector size for the `embedding` column on ORM models
-            with a pgvector column (see `models/node_embedding.py`,
-            `models/graph_schema_registry.py`).
         models: The configured LLM/embedding provider connections.
     """
 
-    embedding_dimension: int = 1536
     models: list[Model] = Field(default_factory=list)
 
     def __init__(self, path: str | Path | None = None, **data: Any):
@@ -27,7 +23,6 @@ class AppSettings(BaseModel):
 
         Args:
             path: Path to a YAML config file (see `configs/local.yaml`). Its
-                `embedding_dimensions` key populates `embedding_dimension` and its
                 `models` list populates `models`. If omitted, only `**data` (and
                 field defaults) apply, so no file is read.
             **data: Field overrides, take precedence over values loaded from `path`.
@@ -37,16 +32,19 @@ class AppSettings(BaseModel):
         """
         if path is not None:
             loaded = yaml.safe_load(Path(path).read_text())
-            data.setdefault("embedding_dimension", loaded["embedding_dimensions"])
             data.setdefault("models", loaded.get("models") or [])
         super().__init__(**data)
 
 
 settings = AppSettings()
-"""Module-level settings singleton. ORM models with a pgvector `embedding` column
-(see `models/node_embedding.py`, `models/graph_schema_registry.py`) read
-`settings.embedding_dimension` at class-definition time, so `load_config()` must
-run before those modules are first imported anywhere.
+"""Module-level settings singleton.
+
+There is deliberately no process-wide `embedding_dimension` here. It used to size
+the pgvector `embedding` columns, which forced every organization onto one vector
+width and made `load_config()` ordering load-bearing (the column size was fixed at
+class-definition time, so importing a model module too early silently baked in the
+default). ADR-0003 made those columns dimensionless, which removed both problems:
+the only dimension knob left is `Model.embedding_dimension`, per provider entry.
 """
 
 

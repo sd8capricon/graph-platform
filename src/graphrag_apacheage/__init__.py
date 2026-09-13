@@ -121,11 +121,12 @@ async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
 
 
 async def run():
-    # Deferred: importing these sizes the pgvector `Vector` column from
-    # `settings.embedding_dimension`, so they must not be imported before
-    # `main()` has called `load_config()`.
-    # Unused by name: imported so their tables register on Base.metadata,
-    # which is what create_all below actually reads.
+    # Unused by name: imported so their tables register on Base.metadata, which
+    # is what create_all below actually reads. (These used to also need to come
+    # after load_config(), because the pgvector column was sized from
+    # `settings.embedding_dimension` at class-definition time. ADR-0003 made the
+    # columns dimensionless, so that ordering constraint is gone - but the
+    # imports still have to happen before create_all.)
     from graphrag_apacheage.models import graph_schema_registry  # noqa: F401
     from graphrag_apacheage.models import node_embedding
     from graphrag_apacheage.models import schema_embedding  # noqa: F401
@@ -142,6 +143,18 @@ async def run():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         async with AsyncSession(engine) as session:
+            # The embedding columns are dimensionless, so an ANN index has to be
+            # created per embedding model rather than declared on the table - see
+            # models/embedding_index.py. Cheap and idempotent.
+            embedding_model = _embedding_model()
+            if embedding_model is not None:
+                await node_embedding.NodeEmbedding.ensure_embedding_index(
+                    session, embedding_model
+                )
+                await schema_embedding.SchemaEmbedding.ensure_embedding_index(
+                    session, embedding_model
+                )
+                await session.commit()
             # SETUP KB
             # await KnowledgeBaseService(age_repository).delete_graph(
             #     session, "kb_graph", _DEMO_ORGANIZATION_ID
