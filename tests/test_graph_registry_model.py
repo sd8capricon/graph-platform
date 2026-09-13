@@ -18,6 +18,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _embedding_model(**overrides) -> Model:
     fields = {
+        "id": "text-embedding-3-small",
         "display_name": "Text Embedding 3 Small",
         "name": "text-embedding-3-small",
         "provider": "openai",
@@ -113,11 +114,11 @@ async def test_upsert_records_computes_embedding_via_litellm_when_configured(mon
             session, [record], model=_embedding_model()
         )
         embedding = persisted[0].embedding_row.embedding
-        embedding_model = persisted[0].embedding_row.embedding_model
+        embedding_model_id = persisted[0].embedding_row.embedding_model_id
         await session.commit()
 
     assert embedding == [0.1, 0.2, 0.3]
-    assert embedding_model == "openai/text-embedding-3-small"
+    assert embedding_model_id == "text-embedding-3-small"
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["Driver A racer Racer"]
 
@@ -171,7 +172,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     # Derived from the `model` argument, not passed in (ADR-0003): together the
     # predicate and the cast keep the search inside one model's vector space and
     # make the partial expression index matchable.
-    assert "schema_embedding.embedding_model" in compiled
+    assert "schema_embedding.embedding_model_id" in compiled
     assert "CAST(schema_embedding.embedding AS VECTOR(3))" in compiled
 
 

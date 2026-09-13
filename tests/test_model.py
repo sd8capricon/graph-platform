@@ -5,6 +5,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _model(**overrides) -> Model:
     fields = {
+        "id": "chat-gpt-4o",
         "display_name": "Chat GPT-4o",
         "name": "gpt-4o",
         "provider": "openai",
@@ -35,3 +36,21 @@ def test_reasoning_effort_raises_when_embedding_is_in_type():
             embedding_dimension=1536,
             reasoning_effort="low",
         )
+
+
+def test_id_is_required_and_not_auto_generated():
+    # A stored id must stay stable across restarts (it is stamped as embedding
+    # provenance and is what vector_search()/the partial index key off), so an
+    # omitted id must fail loudly rather than be silently filled with a fresh
+    # UUID each run.
+    fields = {
+        "display_name": "Chat GPT-4o",
+        "name": "gpt-4o",
+        "provider": "openai",
+        "auth_mode": AuthMode.API_KEY,
+        "api_key": "test-key",
+        "type": [],
+    }
+
+    with pytest.raises(ValueError, match="id"):
+        Model.model_validate(fields)

@@ -1,5 +1,6 @@
 models:
   - display_name: "Openrouter"
+    id: "b4d91f72-3c6a-4e08-a5f1-9d27c83b614e"
     provider: openrouter
     name: openai/gpt-oss-120b
     auth_mode: api_key
@@ -12,6 +13,7 @@ models:
   #   type: [thinking]
   #   api_key_env: GEMINI_API_KEY
   - display_name: "Gemini Embedding 2"
+    id: "7f3c2a91-6e84-4b17-9d53-2a8f6c1e704b"
     provider: gemini
     name: gemini-embedding-2
     auth_mode: api_key

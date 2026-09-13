@@ -32,15 +32,18 @@ class SchemaEmbedding(Base):
             so `vector_search()`'s isolation filter doesn't depend on a join
             staying correct, the same rationale ADR-0002 gives for denormalizing
             it onto `NodeEmbedding` too.
-        embedding_model: The `f"{provider}/{name}"` identifier (see
-            `Model.identifier`) of the embedding model that produced `embedding`,
-            or None if no embedding has been computed yet. Row-level provenance
-            per ADR-0001 option (1), rescoped by ADR-0002. Load-bearing for two
-            things beyond provenance (ADR-0003): it is what
-            `GraphSchemaRegistry.vector_search()` filters on so a query never
-            compares vectors from two different models' spaces, and it is the
-            predicate of this table's partial indexes, so it is also what makes
-            those indexes usable at all.
+        embedding_model_id: The configured `Model.id` of the embedding model that
+            produced `embedding`, or None if no embedding has been computed yet.
+            Row-level provenance per ADR-0001 option (1), rescoped by ADR-0002.
+            Deliberately `Model.id`, not `Model.identifier` (the
+            `f"{provider}/{name}"` litellm string) - two config entries can share
+            a provider/name while differing in endpoint, auth mode, or dimension,
+            so only the caller-assigned `id` is a stable identity across
+            restarts. Load-bearing for two things beyond provenance (ADR-0003):
+            it is what `GraphSchemaRegistry.vector_search()` filters on so a
+            query never compares vectors from two different models' spaces, and
+            it is the predicate of this table's partial indexes, so it is also
+            what makes those indexes usable at all.
         embedding: Vector embedding derived from the owning GraphSchemaRegistry
             row's name/description/aliases, used for similarity search via
             `GraphSchemaRegistry.vector_search()`. The column is deliberately
@@ -64,7 +67,7 @@ class SchemaEmbedding(Base):
     organization_id: Mapped[str] = mapped_column(
         String(255), nullable=False, index=True
     )
-    embedding_model: Mapped[str | None] = mapped_column(
+    embedding_model_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True, index=True
     )
     embedding: Mapped[list[float] | None] = mapped_column(

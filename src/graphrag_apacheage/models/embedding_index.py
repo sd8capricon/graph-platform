@@ -20,9 +20,12 @@ ADR-0003 makes.
 def _index_name(table_name: str, model: Model) -> str:
     """Build a deterministic, injection-safe index name for a table/model pair.
 
-    A model identifier (`openai/text-embedding-3-small`) is not a valid SQL
-    identifier, so it is slugified rather than quoted through: the width is
-    appended so the name still reads as the thing it indexes.
+    A model id is caller-assigned and not necessarily a valid (or short) SQL
+    identifier, so it is slugified rather than quoted through, and bounded to
+    32 characters: PostgreSQL identifiers are limited to 63 bytes, and a UUID
+    id alone slugifies to 36 - past that limit once the table name, prefix, and
+    dimension are added. The dimension is still appended so the name reads as
+    the thing it indexes.
 
     Args:
         table_name: The table the index is built on.
@@ -31,7 +34,7 @@ def _index_name(table_name: str, model: Model) -> str:
     Returns:
         An identifier-safe index name.
     """
-    slug = re.sub(r"[^a-z0-9]+", "_", model.identifier.lower()).strip("_")
+    slug = re.sub(r"[^a-z0-9]+", "_", model.id.lower()).strip("_")[:32]
     return f"ix_{table_name}_emb_{slug}_{model.embedding_dimension}"
 
 
@@ -47,12 +50,12 @@ async def ensure_embedding_index(
     index that casts to a fixed width, made *partial* so it only covers the rows
     actually of that width:
 
-        CREATE INDEX IF NOT EXISTS "ix_node_embedding_emb_openai_..._1536"
+        CREATE INDEX IF NOT EXISTS "ix_node_embedding_emb_<id-slug>_1536"
           ON "node_embedding" USING hnsw ((embedding::vector(1536)) vector_cosine_ops)
-          WHERE embedding_model = 'openai/text-embedding-3-small'
+          WHERE embedding_model_id = '<model.id>'
 
     This is why `vector_search()` on both models always filters by
-    `model.identifier` *and* orders by the same `::vector(n)` cast: a partial
+    `model.id` *and* orders by the same `::vector(n)` cast: a partial
     index is only usable when the query carries its predicate, and an expression
     index only when the query repeats its expression. The two are a matched pair -
     changing one without the other silently drops back to a sequential scan.
@@ -71,7 +74,7 @@ async def ensure_embedding_index(
             to PostgreSQL - the `vector` type and HNSW are PostgreSQL-only.
         table_name: The table to index (`node_embedding` / `schema_embedding`).
         model: The embedding provider configuration whose rows to index. Its
-            `identifier` becomes the index predicate and its `embedding_dimension`
+            `id` becomes the index predicate and its `embedding_dimension`
             the cast width.
 
     Returns:
@@ -98,13 +101,13 @@ async def ensure_embedding_index(
         sql.SQL(
             "CREATE INDEX IF NOT EXISTS {name} ON {table} "
             "USING hnsw ((embedding::vector({dimension})) vector_cosine_ops) "
-            "WHERE embedding_model = {model}"
+            "WHERE embedding_model_id = {model}"
         )
         .format(
             name=sql.Identifier(_index_name(table_name, model)),
             table=sql.Identifier(table_name),
             dimension=sql.Literal(model.embedding_dimension),
-            model=sql.Literal(model.identifier),
+            model=sql.Literal(model.id),
         )
         .as_string(None)
     )

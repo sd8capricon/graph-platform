@@ -37,14 +37,18 @@ class NodeEmbedding(Base):
         node_id: The node's identifier, matching `KnowledgeNode.id` in the Apache Age graph.
         label: The semantic label/type of the node (e.g., 'Driver').
         properties: Snapshot of the node's properties used to build the embedding text.
-        embedding_model: The `f"{provider}/{name}"` identifier (see
-            `Model.identifier`) of the embedding model that produced `embedding`,
-            or None if no embedding has been computed yet. Row-level provenance
-            per ADR-0001 option (1), rescoped by ADR-0002. Load-bearing for two
-            things beyond provenance (ADR-0003): it is what `vector_search()`
-            filters on so a query never compares vectors from two different
-            models' spaces, and it is the predicate of this table's partial
-            indexes, so it is also what makes those indexes usable at all.
+        embedding_model_id: The configured `Model.id` of the embedding model that
+            produced `embedding`, or None if no embedding has been computed yet.
+            Row-level provenance per ADR-0001 option (1), rescoped by ADR-0002.
+            Deliberately `Model.id`, not `Model.identifier` (the
+            `f"{provider}/{name}"` litellm string) - two config entries can share
+            a provider/name while differing in endpoint, auth mode, or dimension,
+            so only the caller-assigned `id` is a stable identity across
+            restarts. Load-bearing for two things beyond provenance (ADR-0003):
+            it is what `vector_search()` filters on so a query never compares
+            vectors from two different models' spaces, and it is the predicate
+            of this table's partial indexes, so it is also what makes those
+            indexes usable at all.
         embedding: Vector embedding derived from label/properties, used for similarity
             search via `vector_search()`. The column is deliberately
             **dimensionless** (`vector`, no width) per ADR-0003, so organizations
@@ -77,7 +81,7 @@ class NodeEmbedding(Base):
     node_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     label: Mapped[str] = mapped_column(String(255), nullable=False)
     properties: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    embedding_model: Mapped[str | None] = mapped_column(
+    embedding_model_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True, index=True
     )
     embedding: Mapped[list[float] | None] = mapped_column(
@@ -111,8 +115,8 @@ class NodeEmbedding(Base):
         - If found: updates its label and properties.
         Also (re)computes each persisted record's embedding from its post-merge
         label/properties via litellm, provided an embedding `model` is passed,
-        stamping `embedding_model` (see `Model.identifier`) alongside it;
-        otherwise embeddings are left untouched.
+        stamping `embedding_model_id` (see `Model.id`) alongside it; otherwise
+        embeddings are left untouched.
 
         Args:
             session: SQLAlchemy database session for executing queries.
@@ -151,10 +155,10 @@ class NodeEmbedding(Base):
             model, [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
-            embedding_model = model.identifier if model is not None else None
+            embedding_model_id = model.id if model is not None else None
             for record, embedding in zip(persisted, embeddings):
                 record.embedding = embedding
-                record.embedding_model = embedding_model
+                record.embedding_model_id = embedding_model_id
 
         await session.flush()
         return persisted
@@ -178,8 +182,8 @@ class NodeEmbedding(Base):
         database with the pgvector extension installed and records that already
         have an `embedding` set (via upsert or direct assignment).
 
-        The search is confined to rows `model` itself produced: `embedding_model`
-        is filtered on `model.identifier`, and the distance is taken over
+        The search is confined to rows `model` itself produced: `embedding_model_id`
+        is filtered on `model.id`, and the distance is taken over
         `embedding` cast to `model.embedding_dimension`. Both are derived from
         `model` rather than taken as separate arguments, because both must agree
         with it to be meaningful - a cosine distance between two different models'
@@ -233,7 +237,7 @@ class NodeEmbedding(Base):
             .where(
                 cls.organization_id == organization_id,
                 cls.graph_name == graph_name,
-                cls.embedding_model == model.identifier,
+                cls.embedding_model_id == model.id,
                 cls.embedding.is_not(None),
             )
             .order_by(

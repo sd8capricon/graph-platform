@@ -20,11 +20,17 @@
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
    - Schema extraction to `GraphSchemaRegistry` for database storage
-   - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (display_name, name,
-     provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
+   - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (id, display_name,
+     name, provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
      reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
      `embedding_dimension` is set when `embedding` is in `type`. Passed into
-     `EmbeddingService.compute_embeddings()` to describe which provider/model to call.
+     `EmbeddingService.compute_embeddings()` to describe which provider/model to call. `id` is a
+     required, caller-assigned field (not auto-generated) — it must stay stable across restarts
+     because it is stamped as embedding provenance (`embedding_model_id`, see "Vector Embedding &
+     Search Pattern" below) and is what `vector_search()` and the partial ANN index key off. This is
+     distinct from `Model.identifier` (the `f"{provider}/{name}"` litellm model string), which is
+     never used for provenance since two config entries can share one provider/name while differing
+     in endpoint, auth mode, or dimension.
    - `Model.reasoning_effort` is optional and only meaningful for a non-embedding (chat) entry — a
      `@model_validator(mode="after")` (`ensure_reasoning_effort_not_for_embedding`) raises when it is
      set alongside `embedding` in `type`, the same "reject at the boundary" convention as
@@ -408,17 +414,19 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   the row the same way `graph_name` already is (not derived via a join) and is part of its
   `UniqueConstraint("organization_id", "graph_name", "knowledge_base_id", "node_id")`
 - **Row-level embedding-model provenance** (ADR-0001 option (1), rescoped by ADR-0002): both
-  `SchemaEmbedding.embedding_model` and `NodeEmbedding.embedding_model` store the `Model.identifier`
-  (`f"{provider}/{name}"`, see below) that produced the row's vector, stamped by `upsert_records()`
-  whenever an embedding is computed. Both `vector_search()` methods take an optional
-  `embedding_model: str | None` filter — during the window between an organization admin changing the
-  org's active embedding model and ADR-0002 Decision 4's mandatory recalculation finishing, this lets
-  a caller filter to rows already migrated to the new model instead of ranking old- and new-model
-  embeddings together. Not implemented here: the recalculation job itself
+  `SchemaEmbedding.embedding_model_id` and `NodeEmbedding.embedding_model_id` store the configured
+  `Model.id` (not `Model.identifier` — a `provider/name` pair is not a stable identity for a
+  configured model entry, since two entries can share one while differing in endpoint, auth mode, or
+  dimension) that produced the row's vector, stamped by `upsert_records()` whenever an embedding is
+  computed. There is deliberately no separate `embedding_model_id` filter parameter on either
+  `vector_search()` — during the window between an organization admin changing the org's active
+  embedding model and ADR-0002 Decision 4's mandatory recalculation finishing, a search is scoped to
+  the passed-in `model` and so naturally sees only rows already migrated to it, rather than ranking
+  old- and new-model embeddings together. Not implemented here: the recalculation job itself
 - **Both embedding columns are dimensionless** — `Vector().with_variant(JSON, "sqlite")`, i.e. pgvector's `vector` type with *no* width (ADR-0003), so tests run against SQLite (embedding stored as JSON) while production uses PostgreSQL + pgvector. The width is deliberately not declared: a fixed one would be shared by every organization, which contradicts ADR-0002's "each organization picks its own embedding model" unless every model happens to emit the same number of dimensions. Neither model module imports `config` at all any more. Three consequences follow, and they are a matched set — changing one without the others silently breaks the others:
   - **The database no longer enforces vector width.** `EmbeddingService.compute_embeddings()` raises when a provider returns a vector whose length disagrees with `model.embedding_dimension`; it is the single choke point every vector passes through (both tables' upserts *and* both `vector_search()` query embeddings), and now the only thing preventing a mis-sized vector from being stored silently and failing much later at read time
   - **A dimensionless column cannot be ANN-indexed directly.** pgvector's documented workaround is an *expression* index casting to a fixed width, made *partial* so it only covers rows of that width — one per embedding model. See `models/embedding_index.py`'s `ensure_embedding_index()`, exposed as a classmethod on each embedding model. These are per *model*, not per organization, so the index count is bounded by how many providers the deployment supports rather than growing with tenant count. They cannot be static `__table_args__` entries (the model set isn't known at class-definition time) — which is also lucky, since an `Index(..., postgresql_using="hnsw")` there would be emitted by `create_all` against SQLite and break every test
-  - **`vector_search()` must repeat both the predicate and the expression** or the index is not used: it always filters `embedding_model == model.identifier` and orders by `cast(embedding, Vector(model.embedding_dimension))`. Both are derived from the `model` argument rather than passed separately — see the `vector_search` bullet below
+  - **`vector_search()` must repeat both the predicate and the expression** or the index is not used: it always filters `embedding_model_id == model.id` and orders by `cast(embedding, Vector(model.embedding_dimension))`. Both are derived from the `model` argument rather than passed separately — see the `vector_search` bullet below
   - Models wider than **2000 dimensions** (pgvector's HNSW limit for `vector`, e.g. OpenAI `text-embedding-3-large` at 3072) still work but cannot be indexed this way; `ensure_embedding_index()` raises rather than emitting DDL PostgreSQL would reject
   - `AppSettings` (`config.py`) is a pydantic `BaseModel` holding all app config, and loads YAML in its constructor: `AppSettings(path)` reads the top-level `models:` list into `models: list[Model]`, so the config file is parsed exactly once at startup. `AppSettings()` (no path) touches no disk and uses field defaults. There is deliberately **no** process-wide `embedding_dimension`: `Model.embedding_dimension`, per provider entry, is the only dimension knob in the system
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from graphrag_apacheage.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
@@ -426,12 +434,12 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
   - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, and `api/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from graphrag_apacheage.services.embedding_service import EmbeddingService`, never `from graphrag_apacheage.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`models.embedding_index`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `models/embedding_index.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from graphrag_apacheage.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
-  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent/chat_model.py`'s `build_chat_model()` and as the `embedding_model` provenance value stamped by both `upsert_records()` methods, so all three read the same identifier the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`
+  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both `upsert_records()` methods onto `embedding_model_id` (see above)
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
 - Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `GraphSchemaRegistry.upsert_records()` stores the result on `record.embedding_row` (see above), `NodeEmbedding.upsert_records()` stores it directly on the record, as before
 - `vector_search(session, query, graph_name, organization_id, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator — requires PostgreSQL, raises `ValueError` if `model` is `None` or has no `embedding_dimension`. Both checks happen **before** `compute_embeddings()`, since that is a real billed provider call and a model we cannot search against should never reach it
-  - The search is always confined to rows `model` itself produced: it filters `embedding_model == model.identifier` and orders by `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. There is deliberately **no** `embedding_model` parameter — both are derived from `model`, because both must agree with the query vector to mean anything (a cosine distance between two models' vectors is a meaningless number; between two *widths* it is an error), and because that pairing is exactly what makes the partial expression index matchable. A search therefore only ever sees rows embedded by the searching model — during an ADR-0002 recalculation window that is the desired behavior, not a limitation
-- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, organization_id, model=None)` / `.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, embedding_model=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
+  - The search is always confined to rows `model` itself produced: it filters `embedding_model_id == model.id` and orders by `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. There is deliberately **no** `embedding_model_id` parameter — both are derived from `model`, because both must agree with the query vector to mean anything (a cosine distance between two models' vectors is a meaningless number; between two *widths* it is an error), and because that pairing is exactly what makes the partial expression index matchable. A search therefore only ever sees rows embedded by the searching model — during an ADR-0002 recalculation window that is the desired behavior, not a limitation
+- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, organization_id, model=None)` / `.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since neither `?|` nor `<=>` runs on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/graphrag_apacheage/services/embedding_service.py`, `src/graphrag_apacheage/schemas/model.py`, `src/graphrag_apacheage/models/graph_schema_registry.py`, `src/graphrag_apacheage/models/schema_embedding.py`, `src/graphrag_apacheage/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
@@ -584,6 +592,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 kb = KnowledgeBase.from_json_file("path/to/kb.json")  # kb.id must be set
 
 embedding_model = Model(
+    id="text-embedding-3-small",
     name="text-embedding-3-small",
     provider="openai",
     connection_string="https://api.openai.com/v1",
@@ -621,8 +630,9 @@ async with AsyncSession(engine) as session:
    `NodeEmbedding`)
 3. Add a required, indexed `organization_id: Mapped[str]` column (ADR-0002 Decision 1/Open
    Questions: one shared table across organizations, not table-per-organization), a nullable
-   `embedding_model: Mapped[str | None]` column (row-level provenance per ADR-0001 option (1), *and*
-   the predicate the partial index needs — see step 6), and the `embedding` column itself:
+   `embedding_model_id: Mapped[str | None]` column (row-level provenance, holding the configured
+   `Model.id` — not `Model.identifier` — per ADR-0001 option (1), *and* the predicate the partial
+   index needs — see step 6), and the `embedding` column itself:
    `Vector().with_variant(JSON, "sqlite")` — dimensionless, per ADR-0003; do **not** declare a width,
    that would pin every organization to one embedding model size
 4. Implement `embedding_text()` to build the text that gets embedded
@@ -630,21 +640,21 @@ async with AsyncSession(engine) as session:
    `vector_search(session, query, graph_name, organization_id, model, ...)` following the
    `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from
    `services/embedding_service.py` — don't duplicate the litellm call; stamp
-   `record.embedding_model = model.identifier` alongside the vector). `organization_id` is always
+   `record.embedding_model_id = model.id` alongside the vector). `organization_id` is always
    applied in `vector_search()`, not an optional filter — a row outside the caller's organization is
    never a valid match. If using a side table (step 2), see `GraphSchemaRegistry.upsert_records()`'s
    two documented traps: assign `record.embedding_row = None` before `session.add()` on a new record
    (autoflush + `MissingGreenlet` otherwise), and mutate an existing child in place rather than
    replacing it (`IntegrityError` otherwise)
 6. In `vector_search()`, derive the model scope from the `model` argument — filter
-   `embedding_model == model.identifier` and order by
+   `embedding_model_id == model.id` and order by
    `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. Don't add an
-   `embedding_model` parameter; don't order on the uncast column. This is not stylistic: the cast and
+   `embedding_model_id` parameter; don't order on the uncast column. This is not stylistic: the cast and
    the predicate are what make the partial expression index usable, and dropping either silently
    falls back to a sequential scan (ADR-0003)
 7. Expose `ensure_embedding_index(session, model)` as a classmethod delegating to
    `models/embedding_index.py`, so the table can be given its per-model ANN index
-8. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session) plus an organization-isolation test (two organizations sharing the same natural key must not collide into one row), a provenance test (`embedding_model` gets stamped), and a `CreateTable`-compiled assertion that the column is `VECTOR` and not `VECTOR(n)` — SQLite never uses the pgvector type, so a declared width is invisible to every other test
+8. Add tests mirroring `tests/test_node_embedding_model.py` (round-trip on SQLite, skip-when-model-not-provided, litellm-mocked upsert with a `Model` built via a test helper, cosine-distance statement via a fake async session) plus an organization-isolation test (two organizations sharing the same natural key must not collide into one row), a provenance test (`embedding_model_id` gets stamped with `model.id`), and a `CreateTable`-compiled assertion that the column is `VECTOR` and not `VECTOR(n)` — SQLite never uses the pgvector type, so a declared width is invisible to every other test
 
 ### Testing New Features
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`
@@ -670,8 +680,9 @@ async with AsyncSession(engine) as session:
 - `tests/test_serializers.py` - test suite for `agent/serializers.py`'s dict-conversion helpers
 - `tests/test_deep_agent.py` - test suite for `agent/deep_agent.py`'s `build_deep_agent()` factory
 - `tests/test_chat_model.py` - test suite for `agent/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
-- `tests/test_model.py` - test suite for `schemas/model.py`'s `Model` validators (currently just
-  `reasoning_effort`'s embedding-exclusivity rule)
+- `tests/test_model.py` - test suite for `schemas/model.py`'s `Model` validators:
+  `reasoning_effort`'s embedding-exclusivity rule, and that `id` is required (not auto-generated -
+  see the "Schemas" section above for why a stable id matters)
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests
@@ -704,12 +715,12 @@ pytest tests/
   - `test_knowledge_base_parses_json_and_upserts_registry_rows()` - end-to-end JSON→DB flow
   - `test_graph_registry_type_accepts_only_node_or_relationship()` - constraint validation
   - `test_knowledge_base_graph_name_is_provided_to_service_not_stored()` - graph_name parameter pattern
-  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls; also asserts `embedding_model` is stamped with `model.identifier`
+  - `test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured()` - monkeypatches `litellm.aembedding` (via `embedding_service.litellm`, shared by both embedding models) and passes a `Model` to avoid real API calls; also asserts `embedding_model_id` is stamped with `model.id`
   - `test_vector_search_embeds_query_and_builds_cosine_distance_statement()` - asserts on the compiled `postgresql` dialect SQL (via a fake async session) since pgvector's `<=>` operator can't run on SQLite; for `GraphSchemaRegistry` also asserts `JOIN schema_embedding` and both tables' `organization_id` columns appear
   - `test_vector_search_filters_by_multiple_labels_when_provided()` - asserts `NodeEmbedding.vector_search(..., labels=[...])` compiles to a `label IN (...)` filter (same fake-session/compiled-SQL approach)
-  - `test_vector_search_scopes_to_the_query_model_without_being_asked()` - asserts that *without* passing anything, the compiled SQL carries both the `embedding_model` predicate and `CAST(... AS VECTOR(3))`; the pair is what keeps a search in one vector space and what the partial index needs (ADR-0003)
+  - `test_vector_search_scopes_to_the_query_model_without_being_asked()` - asserts that *without* passing anything, the compiled SQL carries both the `embedding_model_id` predicate and `CAST(... AS VECTOR(3))`; the pair is what keeps a search in one vector space and what the partial index needs (ADR-0003)
   - `test_node_embedding_column_is_dimensionless()` / `test_schema_embedding_column_is_dimensionless()` - compile `CreateTable` against the postgresql dialect and assert `VECTOR` with no width. Needed because SQLite falls back to `JSON` via `with_variant` and so cannot observe the width at all — every other test would pass with a wrongly-pinned column
-  - `tests/test_embedding_index.py` - the partial/expression index DDL: exact statement shape, one index per model, hostile-identifier quoting, and the `ValueError`s for a >2000-dimension model and a non-embedding model. Uses a `_RecordingSession` that captures DDL rather than running it, since these statements are PostgreSQL-only
+  - `tests/test_embedding_index.py` - the partial/expression index DDL: exact statement shape, one index per model, hostile-model-id quoting, a UUID-length id staying within PostgreSQL's 63-byte identifier limit, and the `ValueError`s for a >2000-dimension model and a non-embedding model. Uses a `_RecordingSession` that captures DDL rather than running it, since these statements are PostgreSQL-only
   - `test_compute_embeddings_raises_when_provider_returns_wrong_width()` - the guardrail that replaced the column's own width enforcement (ADR-0003/ADR-0001 option 3)
   - `test_upsert_node_embeddings_keeps_separate_rows_per_knowledge_base()` - same `graph_name`/`node_id` from two different `knowledge_base_id`s upserts to 2 rows, not 1
   - `test_upsert_node_embeddings_keeps_separate_rows_per_organization()` / `test_upsert_records_keeps_separate_embedding_rows_per_organization()` (`tests/test_schema_embedding_model.py`) - two organizations sharing the same otherwise-identical natural key (graph_name/node_id, or graph_name/type/name) upsert to 2 rows, not 1 — `organization_id` is part of the identity, not just a filter

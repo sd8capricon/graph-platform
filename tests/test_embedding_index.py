@@ -11,6 +11,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _embedding_model(**overrides) -> Model:
     fields = {
+        "id": "gemini-embedding-2",
         "display_name": "Gemini Embedding 2",
         "name": "gemini-embedding-2",
         "provider": "gemini",
@@ -42,10 +43,10 @@ async def test_ensure_embedding_index_builds_a_partial_expression_index():
     statement = await ensure_embedding_index(session, "node_embedding", _embedding_model())
 
     assert statement == (
-        'CREATE INDEX IF NOT EXISTS "ix_node_embedding_emb_gemini_gemini_embedding_2_768" '
+        'CREATE INDEX IF NOT EXISTS "ix_node_embedding_emb_gemini_embedding_2_768" '
         'ON "node_embedding" '
         "USING hnsw ((embedding::vector(768)) vector_cosine_ops) "
-        "WHERE embedding_model = 'gemini/gemini-embedding-2'"
+        "WHERE embedding_model_id = 'gemini-embedding-2'"
     )
     assert session.statements == [statement]
 
@@ -60,13 +61,16 @@ async def test_ensure_embedding_index_is_idempotent_and_scoped_per_model():
         session,
         "node_embedding",
         _embedding_model(
-            provider="openai", name="text-embedding-3-small", embedding_dimension=1536
+            id="openai-text-embedding-3-small",
+            provider="openai",
+            name="text-embedding-3-small",
+            embedding_dimension=1536,
         ),
     )
 
     names = [s.split('"')[1] for s in session.statements]
     assert names == [
-        "ix_node_embedding_emb_gemini_gemini_embedding_2_768",
+        "ix_node_embedding_emb_gemini_embedding_2_768",
         "ix_node_embedding_emb_openai_text_embedding_3_small_1536",
     ]
     # Re-running is safe: the DDL carries IF NOT EXISTS rather than being guarded
@@ -74,24 +78,35 @@ async def test_ensure_embedding_index_is_idempotent_and_scoped_per_model():
     assert all("IF NOT EXISTS" in s for s in session.statements)
 
 
-async def test_ensure_embedding_index_quotes_a_hostile_model_identifier():
-    # The identifier reaches both an index name and a WHERE literal. The name is
-    # slugified (it is an identifier, so it cannot simply be quoted through) and
-    # the literal is escaped, the same concern AgeGraphRepository._validate_label
-    # exists for.
+async def test_ensure_embedding_index_quotes_a_hostile_model_id():
+    # `id` is caller-supplied config, so it reaches both an index name and a
+    # WHERE literal. The name is slugified (it is an identifier, so it cannot
+    # simply be quoted through) and the literal is escaped, the same concern
+    # AgeGraphRepository._validate_label exists for.
     session = _RecordingSession()
-    model = _embedding_model(name="x'; DROP TABLE node_embedding; --")
+    model = _embedding_model(id="x'; DROP TABLE node_embedding; --")
 
     statement = await ensure_embedding_index(session, "node_embedding", model)
 
     assert "DROP TABLE" not in statement.split("WHERE")[0]
+    assert '"ix_node_embedding_emb_x_drop_table_node_embedding_768"' in statement
     assert (
-        '"ix_node_embedding_emb_gemini_x_drop_table_node_embedding_768"' in statement
+        "WHERE embedding_model_id = 'x''; DROP TABLE node_embedding; --'" in statement
     )
-    assert (
-        "WHERE embedding_model = 'gemini/x''; DROP TABLE node_embedding; --'"
-        in statement
-    )
+
+
+async def test_ensure_embedding_index_keeps_index_name_within_postgres_identifier_limit():
+    # PostgreSQL identifiers are limited to 63 bytes. A UUID id (36 chars) would
+    # push "ix_schema_embedding_emb_<slug>_<dim>" past that without the bound in
+    # _index_name(), so this pins the truncation rather than relying on
+    # inspection - schema_embedding is the longer of the two table names.
+    session = _RecordingSession()
+    model = _embedding_model(id="123e4567-e89b-12d3-a456-426614174000")
+
+    statement = await ensure_embedding_index(session, "schema_embedding", model)
+
+    name = statement.split('"')[1]
+    assert len(name) <= 63
 
 
 async def test_ensure_embedding_index_rejects_a_model_too_wide_for_hnsw():

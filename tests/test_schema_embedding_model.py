@@ -34,7 +34,7 @@ def test_schema_embedding_table_exists_and_tracks_the_registry_row():
         "id",
         "graph_registry_id",
         "organization_id",
-        "embedding_model",
+        "embedding_model_id",
         "embedding",
     }
     assert expected.issubset(columns)
@@ -58,7 +58,7 @@ def test_schema_embedding_round_trips_on_sqlite():
     )
     registry_row.embedding_row = SchemaEmbedding(
         organization_id="org-1",
-        embedding_model="openai/text-embedding-3-small",
+        embedding_model_id="text-embedding-3-small",
         embedding=[0.1, 0.2, 0.3],
     )
 
@@ -71,7 +71,7 @@ def test_schema_embedding_round_trips_on_sqlite():
         ).scalar_one()
 
     assert stored.embedding_row.embedding == [0.1, 0.2, 0.3]
-    assert stored.embedding_row.embedding_model == "openai/text-embedding-3-small"
+    assert stored.embedding_row.embedding_model_id == "text-embedding-3-small"
     assert stored.embedding_row.organization_id == "org-1"
 
 
@@ -90,6 +90,7 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
     import graphrag_apacheage.models.graph_schema_registry as gsr_mod
 
     class FakeModel:
+        id = "text-embedding-3-small"
         identifier = "openai/text-embedding-3-small"
 
     gsr_mod.EmbeddingService.compute_embeddings = staticmethod(fake_compute)
@@ -136,6 +137,7 @@ async def test_upsert_records_keeps_separate_embedding_rows_per_organization():
     import graphrag_apacheage.models.graph_schema_registry as gsr_mod
 
     class FakeModel:
+        id = "text-embedding-3-small"
         identifier = "openai/text-embedding-3-small"
 
     gsr_mod.EmbeddingService.compute_embeddings = staticmethod(fake_compute)

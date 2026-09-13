@@ -454,7 +454,6 @@ class KnowledgeBaseService:
         model: Model,
         labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
-        embedding_model: str | None = None,
         limit: int = 5,
     ) -> list[NodeEmbedding]:
         """Find knowledge base nodes whose embedding is closest to a text query.
@@ -465,11 +464,13 @@ class KnowledgeBaseService:
             graph_name: Restrict the search to nodes belonging to this graph.
             organization_id: Restrict the search to this organization's rows (see
                 ADR-0002, Decision 1).
-            model: The embedding provider configuration used to embed `query`.
+            model: The embedding provider configuration used to embed `query`. The
+                search is confined to rows this model itself produced (see
+                `NodeEmbedding.vector_search()`) - there is no separate
+                embedding-model filter, since only `model` can say what row it
+                should be compared against.
             labels: Optional node labels to filter by.
             knowledge_base_id: Optional KnowledgeBase id to restrict the search to.
-            embedding_model: Optional `Model.identifier` to restrict the search to
-                rows embedded by that model (see `NodeEmbedding.embedding_model`).
             limit: Maximum number of nodes to return, ordered by similarity.
 
         Returns:
@@ -483,6 +484,5 @@ class KnowledgeBaseService:
             model,
             labels=labels,
             knowledge_base_id=knowledge_base_id,
-            embedding_model=embedding_model,
             limit=limit,
         )

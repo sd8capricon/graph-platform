@@ -16,6 +16,7 @@ from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseServ
 
 def _embedding_model(**overrides) -> Model:
     fields = {
+        "id": "text-embedding-3-small",
         "display_name": "Text Embedding 3 Small",
         "name": "text-embedding-3-small",
         "provider": "openai",
@@ -56,7 +57,7 @@ def test_node_embedding_table_exists_and_tracks_graph_and_node():
         "node_id",
         "label",
         "properties",
-        "embedding_model",
+        "embedding_model_id",
         "embedding",
     }
     assert expected.issubset(columns)
@@ -106,11 +107,11 @@ async def test_upsert_node_embeddings_skips_embedding_when_model_not_provided():
     async with AsyncSession(engine) as session:
         persisted = await NodeEmbedding.upsert_records(session, [record])
         embedding = persisted[0].embedding
-        embedding_model = persisted[0].embedding_model
+        embedding_model_id = persisted[0].embedding_model_id
         await session.commit()
 
     assert embedding is None
-    assert embedding_model is None
+    assert embedding_model_id is None
 
 
 async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured(
@@ -147,11 +148,11 @@ async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_config
             session, [record], model=_embedding_model()
         )
         embedding = persisted[0].embedding
-        embedding_model = persisted[0].embedding_model
+        embedding_model_id = persisted[0].embedding_model_id
         await session.commit()
 
     assert embedding == [0.1, 0.2, 0.3]
-    assert embedding_model == "openai/text-embedding-3-small"
+    assert embedding_model_id == "text-embedding-3-small"
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["Driver name: Max Verstappen"]
 
@@ -294,10 +295,10 @@ async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatc
 
 
 async def test_vector_search_scopes_to_the_query_model_without_being_asked(monkeypatch):
-    """The `embedding_model` predicate and the `::vector(n)` cast are derived from
-    the `model` argument, not passed separately (ADR-0003). Together they keep a
-    search inside one model's vector space *and* make the partial expression
-    index (see `models/embedding_index.py`) matchable."""
+    """The `embedding_model_id` predicate and the `::vector(n)` cast are derived
+    from the `model` argument, not passed separately (ADR-0003). Together they
+    keep a search inside one model's vector space *and* make the partial
+    expression index (see `models/embedding_index.py`) matchable."""
     import graphrag_apacheage.services.embedding_service as embedding_service
 
     class FakeResponse:
@@ -322,7 +323,7 @@ async def test_vector_search_scopes_to_the_query_model_without_being_asked(monke
             captured["stmt"] = stmt
             return FakeResult()
 
-    # Note: no embedding_model= and no dimension argument.
+    # Note: no embedding_model_id= and no dimension argument.
     results = await NodeEmbedding.vector_search(
         FakeSession(),
         query="fast driver",
@@ -334,7 +335,7 @@ async def test_vector_search_scopes_to_the_query_model_without_being_asked(monke
 
     assert results == []
     compiled = str(captured["stmt"].compile(dialect=postgresql.dialect()))
-    assert "node_embedding.embedding_model" in compiled
+    assert "node_embedding.embedding_model_id" in compiled
     assert "CAST(node_embedding.embedding AS VECTOR(3))" in compiled
 
 

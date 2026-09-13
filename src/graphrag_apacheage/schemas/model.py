@@ -1,7 +1,6 @@
 import os
 from enum import Enum
 from typing import Any
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
@@ -36,7 +35,13 @@ class Model(BaseModel):
     """Represents a configured LLM/embedding model provider connection.
 
     Attributes:
-        id: Unique identifier for the model. Auto-generated as UUID if not provided.
+        id: Stable, caller-assigned identifier for this configured model entry.
+            Required, not auto-generated - it must stay the same across process
+            restarts, since it is stamped as the embedding-provenance value on
+            `NodeEmbedding`/`SchemaEmbedding` rows (`embedding_model_id`) and is
+            what `vector_search()` filters on and the partial ANN index is
+            predicated on (see `Model.identifier` for the distinct litellm-model
+            string, which is not used for provenance).
         display_name: A human-friendly name for this configured model (e.g., 'Chat GPT-4o').
         name: The name of the model (e.g., 'gpt-4o', 'text-embedding-3-small').
         provider: The provider serving the model (e.g., 'openai', 'azure').
@@ -52,7 +57,7 @@ class Model(BaseModel):
             for a non-embedding (chat) model. Invalid when 'embedding' is in type.
     """
 
-    id: str | None = None
+    id: str
     display_name: str
     name: str
     provider: str
@@ -62,22 +67,6 @@ class Model(BaseModel):
     api_key: SecretStr | None = None
     embedding_dimension: int | None = None
     reasoning_effort: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def ensure_id(cls, data: Any) -> Any:
-        """Ensure that the model has an ID by generating a UUID if not provided.
-
-        Args:
-            data: The raw data dictionary before model instantiation.
-
-        Returns:
-            The data dictionary with id field populated (generated if necessary).
-        """
-        if isinstance(data, dict):
-            data = dict(data)
-            data.setdefault("id", str(uuid4()))
-        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -150,12 +139,14 @@ class Model(BaseModel):
     def identifier(self) -> str:
         """The litellm-style `f"{provider}/{name}"` string identifying this model.
 
-        Shared by every caller that needs to name which provider/model produced
-        something - the litellm model string in `EmbeddingService.compute_embeddings()`
-        and `agent/chat_model.py`'s `build_chat_model()`, and the `embedding_model`
-        provenance stamped onto `GraphSchemaRegistry`/`NodeEmbedding` rows (see
-        ADR-0001 option (1), as rescoped by ADR-0002) - so all four read the same
-        identifier the same way.
+        This is the model string litellm itself needs -
+        `EmbeddingService.compute_embeddings()` and `agent/chat_model.py`'s
+        `build_chat_model()` both pass it as the provider/model to call. It is
+        *not* used for embedding provenance: `NodeEmbedding`/`SchemaEmbedding`
+        stamp and filter on `Model.id` instead (`embedding_model_id`), since a
+        `provider/name` pair is not a stable identity for a configured model
+        entry - two entries can share one while differing in endpoint, auth, or
+        dimension - whereas `id` is required and caller-assigned.
 
         Returns:
             `f"{self.provider}/{self.name}"`.

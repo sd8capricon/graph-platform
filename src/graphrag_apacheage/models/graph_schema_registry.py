@@ -175,13 +175,13 @@ class GraphSchemaRegistry(Base):
             model, [record.embedding_text() for record in persisted]
         )
         if embeddings is not None:
-            embedding_model = model.identifier if model is not None else None
+            embedding_model_id = model.id if model is not None else None
             for record, embedding in zip(persisted, embeddings):
                 child = record.embedding_row
                 if child is None:
                     record.embedding_row = SchemaEmbedding(
                         organization_id=record.organization_id,
-                        embedding_model=embedding_model,
+                        embedding_model_id=embedding_model_id,
                         embedding=embedding,
                     )
                 else:
@@ -191,7 +191,7 @@ class GraphSchemaRegistry(Base):
                     # pending delete-orphan of the old child and raises
                     # IntegrityError on the unique graph_registry_id.
                     child.organization_id = record.organization_id
-                    child.embedding_model = embedding_model
+                    child.embedding_model_id = embedding_model_id
                     child.embedding = embedding
 
         await session.flush()
@@ -217,7 +217,7 @@ class GraphSchemaRegistry(Base):
         have an embedding (via `SchemaEmbedding`, upserted or assigned directly).
 
         The search is confined to rows `model` itself produced:
-        `SchemaEmbedding.embedding_model` is filtered on `model.identifier`, and
+        `SchemaEmbedding.embedding_model_id` is filtered on `model.id`, and
         the distance is taken over `embedding` cast to `model.embedding_dimension`.
         Both are derived from `model` rather than taken as separate arguments,
         because both must agree with it to be meaningful - a cosine distance
@@ -280,7 +280,7 @@ class GraphSchemaRegistry(Base):
                 cls.organization_id == organization_id,
                 SchemaEmbedding.organization_id == organization_id,
                 cls.graph_name == graph_name,
-                SchemaEmbedding.embedding_model == model.identifier,
+                SchemaEmbedding.embedding_model_id == model.id,
                 SchemaEmbedding.embedding.is_not(None),
             )
             .order_by(

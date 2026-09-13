@@ -146,3 +146,27 @@ nothing is read at class-definition time any more.
   alternative unworkable, at the cost of the graph drop and the side-table deletes not sharing a
   transaction. That blocker is gone. Moving it is out of scope here and remains a deliberate
   follow-up, not an accident.
+
+## Amendment: provenance is `Model.id`, not `Model.identifier`
+
+Decision 3 originally had both `vector_search()` methods filter `embedding_model ==
+model.identifier`, where `embedding_model` stored the `f"{provider}/{name}"` litellm string. That
+column is now `embedding_model_id` and stores `Model.id` instead: a `provider/name` pair is not a
+stable identity for a *configured model entry* - two config entries can share one while differing in
+endpoint, connection string, auth mode, or dimension, which would have collided their rows (and their
+partial index) onto one predicate value. `Model.id` is now a required, caller-assigned field (the
+earlier `ensure_id` auto-generation, which minted a fresh UUID whenever an entry omitted it, is
+removed) so it stays stable across restarts - a prerequisite for it to serve as provenance at all.
+
+`Model.identifier` is unchanged and keeps its original job: the litellm model string passed to
+`EmbeddingService.compute_embeddings()` and `agent/chat_model.py`'s `build_chat_model()`. The two are
+now clearly separate concerns - what litellm calls the model vs. what this deployment calls the
+configured entry - where before one property served both.
+
+This is a schema and behavior change on top of an already-implemented ADR, not a new option: the
+worked example above and the partial-index predicate should be read with `embedding_model_id` /
+`model.id` in place of `embedding_model` / `model.identifier`. No migration tooling exists (per the
+Consequences above); an existing PostgreSQL deployment needs `ALTER TABLE ... RENAME COLUMN
+embedding_model TO embedding_model_id` on both tables, a re-embed (the surviving values are
+`provider/name` strings, not any configured `id`), and the old partial indexes dropped and
+re-created via `ensure_embedding_index()`.
