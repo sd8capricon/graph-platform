@@ -173,6 +173,54 @@ class AgeGraphRepository:
         result = await cursor.fetchone()
         return result is not None
 
+    async def _ensure_label(self, graph_name: str, label: str, create_function: str) -> None:
+        """Idempotently create a vertex/edge label's underlying table.
+
+        Apache Age auto-creates a label's table the first time a Cypher `CREATE`
+        references it, but that auto-create races when several `CREATE`
+        statements for the same brand-new label run back-to-back inside one
+        uncommitted transaction, raising `psycopg.errors.DuplicateTable:
+        relation "<Label>" already exists`. Explicitly creating the label once,
+        before any `CREATE` touches it, avoids the race — a bulk load of many
+        same-label nodes/relationships in one transaction is exactly this case.
+
+        Args:
+            graph_name: The name of the graph the label belongs to.
+            label: The vertex/edge label to ensure exists.
+            create_function: The `ag_catalog` function to call when the label is
+                missing — `"create_vlabel"` or `"create_elabel"`.
+        """
+        exists_query = (
+            "SELECT 1 FROM ag_catalog.ag_label l "
+            "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+            f"WHERE g.name = '{graph_name}' AND l.name = '{label}';"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(exists_query)
+        if (await cursor.fetchone()) is not None:
+            return
+        await cursor.execute(
+            f"SELECT ag_catalog.{create_function}('{graph_name}', '{label}');"
+        )
+
+    async def ensure_vertex_label(self, graph_name: str, label: str) -> None:
+        """Create a vertex label's underlying table if it doesn't already exist.
+
+        Args:
+            graph_name: The name of the graph the label belongs to.
+            label: The vertex label to ensure exists.
+        """
+        await self._ensure_label(graph_name, label, "create_vlabel")
+
+    async def ensure_edge_label(self, graph_name: str, label: str) -> None:
+        """Create an edge label's underlying table if it doesn't already exist.
+
+        Args:
+            graph_name: The name of the graph the label belongs to.
+            label: The edge label to ensure exists.
+        """
+        await self._ensure_label(graph_name, label, "create_elabel")
+
     async def get_nodes(self, graph_name: str, label: str | None = None) -> str:
         """Query nodes in a graph, optionally filtered by label.
 

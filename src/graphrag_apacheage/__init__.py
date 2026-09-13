@@ -40,12 +40,14 @@ async def create_connection() -> AsyncConnection:
         password=os.environ["PGPASSWORD"],
     )
     async with connection.cursor() as cursor:
+        await cursor.execute("CREATE EXTENSION IF NOT EXISTS age;")
         # Azure Postgres has AGE pre-loaded via server config; skip LOAD for Azure hosts
         is_azure = "database.azure.com" in host
         if not is_azure:
             await cursor.execute("LOAD 'age';")
         await cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         await cursor.execute('SET search_path = ag_catalog, "$user", public;')
+    await connection.commit()
     return connection
 
 
@@ -160,8 +162,9 @@ async def run():
             #     session, "kb_graph", _DEMO_ORGANIZATION_ID
             # )
             # await session.commit()
-            # await create_knowledge_base(age_repository, session)
-            await check_agent(session, age_repository)
+            await create_knowledge_base(age_repository, session)
+            # Check Agent
+            # await check_agent(session, age_repository)
     finally:
         await engine.dispose()
         await pg_connection.close()

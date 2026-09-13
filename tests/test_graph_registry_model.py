@@ -463,6 +463,16 @@ async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
             connection.cursor_obj.calls.append((query, None))
             return query
 
+        async def ensure_vertex_label(self, graph_name, label):
+            connection.cursor_obj.calls.append(
+                (f"SELECT ag_catalog.create_vlabel('{graph_name}', '{label}');", None)
+            )
+
+        async def ensure_edge_label(self, graph_name, label):
+            connection.cursor_obj.calls.append(
+                (f"SELECT ag_catalog.create_elabel('{graph_name}', '{label}');", None)
+            )
+
         async def create_node(self, graph_name, label, properties):
             query = (
                 f"SELECT * FROM cypher('{graph_name}', $$ CREATE (n:{label} {properties}) "
@@ -594,6 +604,81 @@ async def test_age_graph_repository_delete_graph_drops_graph():
     assert "drop_graph" in query.lower()
     assert "demo_graph" in query
     assert "drop_graph" in connection.cursor_obj.last_query.lower()
+
+
+class _QueuedFetchOneCursor:
+    """Cursor recording every query, serving a queued fetchone result per call.
+
+    `_ensure_label` issues an existence-check SELECT (consuming one fetchone)
+    and then, only when the label is missing, a second SELECT that creates it
+    (no fetchone call) - so only the existence check's result needs queuing.
+    """
+
+    def __init__(self, fetchone_results=()):
+        self._fetchone_results = list(fetchone_results)
+        self.queries = []
+
+    async def execute(self, query):
+        self.queries.append(query)
+
+    async def fetchone(self):
+        return self._fetchone_results.pop(0)
+
+
+class _QueuedFetchOneConnection:
+    def __init__(self, fetchone_results=()):
+        self.cursor_obj = _QueuedFetchOneCursor(fetchone_results)
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+async def test_age_graph_repository_ensure_vertex_label_creates_when_missing():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedFetchOneConnection(fetchone_results=[None])
+    repository = AgeGraphRepository(connection)
+
+    await repository.ensure_vertex_label("demo_graph", "Driver")
+
+    exists_query, create_query = connection.cursor_obj.queries
+    assert "ag_catalog.ag_label" in exists_query
+    assert "demo_graph" in exists_query and "Driver" in exists_query
+    assert create_query == "SELECT ag_catalog.create_vlabel('demo_graph', 'Driver');"
+
+
+async def test_age_graph_repository_ensure_vertex_label_skips_when_already_exists():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedFetchOneConnection(fetchone_results=[(1,)])
+    repository = AgeGraphRepository(connection)
+
+    await repository.ensure_vertex_label("demo_graph", "Driver")
+
+    assert len(connection.cursor_obj.queries) == 1
+
+
+async def test_age_graph_repository_ensure_edge_label_creates_when_missing():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedFetchOneConnection(fetchone_results=[None])
+    repository = AgeGraphRepository(connection)
+
+    await repository.ensure_edge_label("demo_graph", "DRIVES_FOR")
+
+    _, create_query = connection.cursor_obj.queries
+    assert create_query == "SELECT ag_catalog.create_elabel('demo_graph', 'DRIVES_FOR');"
+
+
+async def test_age_graph_repository_ensure_edge_label_skips_when_already_exists():
+    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedFetchOneConnection(fetchone_results=[(1,)])
+    repository = AgeGraphRepository(connection)
+
+    await repository.ensure_edge_label("demo_graph", "DRIVES_FOR")
+
+    assert len(connection.cursor_obj.queries) == 1
 
 
 def _agtype_vertex(id_: int, node_id: str, label: str, **properties) -> str:
@@ -965,6 +1050,12 @@ class _RecordingAgeRepository:
         self.queries.append(query)
         return query
 
+    async def ensure_vertex_label(self, graph_name, label):
+        self.queries.append(f"SELECT ag_catalog.create_vlabel('{graph_name}', '{label}');")
+
+    async def ensure_edge_label(self, graph_name, label):
+        self.queries.append(f"SELECT ag_catalog.create_elabel('{graph_name}', '{label}');")
+
     async def create_node(self, graph_name, label, properties):
         query = f"CREATE (n:{label} {properties})"
         self.queries.append(query)
@@ -1025,6 +1116,68 @@ def _demo_knowledge_base(knowledge_base_id: str) -> KnowledgeBase:
             ],
         }
     )
+
+
+async def test_upsert_knowledge_base_ensures_labels_once_before_creating_nodes():
+    # Regression test: Apache Age's implicit auto-create-on-first-CREATE races
+    # when several CREATEs for the same brand-new label run in one uncommitted
+    # transaction, raising DuplicateTable. Every label must be ensured exactly
+    # once, before any CREATE that references it - even when multiple nodes
+    # share the label.
+    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
+    knowledge_base = KnowledgeBase.model_validate(
+        {
+            "id": "kb-multi",
+            "name": "kb_multi",
+            "nodes": [
+                {"id": "kb-multi-d1", "label": "Driver", "properties": {"name": "A"}},
+                {"id": "kb-multi-d2", "label": "Driver", "properties": {"name": "B"}},
+            ],
+            "relationships": [
+                {
+                    "source_id": "kb-multi-d1",
+                    "target_id": "kb-multi-d2",
+                    "label": "TEAMMATE_OF",
+                    "properties": {},
+                }
+            ],
+        }
+    )
+
+    async with await _sqlite_session() as session:
+        await service.upsert_knowledge_base(
+            session, knowledge_base, "demo_graph", "org-1"
+        )
+
+    ensure_vertex_calls = [q for q in repository.queries if "create_vlabel" in q]
+    ensure_edge_calls = [q for q in repository.queries if "create_elabel" in q]
+    create_node_indices = [
+        i
+        for i, q in enumerate(repository.queries)
+        if q.startswith("CREATE (n:Driver")
+    ]
+    create_relationship_indices = [
+        i
+        for i, q in enumerate(repository.queries)
+        if q.startswith("CREATE (") and "TEAMMATE_OF" in q
+    ]
+
+    # Ensured exactly once, even though two Driver nodes are created.
+    assert ensure_vertex_calls == [
+        "SELECT ag_catalog.create_vlabel('demo_graph', 'Driver');"
+    ]
+    assert ensure_edge_calls == [
+        "SELECT ag_catalog.create_elabel('demo_graph', 'TEAMMATE_OF');"
+    ]
+
+    # And before any CREATE that references the label.
+    vertex_ensure_index = repository.queries.index(ensure_vertex_calls[0])
+    edge_ensure_index = repository.queries.index(ensure_edge_calls[0])
+    assert all(vertex_ensure_index < i for i in create_node_indices)
+    assert all(edge_ensure_index < i for i in create_relationship_indices)
 
 
 async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows():

@@ -79,6 +79,13 @@ class KnowledgeBaseService:
 
         queries: list[str] = []
 
+        for label in dict.fromkeys(node.label for node in knowledge_base.nodes):
+            await self.repository.ensure_vertex_label(graph_name, label)
+        for label in dict.fromkeys(
+            relationship.label for relationship in knowledge_base.relationships
+        ):
+            await self.repository.ensure_edge_label(graph_name, label)
+
         for node in knowledge_base.nodes:
             node_properties = dict(node.properties)
             if node.id is not None:
