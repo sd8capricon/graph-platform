@@ -1,6 +1,6 @@
 # Configured model providers. Uncomment and fill in to use; `api_key_env` names an
 # environment variable that must be set (it is read at load time into `api_key`).
-# `id` is required and must stay stable across restarts - it is not auto-generated,
+# `id` is required and must be a UUID, stable across restarts - it is not auto-generated,
 # since it is stamped as embedding provenance (`embedding_model_id`) and is what
 # `vector_search()` and the partial ANN index key off.
 # Chat models are the entries *without* `embedding` in `type` — `agent/chat_model.py`'s
@@ -10,7 +10,7 @@
 # it is rejected when `embedding` is in `type`.
 # models:
 #   - display_name: "Chat GPT-4o"
-#     id: "chat-gpt-4o"
+#     id: "550e8400-e29b-41d4-a716-446655440001"
 #     provider: openai
 #     name: gpt-4o
 #     connection_string: https://api.openai.com/v1
@@ -19,7 +19,7 @@
 #     api_key_env: OPENAI_API_KEY
 #     reasoning_effort: low
 #   - display_name: "Text Embedding 3 Small"
-#     id: "text-embedding-3-small"
+#     id: "550e8400-e29b-41d4-a716-446655440000"
 #     provider: openai
 #     name: text-embedding-3-small
 #     connection_string: https://api.openai.com/v1

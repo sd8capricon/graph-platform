@@ -16,7 +16,7 @@ from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseServ
 
 def _embedding_model(**overrides) -> Model:
     fields = {
-        "id": "text-embedding-3-small",
+        "id": "550e8400-e29b-41d4-a716-446655440000",
         "display_name": "Text Embedding 3 Small",
         "name": "text-embedding-3-small",
         "provider": "openai",
@@ -152,7 +152,7 @@ async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_config
         await session.commit()
 
     assert embedding == [0.1, 0.2, 0.3]
-    assert embedding_model_id == "text-embedding-3-small"
+    assert embedding_model_id == "550e8400-e29b-41d4-a716-446655440000"
     assert captured["model"] == "openai/text-embedding-3-small"
     assert captured["input"] == ["Driver name: Max Verstappen"]
 

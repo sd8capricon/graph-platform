@@ -11,7 +11,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _embedding_model(**overrides) -> Model:
     fields = {
-        "id": "gemini-embedding-2",
+        "id": "3f9a1b2c-8d4e-4f1a-9c3b-7e2d5a6f8b91",
         "display_name": "Gemini Embedding 2",
         "name": "gemini-embedding-2",
         "provider": "gemini",
@@ -43,10 +43,11 @@ async def test_ensure_embedding_index_builds_a_partial_expression_index():
     statement = await ensure_embedding_index(session, "node_embedding", _embedding_model())
 
     assert statement == (
-        'CREATE INDEX IF NOT EXISTS "ix_node_embedding_emb_gemini_embedding_2_768" '
+        'CREATE INDEX IF NOT EXISTS '
+        '"ix_node_embedding_emb_3f9a1b2c_8d4e_4f1a_9c3b_7e2d5a6f_768" '
         'ON "node_embedding" '
         "USING hnsw ((embedding::vector(768)) vector_cosine_ops) "
-        "WHERE embedding_model_id = 'gemini-embedding-2'"
+        "WHERE embedding_model_id = '3f9a1b2c-8d4e-4f1a-9c3b-7e2d5a6f8b91'"
     )
     assert session.statements == [statement]
 
@@ -61,7 +62,7 @@ async def test_ensure_embedding_index_is_idempotent_and_scoped_per_model():
         session,
         "node_embedding",
         _embedding_model(
-            id="openai-text-embedding-3-small",
+            id="9a2b3c4d-5e6f-4a1b-8c2d-1e2f3a4b5c6d",
             provider="openai",
             name="text-embedding-3-small",
             embedding_dimension=1536,
@@ -70,8 +71,8 @@ async def test_ensure_embedding_index_is_idempotent_and_scoped_per_model():
 
     names = [s.split('"')[1] for s in session.statements]
     assert names == [
-        "ix_node_embedding_emb_gemini_embedding_2_768",
-        "ix_node_embedding_emb_openai_text_embedding_3_small_1536",
+        "ix_node_embedding_emb_3f9a1b2c_8d4e_4f1a_9c3b_7e2d5a6f_768",
+        "ix_node_embedding_emb_9a2b3c4d_5e6f_4a1b_8c2d_1e2f3a4b_1536",
     ]
     # Re-running is safe: the DDL carries IF NOT EXISTS rather than being guarded
     # by a catalog lookup in Python.
@@ -79,12 +80,24 @@ async def test_ensure_embedding_index_is_idempotent_and_scoped_per_model():
 
 
 async def test_ensure_embedding_index_quotes_a_hostile_model_id():
-    # `id` is caller-supplied config, so it reaches both an index name and a
-    # WHERE literal. The name is slugified (it is an identifier, so it cannot
-    # simply be quoted through) and the literal is escaped, the same concern
-    # AgeGraphRepository._validate_label exists for.
+    # `Model.id` now requires a UUID (`ensure_id_is_uuid`), so a hostile string
+    # can no longer reach here through normal validation. `_index_name()`'s
+    # escaping is still defense in depth - e.g. against a row read back from a
+    # database written by another version - so this builds the Model via
+    # `model_construct()` (bypasses validators) to exercise it directly, the
+    # same concern AgeGraphRepository._validate_label exists for.
     session = _RecordingSession()
-    model = _embedding_model(id="x'; DROP TABLE node_embedding; --")
+    fields = {
+        "id": "x'; DROP TABLE node_embedding; --",
+        "display_name": "Gemini Embedding 2",
+        "name": "gemini-embedding-2",
+        "provider": "gemini",
+        "auth_mode": AuthMode.API_KEY,
+        "api_key": "test-key",
+        "type": [ModelType.EMBEDDING],
+        "embedding_dimension": 768,
+    }
+    model = Model.model_construct(**fields)
 
     statement = await ensure_embedding_index(session, "node_embedding", model)
 

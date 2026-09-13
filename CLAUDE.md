@@ -25,11 +25,12 @@
      reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
      `embedding_dimension` is set when `embedding` is in `type`. Passed into
      `EmbeddingService.compute_embeddings()` to describe which provider/model to call. `id` is a
-     required, caller-assigned field (not auto-generated) — it must stay stable across restarts
-     because it is stamped as embedding provenance (`embedding_model_id`, see "Vector Embedding &
-     Search Pattern" below) and is what `vector_search()` and the partial ANN index key off. This is
-     distinct from `Model.identifier` (the `f"{provider}/{name}"` litellm model string), which is
-     never used for provenance since two config entries can share one provider/name while differing
+     required, caller-assigned UUID (validated by `ensure_id_is_uuid`, not auto-generated) — it must
+     stay stable across restarts because it is stamped as embedding provenance (`embedding_model_id`,
+     see "Vector Embedding & Search Pattern" below) and is what `vector_search()` and the partial ANN
+     index key off. This is distinct from `Model.identifier` (the `f"{provider}/{name}"` litellm
+     model string), which is never used for provenance since two config entries can share one
+     provider/name while differing
      in endpoint, auth mode, or dimension.
    - `Model.reasoning_effort` is optional and only meaningful for a non-embedding (chat) entry — a
      `@model_validator(mode="after")` (`ensure_reasoning_effort_not_for_embedding`) raises when it is
@@ -592,7 +593,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 kb = KnowledgeBase.from_json_file("path/to/kb.json")  # kb.id must be set
 
 embedding_model = Model(
-    id="text-embedding-3-small",
+    id="550e8400-e29b-41d4-a716-446655440000",
     name="text-embedding-3-small",
     provider="openai",
     connection_string="https://api.openai.com/v1",
@@ -681,8 +682,8 @@ async with AsyncSession(engine) as session:
 - `tests/test_deep_agent.py` - test suite for `agent/deep_agent.py`'s `build_deep_agent()` factory
 - `tests/test_chat_model.py` - test suite for `agent/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
 - `tests/test_model.py` - test suite for `schemas/model.py`'s `Model` validators:
-  `reasoning_effort`'s embedding-exclusivity rule, and that `id` is required (not auto-generated -
-  see the "Schemas" section above for why a stable id matters)
+  `reasoning_effort`'s embedding-exclusivity rule; that `id` is required (not auto-generated - see
+  the "Schemas" section above for why a stable id matters); and that `id` must be a valid UUID
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests

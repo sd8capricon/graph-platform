@@ -1,8 +1,9 @@
 import os
 from enum import Enum
 from typing import Any
+from uuid import UUID
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 
 class AuthMode(str, Enum):
@@ -35,13 +36,16 @@ class Model(BaseModel):
     """Represents a configured LLM/embedding model provider connection.
 
     Attributes:
-        id: Stable, caller-assigned identifier for this configured model entry.
+        id: Stable, caller-assigned UUID identifying this configured model entry.
             Required, not auto-generated - it must stay the same across process
             restarts, since it is stamped as the embedding-provenance value on
             `NodeEmbedding`/`SchemaEmbedding` rows (`embedding_model_id`) and is
             what `vector_search()` filters on and the partial ANN index is
             predicated on (see `Model.identifier` for the distinct litellm-model
-            string, which is not used for provenance).
+            string, which is not used for provenance). Must parse as a UUID
+            (any version/format `uuid.UUID` accepts); stored as `str`, not
+            `UUID`, since every consumer (column value, SQL literal, dict key)
+            treats it as a plain string.
         display_name: A human-friendly name for this configured model (e.g., 'Chat GPT-4o').
         name: The name of the model (e.g., 'gpt-4o', 'text-embedding-3-small').
         provider: The provider serving the model (e.g., 'openai', 'azure').
@@ -67,6 +71,30 @@ class Model(BaseModel):
     api_key: SecretStr | None = None
     embedding_dimension: int | None = None
     reasoning_effort: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def ensure_id_is_uuid(cls, value: str) -> str:
+        """Ensure `id` is a valid UUID string.
+
+        `id` is stamped as embedding provenance and is the partial-index
+        predicate (see `models/embedding_index.py`), so it must be a
+        well-formed identifier, not any caller-chosen string.
+
+        Args:
+            value: The raw `id` value before validation.
+
+        Returns:
+            The validated id string, unchanged.
+
+        Raises:
+            ValueError: If `value` does not parse as a UUID.
+        """
+        try:
+            UUID(value)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(f"id must be a valid UUID, got {value!r}") from exc
+        return value
 
     @model_validator(mode="before")
     @classmethod

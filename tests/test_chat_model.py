@@ -4,7 +4,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _chat_model_config(**overrides) -> Model:
     fields = {
-        "id": "chat-gpt-4o",
+        "id": "550e8400-e29b-41d4-a716-446655440001",
         "display_name": "Chat GPT-4o",
         "name": "gpt-4o",
         "provider": "openai",

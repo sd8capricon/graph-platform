@@ -5,7 +5,7 @@ from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
 
 def _model(**overrides) -> Model:
     fields = {
-        "id": "chat-gpt-4o",
+        "id": "550e8400-e29b-41d4-a716-446655440001",
         "display_name": "Chat GPT-4o",
         "name": "gpt-4o",
         "provider": "openai",
@@ -54,3 +54,16 @@ def test_id_is_required_and_not_auto_generated():
 
     with pytest.raises(ValueError, match="id"):
         Model.model_validate(fields)
+
+
+def test_id_must_be_a_valid_uuid():
+    # id is the embedding-provenance value and partial-index predicate, so it
+    # must be well-formed, not any caller-chosen string.
+    with pytest.raises(ValueError, match="UUID"):
+        _model(id="chat-gpt-4o")
+
+
+def test_id_accepts_a_valid_uuid():
+    model = _model(id="550e8400-e29b-41d4-a716-446655440000")
+
+    assert model.id == "550e8400-e29b-41d4-a716-446655440000"

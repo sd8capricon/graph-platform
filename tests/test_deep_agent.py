@@ -24,7 +24,7 @@ def _fake_chat_model() -> GenericFakeChatModel:
 def _chat_model_config() -> Model:
     return Model.model_validate(
         {
-            "id": "chat-gpt-4o",
+            "id": "550e8400-e29b-41d4-a716-446655440001",
             "display_name": "Chat GPT-4o",
             "name": "gpt-4o",
             "provider": "openai",
