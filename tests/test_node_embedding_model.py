@@ -298,7 +298,7 @@ async def test_vector_search_scopes_to_the_query_model_without_being_asked(monke
     """The `embedding_model_id` predicate and the `::vector(n)` cast are derived
     from the `model` argument, not passed separately (ADR-0003). Together they
     keep a search inside one model's vector space *and* make the partial
-    expression index (see `models/embedding_index.py`) matchable."""
+    expression index (see `database/indexes.py`) matchable."""
     import graphrag_apacheage.services.embedding_service as embedding_service
 
     class FakeResponse:

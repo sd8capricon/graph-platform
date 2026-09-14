@@ -224,7 +224,7 @@ class GraphSchemaRegistry(Base):
         between two different models' vectors is a number without meaning
         (ADR-0001), and between two different *widths* it is an error. This
         pairing is also exactly what makes the partial expression indexes usable;
-        see `models/embedding_index.py`.
+        see `database/indexes.py`.
 
         Args:
             session: SQLAlchemy database session for executing the query.

@@ -68,7 +68,7 @@ table per organization.
 
 Because the set of models is not known at class-definition time, these cannot be static
 `__table_args__` entries. They are created by `ensure_embedding_index()`
-(`models/embedding_index.py`), exposed as a classmethod on each embedding model. A side benefit: no
+(`database/indexes.py`), exposed as a classmethod on each embedding model. A side benefit: no
 `Index` object with `postgresql_using="hnsw"` ever enters `__table_args__`, where `create_all` would
 emit it against SQLite in the test suite and fail.
 

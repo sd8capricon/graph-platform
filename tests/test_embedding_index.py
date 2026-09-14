@@ -1,6 +1,6 @@
 import pytest
 
-from graphrag_apacheage.models.embedding_index import (
+from graphrag_apacheage.database.indexes import (
     HNSW_MAX_DIMENSIONS,
     drop_embedding_index,
     ensure_embedding_index,

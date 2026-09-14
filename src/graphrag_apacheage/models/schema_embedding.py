@@ -3,11 +3,11 @@ from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.embedding_index import (
+from graphrag_apacheage.database.indexes import (
     drop_embedding_index,
     ensure_embedding_index,
 )
+from graphrag_apacheage.models.base import Base
 from graphrag_apacheage.schemas.model import Model
 
 
@@ -86,7 +86,7 @@ class SchemaEmbedding(Base):
     async def ensure_embedding_index(cls, session: AsyncSession, model: Model) -> str:
         """Create this table's per-model partial HNSW index, if it does not exist.
 
-        See `models/embedding_index.py` for what the index looks like and why one
+        See `database/indexes.py` for what the index looks like and why one
         is needed per embedding model rather than one for the whole table.
 
         Args:
@@ -110,7 +110,7 @@ class SchemaEmbedding(Base):
         """Drop this table's per-model partial HNSW index, if present.
 
         The inverse of :meth:`ensure_embedding_index`: removes the index for
-        `model` from this table. See `models/embedding_index.py` for what the
+        `model` from this table. See `database/indexes.py` for what the
         index looks like and why one exists per embedding model.
 
         Args:

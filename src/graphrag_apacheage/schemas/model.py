@@ -78,7 +78,7 @@ class Model(BaseModel):
         """Ensure `id` is a valid UUID string.
 
         `id` is stamped as embedding provenance and is the partial-index
-        predicate (see `models/embedding_index.py`), so it must be a
+        predicate (see `database/indexes.py`), so it must be a
         well-formed identifier, not any caller-chosen string.
 
         Args:

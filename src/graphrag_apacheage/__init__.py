@@ -147,7 +147,7 @@ async def run():
         async with AsyncSession(engine) as session:
             # The embedding columns are dimensionless, so an ANN index has to be
             # created per embedding model rather than declared on the table - see
-            # models/embedding_index.py. Cheap and idempotent.
+            # database/indexes.py. Cheap and idempotent.
             embedding_model = _embedding_model()
             if embedding_model is not None:
                 await node_embedding.NodeEmbedding.ensure_embedding_index(

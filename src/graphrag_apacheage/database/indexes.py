@@ -1,3 +1,18 @@
+"""Model-agnostic DDL helpers for per-model pgvector ANN indexes.
+
+Both embedding tables store a **dimensionless** `vector` column (ADR-0003) so
+organizations on different embedding models can share one table (ADR-0002). A
+dimensionless column cannot be ANN-indexed directly, so each embedding model
+gets its own partial expression index instead - one index per model, not per
+organization. Nothing here knows about any ORM model: the caller passes the
+`table_name` it wants indexed and the `Model` whose rows the index covers, which
+is what lets both `NodeEmbedding` and `SchemaEmbedding` delegate through their
+own `ensure_embedding_index()` / `drop_embedding_index()` classmethods.
+
+The `Model` -> litellm mapping lives in `services/embedding_service.py`; the
+`Model` shape itself lives in `schemas/model.py`.
+"""
+
 import re
 
 from psycopg import sql
