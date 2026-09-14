@@ -38,6 +38,72 @@ def _index_name(table_name: str, model: Model) -> str:
     return f"ix_{table_name}_emb_{slug}_{model.embedding_dimension}"
 
 
+async def drop_embedding_index(
+    session: AsyncSession, table_name: str, model: Model
+) -> str:
+    """Drop one embedding model's partial HNSW index on a table, if present.
+
+    The inverse of :func:`ensure_embedding_index`: emits
+
+        DROP INDEX IF EXISTS "ix_<table>_emb_<id-slug>_<dimension>"
+
+    using the exact same deterministic name `_index_name()` derives, so a paired
+    ensure/drop round-trip is idempotent on both sides and always refers to the
+    same physical index.
+
+    `IF EXISTS` is what makes the "drop what we *may* have created" contract
+    cheap and safe to run unconditionally (e.g. when tearing a model out of
+    config), the way `IF NOT EXISTS` makes `ensure_embedding_index()` safe to
+    run on every startup - no catalog lookup for the existence check, no error
+    when the model was never indexed.
+
+    The validation mirrors `ensure_embedding_index()` exactly, even though the
+    emitted DDL needs only the name: a model that could never be indexed (no
+    `embedding_dimension`, or wider than `HNSW_MAX_DIMENSIONS`) has, by
+    definition, no index to drop, and the two functions must agree on when the
+    `_index_name()` render is even well-defined. Keeping the same guard documents
+    the pair and refuses the internal-inconsistency case where one half of the
+    pair would no-op on a name the other half cannot even produce.
+
+    Args:
+        session: SQLAlchemy async session used to execute the DDL. Must be bound
+            to PostgreSQL, like :func:`ensure_embedding_index`.
+        table_name: The table whose index to drop (`node_embedding` /
+            `schema_embedding`).
+        model: The embedding provider configuration whose rows the index covered.
+            Its `id` and `embedding_dimension` select the same index
+            `ensure_embedding_index()` would have created.
+
+    Returns:
+        The `DROP INDEX` statement that was executed.
+
+    Raises:
+        ValueError: If `model` has no `embedding_dimension`, or that dimension
+            exceeds `HNSW_MAX_DIMENSIONS` - in which case no statement was
+            executed and no index for that model can exist.
+    """
+    if model.embedding_dimension is None:
+        raise ValueError(
+            f"{model.identifier} has no embedding_dimension; it is not an "
+            "embedding model and has no vectors to index"
+        )
+    if model.embedding_dimension > HNSW_MAX_DIMENSIONS:
+        raise ValueError(
+            f"{model.identifier} is {model.embedding_dimension}-dimensional, above "
+            f"pgvector's HNSW limit of {HNSW_MAX_DIMENSIONS} for the 'vector' type. "
+            "Such a model was never given an index, so there is nothing to drop."
+        )
+
+    statement = (
+        sql.SQL("DROP INDEX IF EXISTS {name}")
+        .format(name=sql.Identifier(_index_name(table_name, model)))
+        .as_string(None)
+    )
+
+    await session.execute(text(statement))
+    return statement
+
+
 async def ensure_embedding_index(
     session: AsyncSession, table_name: str, model: Model
 ) -> str:
@@ -116,4 +182,4 @@ async def ensure_embedding_index(
     return statement
 
 
-__all__ = ["HNSW_MAX_DIMENSIONS", "ensure_embedding_index"]
+__all__ = ["HNSW_MAX_DIMENSIONS", "drop_embedding_index", "ensure_embedding_index"]

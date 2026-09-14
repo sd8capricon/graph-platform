@@ -4,7 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.embedding_index import ensure_embedding_index
+from graphrag_apacheage.models.embedding_index import (
+    drop_embedding_index,
+    ensure_embedding_index,
+)
 from graphrag_apacheage.schemas.model import Model
 
 
@@ -99,6 +102,31 @@ class SchemaEmbedding(Base):
                 exceeds what pgvector's HNSW index supports for the `vector` type.
         """
         return await ensure_embedding_index(session, cls.__tablename__, model)
+
+    @classmethod
+    async def drop_embedding_index(
+        cls, session: AsyncSession, model: Model
+    ) -> str:
+        """Drop this table's per-model partial HNSW index, if present.
+
+        The inverse of :meth:`ensure_embedding_index`: removes the index for
+        `model` from this table. See `models/embedding_index.py` for what the
+        index looks like and why one exists per embedding model.
+
+        Args:
+            session: SQLAlchemy async session used to execute the DDL. Must be
+                bound to PostgreSQL.
+            model: The embedding provider configuration whose index to drop.
+
+        Returns:
+            The executed `DROP INDEX` statement.
+
+        Raises:
+            ValueError: If `model` has no `embedding_dimension`, or that
+                dimension exceeds what pgvector's HNSW index supports for the
+                `vector` type.
+        """
+        return await drop_embedding_index(session, cls.__tablename__, model)
 
     def __repr__(self) -> str:
         """Return a developer-friendly string representation of the embedding row.
