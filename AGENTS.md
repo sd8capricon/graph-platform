@@ -678,7 +678,11 @@ async with AsyncSession(engine) as session:
 
 ### Key Files
 - `pyproject.toml` - project metadata, dependencies, build config
-- `src/graphrag_apacheage/` - main source directory
+- `src/graphrag_apacheage/` - main source directory. **Scheduled to move** to
+  `src/common/common/` as import package `common` (uv project `graphrag-common` at `src/common/`),
+  with `graphrag_apacheage` -> `common` import rewrites - see ADR-0004. That ADR also holds the
+  target four-service topology (`common`, `api`, `agent-execution`, `ingestion`). Until the
+  migration commit lands, the paths in this file describe the current layout
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
