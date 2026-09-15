@@ -26,9 +26,3 @@ graphrag-apacheage = "common:main"
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
-
-[tool.uv.build-backend]
-# `common` sits directly under this project directory, not under a nested
-# `src/` - uv's default module root would look for `src/common/src/common`.
-module-name = "common"
-module-root = ""

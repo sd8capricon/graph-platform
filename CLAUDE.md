@@ -677,13 +677,15 @@ async with AsyncSession(engine) as session:
 - pytest (for testing)
 
 ### Key Files
-- `pyproject.toml` - workspace root: metadata, `[tool.uv.workspace]` members, `[tool.uv.sources]`,
-  dev dependency group, pytest config. No `[build-system]` - the root is not a package
-- `src/common/pyproject.toml` - the `graphrag-common` uv project: runtime dependencies, `uv_build`
-  config (`module-name = "common"`, `module-root = ""`), and the `graphrag-apacheage` script entry
-  point (`common:main`)
-- `src/common/common/` - main source directory, import package `common`. See ADR-0004 for the target
-  four-service topology (`common`, `api`, `agent-execution`, `ingestion`) this layout stages
+- `src/common/pyproject.toml` - the `common` uv project: runtime dependencies, `uv_build`, and the
+  `graphrag-apacheage` script entry point (`common:main`). Standard uv layout, so the module sits at
+  `src/common/src/common/`
+- `src/common/src/common/` - main source directory, import package `common`. See ADR-0004 for the
+  target four-service topology (`common`, `api`, `agent-execution`, `ingestion`) this layout stages
+- `tests/` - test suite, at the repository root rather than inside a service project. There is no
+  repo-root `pyproject.toml`, so run it against the `common` project environment:
+  `uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite pytest tests/
+  -o asyncio_mode=auto`
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
@@ -699,9 +701,16 @@ async with AsyncSession(engine) as session:
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
 
 ### Running Tests
+
+There is no `pyproject.toml` at the repository root, so `uv run pytest` from the root has no project
+to resolve. Run the root-level suite against the `common` project environment instead:
+
 ```bash
-pytest tests/
+uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite \
+  pytest tests/ -o asyncio_mode=auto
 ```
+
+(`asyncio_mode = "auto"` used to come from the deleted root `pyproject.toml`, hence the `-o`.)
 
 ### Project Dependencies
 - **pydantic** (>=2.13.5): Data validation and serialization

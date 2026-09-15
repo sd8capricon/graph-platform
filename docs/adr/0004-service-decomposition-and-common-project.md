@@ -4,9 +4,11 @@
 
 Proposed, step 1 implemented. Step 1 — collapse the existing code into a single `common` uv project at
 `src/common`, with the import package renamed `graphrag_apacheage` -> `common` — is done; see
-"Amendment: step 1 implemented" below. Steps 2+ (extracting `api`, `agent-execution`, and `ingestion`
-as separate services) are deferred and deliberately unspecified in mechanism: one `common` package
-still holds every service's code, exactly as Decision 3 intended.
+"Amendment: step 1 implemented" below, and "Amendment: standalone projects, standard uv layout" for
+the later change that dropped the workspace root and moved `common` onto uv's default src layout.
+Steps 2+ (extracting `api`, `agent-execution`, and `ingestion` as separate services) are deferred and
+deliberately unspecified in mechanism: one `common` package still holds every service's code, exactly
+as Decision 3 intended. `ingestion` exists as a scaffolded, empty uv project.
 
 ## Context
 
@@ -68,6 +70,11 @@ defined interface rather than an import. The exact mechanism is an Open Question
 is not.
 
 ### 3. Step 1: one uv workspace, one `common` project at `src/common`
+
+> **Historical as written, then amended twice.** The bullets in this section describe how step 1 was
+> first implemented — a workspace root plus a non-standard flat module root. Both were later changed:
+> see "Amendment: step 1 implemented" and "Amendment: standalone projects, standard uv layout" at the
+> end of this ADR. Read this section as the original decision, not as the current layout.
 
 The near-term shape, which is what this ADR decides and what the next change implements:
 
@@ -208,3 +215,59 @@ Decision 3 is implemented, with these concrete details settled during it:
   import-cycle check).
 - `CLAUDE.md` and `AGENTS.md` carry the new paths and an updated `### Key Files` block in the same
   change, identically.
+
+## Amendment: standalone projects, standard uv layout
+
+Two later changes removed the workspace root and the non-standard module root this ADR originally
+specified. They are recorded here because both are visible in the repository layout, and because the
+second one is what the ADR should have said from the start.
+
+**The workspace root is gone.** The root `pyproject.toml` and root `uv.lock` were deleted, and the
+member project was renamed `graphrag-common` -> `common`. Each service is now a standalone uv project
+with its own `pyproject.toml`, `.venv` and `uv.lock`:
+
+```
+configs/                       # repository root
+dummy_data/
+tests/                         # run against the common project environment
+src/
+├── common/                    # uv project "common"
+│   ├── pyproject.toml
+│   ├── uv.lock
+│   └── src/
+│       └── common/            # import package "common"
+└── ingestion/                 # uv project "ingestion" (scaffolded by `uv init`)
+    ├── pyproject.toml
+    ├── README.md
+    ├── .python-version
+    └── src/
+        └── ingestion/
+```
+
+Consequences of dropping the workspace: there is no single lockfile, so dependency versions are no
+longer resolved jointly across services (acceptable while `ingestion` has no dependencies of its own,
+but it is the tradeoff to watch as services start sharing pins); and `uv run` no longer works from the
+repository root, because no `pyproject.toml` is there to identify a project.
+
+**The module root is now uv's default.** `[tool.uv.build-backend]` is gone from
+`src/common/pyproject.toml` entirely. The `module-root = ""` override existed only to avoid
+`src/common/src/common/`; that path is in fact uv's standard src layout, and this project now uses it
+deliberately. Because the project is named `common`, uv's name-normalization rule already derives the
+module name `common`, so not even `module-name` needs to be stated.
+
+Two things the deletion of the root project took with it, and how they are handled now:
+
+- **pytest configuration.** `asyncio_mode = "auto"` lived in the root `[tool.pytest.ini_options]`.
+  With no root project, the root-level suite is run against the `common` environment with the setting
+  passed on the command line:
+  ```bash
+  uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite \
+    pytest tests/ -o asyncio_mode=auto
+  ```
+  151 tests pass this way. If the root-level `tests/` directory is meant to stay outside every
+  service project permanently, moving the dev group and this pytest config into a project that owns
+  the suite is the follow-up to make the command plain `uv run pytest` again.
+- **One editable install path.** `common` is installed into `src/common/.venv`, so a root-level
+  `tests/` run needs `--project src/common`; there is no longer a repository-root environment that
+  imports `common` implicitly.
+
