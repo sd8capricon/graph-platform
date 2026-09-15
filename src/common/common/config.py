@@ -4,7 +4,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from graphrag_apacheage.schemas.model import Model
+from common.schemas.model import Model
 
 DEFAULT_CONFIG_PATH = Path("configs/local.yaml")
 
@@ -53,7 +53,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppSettings:
 
     Updates the `settings` singleton's fields in place (rather than rebinding
     the module-level name) so modules that already did
-    `from graphrag_apacheage.config import settings` see the loaded values too.
+    `from common.config import settings` see the loaded values too.
 
     Args:
         path: Path to the YAML config file, defaulting to `DEFAULT_CONFIG_PATH`.

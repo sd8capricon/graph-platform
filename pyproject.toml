@@ -8,25 +8,16 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "deepagents>=0.7.13",
-    "fastapi[standard]>=0.141.1",
-    "langchain>=1.4.0",
-    "langchain-litellm>=0.7.1",
-    "litellm>=1.99.0",
-    "pgvector>=0.5.0",
-    "psycopg[binary]>=3.2",
-    "pydantic>=2.13.5",
-    "python-dotenv>=1.2.3",
-    "pyyaml>=6.0.3",
-    "sqlalchemy[asyncio]>=2.0.42",
+    "graphrag-common",
 ]
 
-[project.scripts]
-graphrag-apacheage = "graphrag_apacheage:main"
+# No `[build-system]`: this root is a workspace root, not a package. uv builds
+# and installs only the `common` member under `src/common/` (see ADR-0004).
+[tool.uv.workspace]
+members = ["src/common"]
 
-[build-system]
-requires = ["uv_build>=0.12.1,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv.sources]
+graphrag-common = { workspace = true }
 
 [dependency-groups]
 dev = [

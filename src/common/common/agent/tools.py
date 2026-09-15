@@ -1,14 +1,14 @@
 from langchain.tools import ToolRuntime, tool
 
-from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.models import NodeRef
-from graphrag_apacheage.agent.serializers import AgentSerializer
-from graphrag_apacheage.models.graph_schema_registry import (
+from common.agent.context import AgentContext
+from common.agent.models import NodeRef
+from common.agent.serializers import AgentSerializer
+from common.models.graph_schema_registry import (
     GraphSchemaRegistry,
     SchemaType,
 )
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
+from common.models.node_embedding import NodeEmbedding
+from common.schemas.knowledge_base import KnowledgeNode
 
 
 @tool(

@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateTable
 
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
-from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
+from common.models.base import Base
+from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from common.models.schema_embedding import SchemaEmbedding
 
 
 def test_schema_embedding_column_is_dimensionless():
@@ -87,7 +87,7 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
     async def fake_compute(model, texts):
         return [[0.1, 0.2, 0.3] for _ in texts] if texts else None
 
-    import graphrag_apacheage.models.graph_schema_registry as gsr_mod
+    import common.models.graph_schema_registry as gsr_mod
 
     class FakeModel:
         id = "text-embedding-3-small"
@@ -134,7 +134,7 @@ async def test_upsert_records_keeps_separate_embedding_rows_per_organization():
     async def fake_compute(model, texts):
         return [[0.1, 0.2, 0.3] for _ in texts] if texts else None
 
-    import graphrag_apacheage.models.graph_schema_registry as gsr_mod
+    import common.models.graph_schema_registry as gsr_mod
 
     class FakeModel:
         id = "text-embedding-3-small"

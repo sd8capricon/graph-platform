@@ -1,12 +1,12 @@
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
-from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
-from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
-from graphrag_apacheage.schemas.model import Model
+from common.models.graph_schema_registry import GraphSchemaRegistry
+from common.models.node_embedding import NodeEmbedding
+from common.models.schema_embedding import SchemaEmbedding
+from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.knowledge_base import KnowledgeBase
+from common.schemas.model import Model
 
 
 class KnowledgeBaseService:

@@ -19,7 +19,7 @@ from psycopg import sql
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from graphrag_apacheage.schemas.model import Model
+from common.schemas.model import Model
 
 HNSW_MAX_DIMENSIONS = 2000
 """Largest vector width pgvector's HNSW index supports for the `vector` type.

@@ -6,13 +6,13 @@ from sqlalchemy import JSON, String, UniqueConstraint, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from graphrag_apacheage.database.indexes import (
+from common.database.indexes import (
     drop_embedding_index,
     ensure_embedding_index,
 )
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.schemas.model import Model
-from graphrag_apacheage.services.embedding_service import EmbeddingService
+from common.models.base import Base
+from common.schemas.model import Model
+from common.services.embedding_service import EmbeddingService
 
 
 class NodeEmbedding(Base):

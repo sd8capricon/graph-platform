@@ -1,8 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
-from graphrag_apacheage.schemas.model import Model
+from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.model import Model
 
 
 class AgentContext(BaseModel):

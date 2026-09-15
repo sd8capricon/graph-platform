@@ -1,6 +1,6 @@
 import pytest
 
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
+from common.schemas.model import AuthMode, Model, ModelType
 
 
 def _model(**overrides) -> Model:

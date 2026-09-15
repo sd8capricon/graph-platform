@@ -7,10 +7,10 @@ from sqlalchemy.dialects.postgresql import JSONB, array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, contains_eager, mapped_column, relationship
 
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
-from graphrag_apacheage.schemas.model import Model
-from graphrag_apacheage.services.embedding_service import EmbeddingService
+from common.models.base import Base
+from common.models.schema_embedding import SchemaEmbedding
+from common.schemas.model import Model
+from common.services.embedding_service import EmbeddingService
 
 
 class SchemaType(str, Enum):

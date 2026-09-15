@@ -1,13 +1,13 @@
 import pytest
 
-from graphrag_apacheage.database.indexes import (
+from common.database.indexes import (
     HNSW_MAX_DIMENSIONS,
     drop_embedding_index,
     ensure_embedding_index,
 )
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
-from graphrag_apacheage.models.schema_embedding import SchemaEmbedding
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
+from common.models.node_embedding import NodeEmbedding
+from common.models.schema_embedding import SchemaEmbedding
+from common.schemas.model import AuthMode, Model, ModelType
 
 
 def _embedding_model(**overrides) -> Model:

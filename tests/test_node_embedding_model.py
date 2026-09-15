@@ -7,11 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateTable
 
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
-from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+from common.models.base import Base
+from common.models.node_embedding import NodeEmbedding
+from common.schemas.knowledge_base import KnowledgeBase
+from common.schemas.model import AuthMode, Model, ModelType
+from common.services.knowledge_base_service import KnowledgeBaseService
 
 
 def _embedding_model(**overrides) -> Model:
@@ -117,7 +117,7 @@ async def test_upsert_node_embeddings_skips_embedding_when_model_not_provided():
 async def test_upsert_node_embeddings_computes_embedding_via_litellm_when_configured(
     monkeypatch,
 ):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     captured = {}
 
@@ -212,7 +212,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     # vector_search relies on pgvector's `<=>` cosine distance operator, which
     # only exists on PostgreSQL, so we capture the statement it builds via a
     # fake session instead of executing it against SQLite.
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
@@ -255,7 +255,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
 
 
 async def test_vector_search_filters_by_multiple_labels_when_provided(monkeypatch):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
@@ -299,7 +299,7 @@ async def test_vector_search_scopes_to_the_query_model_without_being_asked(monke
     from the `model` argument, not passed separately (ADR-0003). Together they
     keep a search inside one model's vector space *and* make the partial
     expression index (see `database/indexes.py`) matchable."""
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
@@ -510,7 +510,7 @@ async def test_upsert_node_embeddings_keeps_separate_rows_per_organization():
 
 
 async def test_vector_search_filters_by_knowledge_base_id_when_provided(monkeypatch):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]

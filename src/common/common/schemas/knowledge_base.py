@@ -4,11 +4,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from graphrag_apacheage.models.graph_schema_registry import (
+from common.models.graph_schema_registry import (
     GraphSchemaRegistry,
     SchemaType,
 )
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
+from common.models.node_embedding import NodeEmbedding
 
 
 class KnowledgeNode(BaseModel):

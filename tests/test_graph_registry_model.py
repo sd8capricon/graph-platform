@@ -9,11 +9,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
+from common.models.base import Base
+from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from common.models.node_embedding import NodeEmbedding
+from common.schemas.knowledge_base import KnowledgeBase
+from common.schemas.model import AuthMode, Model, ModelType
 
 
 def _embedding_model(**overrides) -> Model:
@@ -81,7 +81,7 @@ async def test_upsert_records_skips_embedding_when_model_not_provided():
 
 
 async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     captured = {}
 
@@ -127,7 +127,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
     # vector_search relies on pgvector's `<=>` cosine distance operator, which
     # only exists on PostgreSQL, so we capture the statement it builds via a
     # fake session instead of executing it against SQLite.
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
@@ -179,7 +179,7 @@ async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(m
 async def test_vector_search_filters_by_knowledge_base_ids(monkeypatch):
     # Same rationale as the test above: the `?|` jsonb overlap operator only
     # exists on PostgreSQL, so we capture the statement via a fake session.
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         data = [{"embedding": [0.1, 0.2, 0.3]}]
@@ -348,8 +348,8 @@ def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
 
 
 async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     knowledge_base = KnowledgeBase.model_validate(
         {
@@ -375,7 +375,7 @@ async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
 
 
 async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     knowledge_base = KnowledgeBase.model_validate(
         {
@@ -450,7 +450,7 @@ async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
             return self.cursor_obj
 
     connection = RecordingConnection()
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     class RecordingRepository:
         def __init__(self, connection):
@@ -548,7 +548,7 @@ async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
 
 
 async def test_age_graph_repository_graph_exists_checks_if_graph_exists():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     class MockCursor:
         def __init__(self, has_graph=False):
@@ -582,7 +582,7 @@ async def test_age_graph_repository_graph_exists_checks_if_graph_exists():
 
 
 async def test_age_graph_repository_delete_graph_drops_graph():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     class MockCursor:
         def __init__(self):
@@ -635,7 +635,7 @@ class _QueuedFetchOneConnection:
 
 
 async def test_age_graph_repository_ensure_vertex_label_creates_when_missing():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedFetchOneConnection(fetchone_results=[None])
     repository = AgeGraphRepository(connection)
@@ -649,7 +649,7 @@ async def test_age_graph_repository_ensure_vertex_label_creates_when_missing():
 
 
 async def test_age_graph_repository_ensure_vertex_label_skips_when_already_exists():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedFetchOneConnection(fetchone_results=[(1,)])
     repository = AgeGraphRepository(connection)
@@ -660,7 +660,7 @@ async def test_age_graph_repository_ensure_vertex_label_skips_when_already_exist
 
 
 async def test_age_graph_repository_ensure_edge_label_creates_when_missing():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedFetchOneConnection(fetchone_results=[None])
     repository = AgeGraphRepository(connection)
@@ -672,7 +672,7 @@ async def test_age_graph_repository_ensure_edge_label_creates_when_missing():
 
 
 async def test_age_graph_repository_ensure_edge_label_skips_when_already_exists():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedFetchOneConnection(fetchone_results=[(1,)])
     repository = AgeGraphRepository(connection)
@@ -747,7 +747,7 @@ class _QueuedRowsConnection:
 
 
 async def test_age_graph_repository_get_node_neighbours_matches_node_by_id_property():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
@@ -761,7 +761,7 @@ async def test_age_graph_repository_get_node_neighbours_matches_node_by_id_prope
 
 
 async def test_age_graph_repository_get_node_neighbours_filters_by_labels_when_provided():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
@@ -774,7 +774,7 @@ async def test_age_graph_repository_get_node_neighbours_filters_by_labels_when_p
 
 
 async def test_age_graph_repository_get_node_neighbours_omits_label_filter_when_not_provided():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     for relationship_labels in (None, []):
         connection = _RowsConnection()
@@ -786,7 +786,7 @@ async def test_age_graph_repository_get_node_neighbours_omits_label_filter_when_
 
 
 async def test_age_graph_repository_get_node_neighbours_parses_agtype_rows():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     rows = [
         (
@@ -814,7 +814,7 @@ async def test_age_graph_repository_get_node_neighbours_parses_agtype_rows():
 
 
 async def test_age_graph_repository_get_node_neighbours_orients_source_target_via_edge_start_end_ids():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     # The queried node ("driver-1", vertex id 1) lands in the *second* returned
     # vertex position, and the edge's start_id points at vertex id 2 (the team) —
@@ -836,7 +836,7 @@ async def test_age_graph_repository_get_node_neighbours_orients_source_target_vi
 
 
 async def test_age_graph_repository_get_node_neighbours_deduplicates_repeated_edge_rows():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     row = (
         _agtype_vertex(1, "driver-1", "Driver"),
@@ -852,7 +852,7 @@ async def test_age_graph_repository_get_node_neighbours_deduplicates_repeated_ed
 
 
 async def test_age_graph_repository_get_node_neighbours_returns_empty_list_when_no_relationships():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection([])
     repository = AgeGraphRepository(connection)
@@ -920,7 +920,7 @@ def test_get_graph_schema_registry_records_requires_organization_id():
 
 
 async def test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection()
     repository = AgeGraphRepository(connection)
@@ -936,7 +936,7 @@ async def test_age_graph_repository_get_node_schema_queries_both_directions_by_i
 
 
 async def test_age_graph_repository_get_node_schema_parses_scalars_and_tags_direction():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection(
         [
@@ -953,7 +953,7 @@ async def test_age_graph_repository_get_node_schema_parses_scalars_and_tags_dire
 
 
 async def test_age_graph_repository_get_node_schema_orders_entries_deterministically():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     # The database gives no row-order guarantee, so entries are sorted within
     # each direction — but outgoing still precedes incoming.
@@ -978,7 +978,7 @@ async def test_age_graph_repository_get_node_schema_orders_entries_deterministic
 
 
 async def test_age_graph_repository_get_node_schema_returns_empty_list_when_no_relationships():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection([[], []])
     repository = AgeGraphRepository(connection)
@@ -987,7 +987,7 @@ async def test_age_graph_repository_get_node_schema_returns_empty_list_when_no_r
 
 
 async def test_age_graph_repository_get_label_schema_queries_both_directions_by_label():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection()
     repository = AgeGraphRepository(connection)
@@ -1003,7 +1003,7 @@ async def test_age_graph_repository_get_label_schema_queries_both_directions_by_
 
 
 async def test_age_graph_repository_get_label_schema_parses_scalars_and_tags_direction():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection(
         [
@@ -1025,7 +1025,7 @@ async def test_age_graph_repository_get_label_schema_parses_scalars_and_tags_dir
     "label", ["", "   ", "Driver) DETACH DELETE (a", "Driver-1", "1Driver"]
 )
 async def test_age_graph_repository_get_label_schema_rejects_unsafe_labels(label):
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _QueuedRowsConnection()
     repository = AgeGraphRepository(connection)
@@ -1125,7 +1125,7 @@ async def test_upsert_knowledge_base_ensures_labels_once_before_creating_nodes()
     # transaction, raising DuplicateTable. Every label must be ensured exactly
     # once, before any CREATE that references it - even when multiple nodes
     # share the label.
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     repository = _RecordingAgeRepository()
     service = KnowledgeBaseService(repository)
@@ -1182,8 +1182,8 @@ async def test_upsert_knowledge_base_ensures_labels_once_before_creating_nodes()
 
 
 async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
-    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+    from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.models.node_embedding import NodeEmbedding
 
     repository = _RecordingAgeRepository()
     service = KnowledgeBaseService(repository)
@@ -1223,8 +1223,8 @@ async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows(
 async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_base():
     # The same label may be defined by several knowledge bases feeding one graph;
     # deleting one must only drop its id, not the shared row.
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
-    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+    from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.models.node_embedding import NodeEmbedding
 
     repository = _RecordingAgeRepository()
     service = KnowledgeBaseService(repository)
@@ -1256,7 +1256,7 @@ async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_bas
 
 
 async def test_delete_knowledge_base_validates_graph_name_and_knowledge_base_id():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     service = KnowledgeBaseService(_RecordingAgeRepository())
 
@@ -1268,7 +1268,7 @@ async def test_delete_knowledge_base_validates_graph_name_and_knowledge_base_id(
 
 
 async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     service = KnowledgeBaseService(_RecordingAgeRepository(graph_exists=False))
 
@@ -1277,8 +1277,8 @@ async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
 
 
 async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
-    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+    from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.models.node_embedding import NodeEmbedding
 
     repository = _RecordingAgeRepository()
     service = KnowledgeBaseService(repository)
@@ -1321,8 +1321,8 @@ async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
 async def test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_gone():
     # Dropping a graph is exactly what orphans the side-tables, so a missing graph
     # must still clean them up rather than raise.
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
-    from graphrag_apacheage.models.node_embedding import NodeEmbedding
+    from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.models.node_embedding import NodeEmbedding
 
     repository = _RecordingAgeRepository()
     service = KnowledgeBaseService(repository)
@@ -1347,7 +1347,7 @@ async def test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_go
 
 
 async def test_delete_graph_validates_graph_name():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     service = KnowledgeBaseService(_RecordingAgeRepository())
 
@@ -1358,7 +1358,7 @@ async def test_delete_graph_validates_graph_name():
 async def test_create_graph_creates_the_graph_and_is_a_no_op_when_it_exists():
     # The symmetric partner of delete_graph(): both return None when there is
     # nothing to do, so the graph lifecycle is driven entirely through the service.
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     repository = _RecordingAgeRepository(graph_exists=False)
     service = KnowledgeBaseService(repository)
@@ -1374,7 +1374,7 @@ async def test_create_graph_creates_the_graph_and_is_a_no_op_when_it_exists():
 
 
 async def test_create_graph_validates_graph_name():
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     service = KnowledgeBaseService(_RecordingAgeRepository())
 
@@ -1383,7 +1383,7 @@ async def test_create_graph_validates_graph_name():
 
 
 async def test_age_graph_repository_search_relationships_matches_directed_pattern_by_label():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
@@ -1397,7 +1397,7 @@ async def test_age_graph_repository_search_relationships_matches_directed_patter
 
 
 async def test_age_graph_repository_search_relationships_filters_by_endpoint_labels_and_ids():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
@@ -1416,7 +1416,7 @@ async def test_age_graph_repository_search_relationships_filters_by_endpoint_lab
 
 
 async def test_age_graph_repository_search_relationships_filters_by_relationship_properties():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection()
     repository = AgeGraphRepository(connection)
@@ -1429,7 +1429,7 @@ async def test_age_graph_repository_search_relationships_filters_by_relationship
 
 
 async def test_age_graph_repository_search_relationships_parses_agtype_rows():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     rows = [
         (
@@ -1459,7 +1459,7 @@ async def test_age_graph_repository_search_relationships_parses_agtype_rows():
 
 
 async def test_age_graph_repository_search_relationships_returns_empty_list_when_no_matches():
-    from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
+    from common.repositories.age_graph_repository import AgeGraphRepository
 
     connection = _RowsConnection([])
     repository = AgeGraphRepository(connection)

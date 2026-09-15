@@ -4,21 +4,21 @@ import pytest
 from langchain.tools import ToolRuntime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.models import NodeRef
-from graphrag_apacheage.agent.tools import (
+from common.agent.context import AgentContext
+from common.agent.models import NodeRef
+from common.agent.tools import (
     get_node_neighbours,
     get_node_schema,
     get_relationship,
     search_entities,
     search_schema_registry,
 )
-from graphrag_apacheage.models.graph_schema_registry import (
+from common.models.graph_schema_registry import (
     GraphSchemaRegistry,
     SchemaType,
 )
-from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
-from graphrag_apacheage.schemas.knowledge_base import KnowledgeNode
+from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.knowledge_base import KnowledgeNode
 
 
 def _context(repository) -> AgentContext:

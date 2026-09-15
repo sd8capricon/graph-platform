@@ -2,10 +2,11 @@
 
 ## Status
 
-Proposed. Step 1 — collapse the existing code into a single `common` uv project at `src/common`, with
-the import package renamed `graphrag_apacheage` -> `common` — is **decided**, implementation pending.
-Steps 2+ (extracting `api`, `agent-execution`, and `ingestion` as separate services) are deferred and
-deliberately unspecified in mechanism. No code has moved yet.
+Proposed, step 1 implemented. Step 1 — collapse the existing code into a single `common` uv project at
+`src/common`, with the import package renamed `graphrag_apacheage` -> `common` — is done; see
+"Amendment: step 1 implemented" below. Steps 2+ (extracting `api`, `agent-execution`, and `ingestion`
+as separate services) are deferred and deliberately unspecified in mechanism: one `common` package
+still holds every service's code, exactly as Decision 3 intended.
 
 ## Context
 
@@ -146,11 +147,10 @@ that `common` becomes the application.
 
 ## Consequences
 
-- **Step 1 is a pure relocation.** Its whole cost is 46 source import lines, the import lines of 20
-  test files, and every `src/graphrag_apacheage/...` path string in `CLAUDE.md`/`AGENTS.md`. Because
-  this ADR's own commit changes no code, those two instruction files still describe the present
-  layout until the migration commit lands, and that commit must update both of them together (the
-  files are required to stay identical).
+- **Step 1 is a pure relocation.** Its whole cost is the source and test import lines plus every
+  `src/graphrag_apacheage/...` path string in `CLAUDE.md`/`AGENTS.md` (25 occurrences in each). Those
+  two instruction files are updated in the same commit as the move, because they are required to stay
+  identical to one another and to describe the present layout.
 - **The root project is no longer installable or buildable.** `uv build` at the root builds nothing;
   `uv run` still works from the root because the root depends on the `common` member. Runnables
   (`[project.scripts]`) necessarily live on a packaged member, i.e. on `src/common/pyproject.toml`.
@@ -180,3 +180,31 @@ that `common` becomes the application.
 - **What the demo `main()`/`run()` in `__init__.py` becomes** — an ingestion entrypoint, an api
   startup hook, or a dev-only script. It currently does both ingestion and an agent smoke test, so it
   has no single owner under the target topology.
+
+## Amendment: step 1 implemented
+
+Decision 3 is implemented, with these concrete details settled during it:
+
+- Root `pyproject.toml` keeps `[project]` (name `graphrag-apacheage`, version `0.1.0`) but has no
+  `[build-system]`, so uv does not build or install the root; its `dependencies` is just
+  `["graphrag-common"]` with `[tool.uv.sources] graphrag-common = { workspace = true }`, and it keeps
+  `[dependency-groups] dev` (`aiosqlite`, `pytest`, `pytest-asyncio`) and
+  `[tool.pytest.ini_options]`.
+- `src/common/pyproject.toml` declares project name `graphrag-common` (not `common`), so the
+  distribution name stays unambiguous while the import package is the short `common`. It carries the
+  11 runtime dependencies verbatim, `requires-python = ">=3.14"`, the `uv_build` build system, the
+  `graphrag-apacheage = "common:main"` script, and
+  `[tool.uv.build-backend] module-name = "common"` with `module-root = ""` so the package sits at
+  `src/common/common/`.
+- The member declares no `readme`; the (empty) `README.md` stays at the repository root, where the
+  workspace root's metadata points.
+- Package modules moved with `git mv` (history preserved) and keep their sub-layout. Imports were
+  rewritten `graphrag_apacheage` -> `common` in 24 source modules and 20 test files. `configs/` and
+  `dummy_data/` were not touched, so `DEFAULT_CONFIG_PATH` and the demo JSON path stay
+  working-directory-relative.
+- Verification: `uv lock` resolves one workspace lockfile containing `graphrag-common`; `uv sync`
+  replaces the old root package with the member; `uv run pytest tests/` passes 151 tests; and a fresh
+  interpreter can `from common.agent.tools import GRAPH_TOOLS` (the codebase's prescribed
+  import-cycle check).
+- `CLAUDE.md` and `AGENTS.md` carry the new paths and an updated `### Key Files` block in the same
+  change, identically.

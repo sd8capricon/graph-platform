@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "graphrag-apacheage",
+    "graphrag-common",
+]
+
 [[package]]
 name = "agent-detector"
 version = "2.0.0"
@@ -762,7 +768,32 @@ wheels = [
 [[package]]
 name = "graphrag-apacheage"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
+dependencies = [
+    { name = "graphrag-common" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "aiosqlite" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "graphrag-common", editable = "src/common" }]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aiosqlite", specifier = ">=0.22.1" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+]
+
+[[package]]
+name = "graphrag-common"
+version = "0.1.0"
+source = { editable = "src/common" }
 dependencies = [
     { name = "deepagents" },
     { name = "fastapi", extra = ["standard"] },
@@ -775,13 +806,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "aiosqlite" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
@@ -797,13 +821,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.42" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
 ]
 
 [[package]]

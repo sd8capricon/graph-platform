@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 from psycopg import AsyncConnection
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from graphrag_apacheage.config import load_config, settings
-from graphrag_apacheage.repositories.age_graph_repository import AgeGraphRepository
-from graphrag_apacheage.schemas.model import Model, ModelType
+from common.config import load_config, settings
+from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.model import Model, ModelType
 
 
 def _database_url() -> str:
@@ -54,8 +54,8 @@ async def create_connection() -> AsyncConnection:
 async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSession):
     # Deferred for the same reason as the imports in run(): must not run
     # before `main()` has called `load_config()`.
-    from graphrag_apacheage.schemas.knowledge_base import KnowledgeBase
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.schemas.knowledge_base import KnowledgeBase
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     knowledge_base = KnowledgeBase.from_json_file("dummy_data/f1_kb.json")
     knowledge_base_service = KnowledgeBaseService(repository)
@@ -75,9 +75,9 @@ async def create_knowledge_base(repository: AgeGraphRepository, session: AsyncSe
 
 async def check_agent(session: AsyncSession, respository: AgeGraphRepository):
     from langchain.messages import HumanMessage
-    from graphrag_apacheage.agent.context import AgentContext
-    from graphrag_apacheage.agent.deep_agent import build_deep_agent
-    from graphrag_apacheage.agent.react_agent import build_react_agent
+    from common.agent.context import AgentContext
+    from common.agent.deep_agent import build_deep_agent
+    from common.agent.react_agent import build_react_agent
 
     deep_agent = build_deep_agent(_chat_model(), name="deep_graph_agent")
     react_agent = build_react_agent(_chat_model(), name="react_graph_agent")
@@ -129,11 +129,11 @@ async def run():
     # `settings.embedding_dimension` at class-definition time. ADR-0003 made the
     # columns dimensionless, so that ordering constraint is gone - but the
     # imports still have to happen before create_all.)
-    from graphrag_apacheage.models import graph_schema_registry  # noqa: F401
-    from graphrag_apacheage.models import node_embedding
-    from graphrag_apacheage.models import schema_embedding  # noqa: F401
-    from graphrag_apacheage.models.base import Base
-    from graphrag_apacheage.services.knowledge_base_service import KnowledgeBaseService
+    from common.models import graph_schema_registry  # noqa: F401
+    from common.models import node_embedding
+    from common.models import schema_embedding  # noqa: F401
+    from common.models.base import Base
+    from common.services.knowledge_base_service import KnowledgeBaseService
 
     pg_connection = await create_connection()
     age_repository = AgeGraphRepository(pg_connection)

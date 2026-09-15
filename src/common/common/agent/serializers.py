@@ -1,7 +1,7 @@
 from typing import Any
 
-from graphrag_apacheage.models.graph_schema_registry import GraphSchemaRegistry
-from graphrag_apacheage.models.node_embedding import NodeEmbedding
+from common.models.graph_schema_registry import GraphSchemaRegistry
+from common.models.node_embedding import NodeEmbedding
 
 
 class AgentSerializer:

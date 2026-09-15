@@ -3,12 +3,12 @@ from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from graphrag_apacheage.database.indexes import (
+from common.database.indexes import (
     drop_embedding_index,
     ensure_embedding_index,
 )
-from graphrag_apacheage.models.base import Base
-from graphrag_apacheage.schemas.model import Model
+from common.models.base import Base
+from common.schemas.model import Model
 
 
 class SchemaEmbedding(Base):

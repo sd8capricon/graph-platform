@@ -2,10 +2,10 @@ from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain.tools import tool
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
-from graphrag_apacheage.agent import deep_agent
-from graphrag_apacheage.agent.context import AgentContext
-from graphrag_apacheage.agent.prompts import GRAPH_AGENT_SYSTEM_PROMPT
-from graphrag_apacheage.schemas.model import AuthMode, Model
+from common.agent import deep_agent
+from common.agent.context import AgentContext
+from common.agent.prompts import GRAPH_AGENT_SYSTEM_PROMPT
+from common.schemas.model import AuthMode, Model
 
 _GRAPH_TOOL_NAMES = [
     "search_schema_registry",

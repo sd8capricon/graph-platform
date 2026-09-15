@@ -2,7 +2,7 @@ from typing import Any
 
 import litellm
 
-from graphrag_apacheage.schemas.model import AuthMode, Model
+from common.schemas.model import AuthMode, Model
 
 
 class EmbeddingService:

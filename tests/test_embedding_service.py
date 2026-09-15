@@ -1,7 +1,7 @@
 import pytest
 
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
-from graphrag_apacheage.services.embedding_service import EmbeddingService
+from common.schemas.model import AuthMode, Model, ModelType
+from common.services.embedding_service import EmbeddingService
 
 
 def _embedding_model(**overrides) -> Model:
@@ -33,7 +33,7 @@ async def test_compute_embeddings_skips_when_texts_empty():
 
 
 async def test_compute_embeddings_calls_litellm_with_model_details(monkeypatch):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     captured = {}
 
@@ -57,7 +57,7 @@ async def test_compute_embeddings_calls_litellm_with_model_details(monkeypatch):
 
 
 async def test_compute_embeddings_omits_api_key_for_managed_identity(monkeypatch):
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     captured = {}
 
@@ -79,7 +79,7 @@ async def test_compute_embeddings_omits_api_key_for_managed_identity(monkeypatch
 async def test_compute_embeddings_raises_when_provider_returns_wrong_width(monkeypatch):
     """The embedding columns are dimensionless (ADR-0003), so the database no
     longer rejects a mis-sized vector - this check is the only thing that does."""
-    import graphrag_apacheage.services.embedding_service as embedding_service
+    import common.services.embedding_service as embedding_service
 
     class FakeResponse:
         # The model below declares embedding_dimension=3.

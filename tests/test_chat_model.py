@@ -1,5 +1,5 @@
-from graphrag_apacheage.agent.chat_model import build_chat_model
-from graphrag_apacheage.schemas.model import AuthMode, Model, ModelType
+from common.agent.chat_model import build_chat_model
+from common.schemas.model import AuthMode, Model, ModelType
 
 
 def _chat_model_config(**overrides) -> Model:

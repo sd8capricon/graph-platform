@@ -2,7 +2,7 @@ from typing import Any
 
 from langchain_litellm import ChatLiteLLM
 
-from graphrag_apacheage.schemas.model import AuthMode, Model
+from common.schemas.model import AuthMode, Model
 
 
 def build_chat_model(model: Model, /, **overrides: Any) -> ChatLiteLLM:
