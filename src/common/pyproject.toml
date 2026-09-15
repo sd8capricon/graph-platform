@@ -1,5 +1,5 @@
 [project]
-name = "graphrag-common"
+name = "common"
 version = "0.1.0"
 description = "Shared library for the graphrag-apacheage services"
 authors = [
