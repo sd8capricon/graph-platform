@@ -1,0 +1,43 @@
+{
+    "folders": [
+        {
+            "name": "root",
+            "path": "."
+        },
+        {
+            "name": "common",
+            "path": "src/common"
+        },
+        {
+            "name": "agent-runtime",
+            "path": "src/agent-runtime"
+        },
+        {
+            "name": "ingestion-worker",
+            "path": "src/ingestion-worker"
+        }
+    ],
+    "settings": {
+        "python.analysis.autoSearchPaths": true,
+        "python-envs.workspaceSearchPaths": [
+            "./src/*/.venv"
+        ],
+        "python-envs.pythonProjects": [
+            {
+                "path": "src/agent-runtime",
+                "envManager": "ms-python.python:venv",
+                "packageManager": "ms-python.python:pip"
+            },
+            {
+                "path": "src/common",
+                "envManager": "ms-python.python:venv",
+                "packageManager": "ms-python.python:pip"
+            },
+            {
+                "path": "src/ingestion-worker",
+                "envManager": "ms-python.python:venv",
+                "packageManager": "ms-python.python:pip"
+            }
+        ]
+    }
+}
