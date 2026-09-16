@@ -1,0 +1,23 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python-envs.workspaceSearchPaths": [
+        "./src/*/.venv"
+    ],
+    "python-envs.pythonProjects": [
+        {
+            "path": "src/agent-runtime",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        },
+        {
+            "path": "src/common",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        },
+        {
+            "path": "src/ingestion-worker",
+            "envManager": "ms-python.python:venv",
+            "packageManager": "ms-python.python:pip"
+        }
+    ]
+}
