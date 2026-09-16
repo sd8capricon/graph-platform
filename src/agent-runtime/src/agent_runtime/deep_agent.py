@@ -6,10 +6,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
-from common.agent.chat_model import build_chat_model
-from common.agent.context import AgentContext
-from common.agent.prompts import GRAPH_AGENT_SYSTEM_PROMPT
-from common.agent.tools import GRAPH_TOOLS
+from agent_runtime.chat_model import build_chat_model
+from agent_runtime.context import AgentContext
+from agent_runtime.prompts import GRAPH_AGENT_SYSTEM_PROMPT
+from agent_runtime.tools import GRAPH_TOOLS
 from common.schemas.model import Model
 
 
@@ -24,7 +24,7 @@ def build_deep_agent(
     """Build the knowledge-graph deep agent.
 
     Assembles `deepagents.create_deep_agent()` with this repo's graph tools
-    (`agent/tools.py`'s `GRAPH_TOOLS`), `AgentContext` as the `context_schema`, and
+    (`agent_runtime/tools.py`'s `GRAPH_TOOLS`), `AgentContext` as the `context_schema`, and
     deepagents' default middleware stack (filesystem, subagents, summarization,
     tool-call patching) plus an opt-in `TodoListMiddleware`.
 
@@ -46,7 +46,7 @@ def build_deep_agent(
 
     Args:
         chat_model: Either a configured `Model` (the config-file shape, converted
-            via `agent/chat_model.py`'s `build_chat_model()`), or an already-built
+            via `agent_runtime/chat_model.py`'s `build_chat_model()`), or an already-built
             `BaseChatModel`. The `BaseChatModel` branch exists so callers can
             inject a pre-tuned model, and so tests can compile the graph against a
             fake model with no network and no credentials. A model is always

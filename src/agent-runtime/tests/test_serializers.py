@@ -1,4 +1,4 @@
-from common.agent.serializers import AgentSerializer
+from agent_runtime.serializers import AgentSerializer
 
 
 def test_node_neighbours_to_dict_groups_node_once_with_direction_per_relationship():

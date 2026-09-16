@@ -4,9 +4,9 @@ import pytest
 from langchain.tools import ToolRuntime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.agent.context import AgentContext
-from common.agent.models import NodeRef
-from common.agent.tools import (
+from agent_runtime.context import AgentContext
+from agent_runtime.models import NodeRef
+from agent_runtime.tools import (
     get_node_neighbours,
     get_node_schema,
     get_relationship,

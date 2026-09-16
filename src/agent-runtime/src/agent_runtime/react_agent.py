@@ -6,10 +6,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
-from common.agent.chat_model import build_chat_model
-from common.agent.context import AgentContext
-from common.agent.prompts import GRAPH_AGENT_SYSTEM_PROMPT
-from common.agent.tools import GRAPH_TOOLS
+from agent_runtime.chat_model import build_chat_model
+from agent_runtime.context import AgentContext
+from agent_runtime.prompts import GRAPH_AGENT_SYSTEM_PROMPT
+from agent_runtime.tools import GRAPH_TOOLS
 from common.schemas.model import Model
 
 
@@ -23,8 +23,8 @@ def build_react_agent(
 ) -> CompiledStateGraph:
     """Build the knowledge-graph react agent.
 
-    The plain-`langchain` counterpart to `agent/deep_agent.py`'s
-    `build_deep_agent()`: same tools (`agent/tools.py`'s `GRAPH_TOOLS`), same
+    The plain-`langchain` counterpart to `agent_runtime/deep_agent.py`'s
+    `build_deep_agent()`: same tools (`agent_runtime/tools.py`'s `GRAPH_TOOLS`), same
     `AgentContext` as `context_schema`, same system prompt, but assembled with
     `langchain.agents.create_agent()` instead of `deepagents.create_deep_agent()` -
     no filesystem/subagent/summarization middleware stack, no `TodoListMiddleware`,
@@ -48,7 +48,7 @@ def build_react_agent(
 
     Args:
         chat_model: Either a configured `Model` (the config-file shape, converted
-            via `agent/chat_model.py`'s `build_chat_model()`), or an already-built
+            via `agent_runtime/chat_model.py`'s `build_chat_model()`), or an already-built
             `BaseChatModel`. The `BaseChatModel` branch exists so callers can
             inject a pre-tuned model, and so tests can compile the graph against a
             fake model with no network and no credentials.

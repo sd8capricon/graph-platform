@@ -5,7 +5,7 @@ from common.models.node_embedding import NodeEmbedding
 
 
 class AgentSerializer:
-    """ORM-record/agtype-to-plain-dict conversions shared by `agent/tools.py`.
+    """ORM-record/agtype-to-plain-dict conversions shared by `agent_runtime/tools.py`.
 
     Grouped as staticmethods on one class (rather than left as module-level
     functions) purely for a single, discoverable import surface — none of them

@@ -1,16 +1,36 @@
 [project]
 name = "agent-runtime"
 version = "0.1.0"
-description = "Add your description here"
+description = "Knowledge-graph agent runtime: tools, prompt and agent assembly"
 readme = "README.md"
 authors = [
     { name = "Siddharth Dhaigude", email = "sd8capricon@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "common",
+    "deepagents>=0.7.13",
+    "langchain>=1.4.0",
+    "langchain-litellm>=0.7.1",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy[asyncio]>=2.0.42",
+]
 
 [project.scripts]
 agent-runtime = "agent_runtime:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.uv.sources]
+common = { path = "../common", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]

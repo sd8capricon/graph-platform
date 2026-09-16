@@ -6,9 +6,11 @@ Proposed, step 1 implemented. Step 1 — collapse the existing code into a singl
 `src/common`, with the import package renamed `graphrag_apacheage` -> `common` — is done; see
 "Amendment: step 1 implemented" below, and "Amendment: standalone projects, standard uv layout" for
 the later change that dropped the workspace root and moved `common` onto uv's default src layout.
-Steps 2+ (extracting `api`, `agent-execution`, and `ingestion` as separate services) are deferred and
-deliberately unspecified in mechanism: one `common` package still holds every service's code, exactly
-as Decision 3 intended. `ingestion` exists as a scaffolded, empty uv project.
+Steps 2+ (extracting `api` and, under their new names, `agent-runtime` and `ingestion-worker` as
+separate services) are deliberately unspecified in mechanism: one `common` package still holds the
+shared code, exactly as Decision 3 intended. Step 2 is now **partially implemented**: `agent-runtime`
+and `ingestion-worker` exist as standalone projects and their code has moved; `api` does not exist as
+a project yet. See "Amendment: `agent-runtime` and `ingestion-worker` extracted" below.
 
 ## Context
 
@@ -270,4 +272,82 @@ Two things the deletion of the root project took with it, and how they are handl
 - **One editable install path.** `common` is installed into `src/common/.venv`, so a root-level
   `tests/` run needs `--project src/common`; there is no longer a repository-root environment that
   imports `common` implicitly.
+
+## Amendment: `agent-runtime` and `ingestion-worker` extracted
+
+Step 2 is partially implemented. Decision 1's `agent-execution` and `ingestion` services now exist
+under the names the repository actually uses — **`agent-runtime`** and **`ingestion-worker`** — each
+a standalone uv project that depends on `common`. Decision 2's dependency direction holds: both
+services import `common`; `common` imports neither.
+
+```
+src/
+├── common/           # uv project "common"      (shared library)
+├── agent-runtime/    # uv project "agent-runtime"
+│   ├── pyproject.toml
+│   ├── tests/
+│   └── src/agent_runtime/
+└── ingestion-worker/ # uv project "ingestion-worker"
+    ├── pyproject.toml
+    └── src/ingestion_worker/
+```
+
+What moved, per Decision 5's module mapping:
+
+- **`common` lost `agent/` and the demo `__init__.py`.** All eight agent modules
+  (`tools.py`, `prompts.py`, `deep_agent.py`, `react_agent.py`, `context.py`, `models.py`,
+  `serializers.py`, `chat_model.py`) moved to `src/agent-runtime/src/agent_runtime/` with `git mv`;
+  imports inside them were rewritten `common.agent.X` -> `agent_runtime.X`, while their
+  `common.schemas` / `common.models` / `common.repositories` imports are unchanged. The demo
+  ingestion path and connection setup that lived in `common/__init__.py` moved out, and
+  `common/__init__.py` is now docstring-only. `[project.scripts] graphrag-apacheage = "common:main"`
+  is gone with it.
+- **The Apache Age connection factory is shared, not duplicated.** `create_connection()` and the
+  `database_url()` helper moved from the old demo `__init__.py` to
+  `common/database/connection.py`, because both services need exactly the same `CREATE EXTENSION` /
+  `LOAD 'age'` / `SET search_path` setup and Decision 4 says two callers put a module in `common`.
+  It is the only new module the extraction added.
+- **`agent-runtime`** owns the agent workload. Its `__init__.py` is the service entrypoint:
+  `chat_model()`/`embedding_model()` select configured providers, `check_agent()` is the agent smoke
+  test lifted from the old demo (stream one question through the react agent and print tool calls,
+  tool results and text), and `run()`/`main()` open the connection, load config and drive it. Its
+  dependencies are `common` plus deepagents, langchain, langchain-litellm, pydantic,
+  sqlalchemy[asyncio] and python-dotenv; it no longer inherits the embedding/Celery-side weight of
+  the shared project.
+- **`ingestion-worker`** owns the ingestion workload: `KnowledgeBase.from_json_file()` ->
+  `KnowledgeBaseService.upsert_knowledge_base()`, including the `Base.metadata.create_all` and
+  per-model `ensure_embedding_index()` setup the demo `run()` performed. Its `__init__.py` is the
+  entrypoint (`create_knowledge_base()`, `run()`, `main()`), with the demo graph name, knowledge-base
+  path and organization id as module constants. Its dependencies are `common` plus
+  psycopg[binary], sqlalchemy[asyncio] and python-dotenv.
+- **`common`'s dependency list shrank to what the shared library imports**: deepagents, langchain,
+  langchain-litellm and python-dotenv were removed (agent/runtime-only). `fastapi[standard]` stays,
+  and the empty `common/api/` placeholder stays with it, because the `api` service of Decision 1 has
+  no project yet — moving either is the next step, not this one.
+- **Each service declares `common` as a path dependency**, not a version range:
+  `dependencies = ["common"]` with
+  `[tool.uv.sources] common = { path = "../common", editable = true }`. This is what keeps one
+  editable install path (see the previous amendment) rather than publishing `common` anywhere.
+- **Tests moved with their subject.** The four agent test modules (`test_tools.py`,
+  `test_serializers.py`, `test_deep_agent.py`, `test_chat_model.py`) moved to
+  `src/agent-runtime/tests/` and import `agent_runtime.*`. The remaining root-level `tests/` suite
+  covers `common` only and still runs against the `common` project environment:
+  `uv run --project src/common pytest tests/ -o asyncio_mode=auto`. The agent suite runs inside its
+  own project: `uv run --project src/agent-runtime pytest src/agent-runtime/tests` (the explicit path
+  matters — from the repository root, bare `pytest` would also collect the root-level `common` suite
+  in the agent environment, which lacks `aiosqlite`).
+- **`agent-runtime` owns its pytest configuration and dev group** (`pytest`, `pytest-asyncio`,
+  `asyncio_mode = "auto"` in `src/agent-runtime/pyproject.toml`), so its suite needs no `-o` flag.
+- **Verification:** `uv sync` resolves each project (three separate `uv.lock` files); the `common`
+  suite passes 107 tests and the `agent-runtime` suite passes 44 — 151 total, matching the count the
+  previous amendment recorded; a fresh interpreter can import
+  `common.services.embedding_service`, `agent_runtime.tools` (`GRAPH_TOOLS`, five tools) and
+  `ingestion_worker` in their respective environments. Both entrypoints were import-checked, not
+  run end-to-end: executing them needs a live PostgreSQL + Apache Age instance and provider
+  credentials, which the unit-test environment does not have — the same limitation the previous
+  amendment recorded for `graphrag-apacheage`.
+- **Still open from Decision 1:** the `api` service. The old demo `main()`/`run()` split by workload
+  instead: its ingestion half is `ingestion-worker`'s entrypoint, its agent half is
+  `agent-runtime`'s smoke-test entrypoint. A real `api` project (CRUD, agent invocation, ingestion
+  triggering) remains unbuilt.
 

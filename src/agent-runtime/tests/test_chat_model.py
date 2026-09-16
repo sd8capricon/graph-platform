@@ -1,4 +1,4 @@
-from common.agent.chat_model import build_chat_model
+from agent_runtime.chat_model import build_chat_model
 from common.schemas.model import AuthMode, Model, ModelType
 
 

@@ -1,7 +1,7 @@
 """System prompts for the knowledge-graph deep agent.
 
 Kept in its own module so replacing a prompt is a one-line change here and touches
-nothing else: `agent/deep_agent.py` imports the constant and never inlines prompt
+nothing else: `agent_runtime/deep_agent.py` imports the constant and never inlines prompt
 text, and `tests/test_deep_agent.py` asserts prompt *identity*
 (`system_prompt is GRAPH_AGENT_SYSTEM_PROMPT`) rather than prompt content, so
 swapping the text in cannot turn a test red.

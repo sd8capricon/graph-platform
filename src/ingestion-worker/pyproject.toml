@@ -1,16 +1,24 @@
 [project]
 name = "ingestion-worker"
 version = "0.1.0"
-description = "Add your description here"
+description = "Ingestion worker: knowledge base -> Apache Age graph + embeddings"
 readme = "README.md"
 authors = [
     { name = "Siddharth Dhaigude", email = "sd8capricon@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "common",
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy[asyncio]>=2.0.42",
+]
 
 [project.scripts]
 ingestion-worker = "ingestion_worker:main"
+
+[tool.uv.sources]
+common = { path = "../common", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]

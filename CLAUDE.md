@@ -11,11 +11,27 @@
 **Python**: 3.14+ required  
 **Build System**: uv (ultra-fast Python package installer)
 
+### Projects (ADR-0004)
+
+Three standalone uv projects under `src/`, each with its own `pyproject.toml`, `.venv` and
+`uv.lock`. A service depends on `common` (a path dependency); `common` depends on no service, and
+services do not import each other.
+
+| Project | Import package | Owns |
+|---|---|---|
+| `src/common` | `common` | Configuration, domain schemas, ORM models, repositories, `EmbeddingService`, index DDL, and the `api/` placeholder |
+| `src/agent-runtime` | `agent_runtime` | Agent tools, prompt, `AgentContext`, serializers, and the deep/react agent assembly |
+| `src/ingestion-worker` | `ingestion_worker` | Reading a knowledge base and writing it to the graph plus both embedding side-tables |
+
+A module belongs in `common` only when at least two services need it, or it is a shared domain model
+or the database schema itself (ADR-0004 Decision 4). `api` from the ADR's target four-service
+topology has no project yet.
+
 ## Architecture
 
 ### Core Components
 
-1. **Schemas** (`src/common/schemas/`)
+1. **Schemas** (`src/common/src/common/schemas/`)
    - `KnowledgeBase`: Container for nodes and relationships with JSON serialization
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
@@ -36,14 +52,14 @@
      `@model_validator(mode="after")` (`ensure_reasoning_effort_not_for_embedding`) raises when it is
      set alongside `embedding` in `type`, the same "reject at the boundary" convention as
      `ensure_embedding_dimension_matches_type`'s inverse case (there, missing when required; here,
-     present when forbidden). Consumed only by `agent/chat_model.py`'s `build_chat_model()` — see the
+     present when forbidden). Consumed only by `agent_runtime/chat_model.py`'s `build_chat_model()` — see the
      "Agents" section below
    - Config entries name a secret indirectly via `api_key_env`; a `@model_validator(mode="before")`
      (`resolve_api_key_env`) pops it and reads that environment variable into `api_key`, so raw YAML
      entries validate straight into `Model`. There is no `Model.from_config()` — `AppSettings`
      (`config.py`) owns file reading, and the config file is parsed exactly once.
 
-2. **Models** (`src/common/models/`)
+2. **Models** (`src/common/src/common/models/`)
    - `Base` (`models/base.py`): shared SQLAlchemy `DeclarativeBase` for all ORM models
    - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions
    - Stores: graph name, knowledge base IDs (list; a label may come from multiple knowledge bases), entity type, name, description, aliases, properties, source/target labels
@@ -54,7 +70,7 @@
    - Both models share the pgvector embedding column pattern and delegate embedding computation
      to `EmbeddingService`; see "Vector Embedding & Search Pattern" below
 
-3. **Agents** (`src/common/agent/`)
+3. **Agents** (`src/agent-runtime/src/agent_runtime/`)
    - `context.py` - `AgentContext`: pydantic model passed as `context_schema` to LangChain's
      `create_agent()`; holds run-scoped, static data (not conversational state), separate from
      graph state and made available to tools via LangGraph's runtime. Fields: `organization_id: str`
@@ -146,7 +162,7 @@
      they're importable/testable independent of any `@tool`-decorated function
    - `prompts.py` - `GRAPH_AGENT_SYSTEM_PROMPT`, the agent's system prompt. Its own module so
      replacing the prompt is a one-line change in one file: `deep_agent.py` imports the constant and
-     never inlines prompt text, and `tests/test_deep_agent.py` asserts prompt *identity*
+     never inlines prompt text, and `src/agent-runtime/tests/test_deep_agent.py` asserts prompt *identity*
      (`captured["system_prompt"] is GRAPH_AGENT_SYSTEM_PROMPT`), never prompt content, so swapping
      the text in cannot turn a test red. The shipped text is a deliberate **placeholder** — usable
      (it encodes the schema-discovery -> `search_entities` -> `get_node_schema` ->
@@ -197,19 +213,19 @@
      **positional-only** (`/`) because `model` is also `ChatLiteLLM`'s own field name — without the
      marker, `build_chat_model(cfg, model=...)` raises `TypeError: got multiple values for argument
      'model'` instead of overriding the model string. Note the deviation: the convention-consistent
-     home for this is `services/chat_model_service.py` as a `ChatModelService` mirroring
-     `EmbeddingService`, since nothing about it is agent-specific. It lives in `agent/` because it
-     currently has exactly one caller; move it (file move + one import line in `deep_agent.py`) as
-     soon as a non-agent caller appears
+     home for this is a shared `ChatModelService` mirroring `EmbeddingService`, since nothing about
+     it is agent-specific. It lives in the `agent-runtime` project because it currently has exactly
+     one caller; move it (file move + one import line in `deep_agent.py`) as soon as a non-agent
+     caller appears
    - `deep_agent.py` - `build_deep_agent(chat_model, *, tools, middleware, system_prompt, name)`,
      the single place the agent is assembled. See "Deep Agent Assembly Pattern" below
    - `GRAPH_TOOLS` (in `tools.py`) - the ordered list of the five tools handed to the agent. It lives
-     in `tools.py`, the leaf module that owns the tools, **not** in an `agent/__init__.py`: `agent/`
-     has no `__init__.py` at all on purpose (see the import-cycle note under "Vector Embedding &
-     Search Pattern"), so the aggregate has to sit beside what it aggregates. Import it as
-     `from common.agent.tools import GRAPH_TOOLS`
+     in `tools.py`, the module that owns the tools, **not** in `agent_runtime/__init__.py`: the
+     package root is the service entrypoint (`main()`), so importing it to reach a tool list would
+     drag the entrypoint's dependencies into every consumer. Import it as
+     `from agent_runtime.tools import GRAPH_TOOLS`
 
-4. **Services** (`src/common/services/`)
+4. **Services** (`src/common/src/common/services/`)
    - `KnowledgeBaseService`: High-level service for knowledge base operations. Every method is
      `async def` (awaits the fully-async `AgeGraphRepository` and/or the awaited litellm embedding
      calls). `upsert_knowledge_base()` / `delete_knowledge_base()` are the orchestrating pair that
@@ -217,7 +233,7 @@
    - `EmbeddingService` (`services/embedding_service.py`): Computes text embeddings via litellm,
      shared by any ORM model with a vector embedding column
 
-5. **Repositories** (`src/common/repositories/`)
+5. **Repositories** (`src/common/src/common/repositories/`)
    - `AgeGraphRepository`: Data access layer for Apache Age graph operations. Fully async, backed
      by `psycopg` v3's `AsyncConnection`/`AsyncCursor` (not `psycopg2`, which has no async mode).
      Most methods only build and `.execute()` a Cypher query, returning the query string itself
@@ -227,7 +243,7 @@
      actually fetch and parse real result rows — see "Direct Graph Query & Async Repository
      Pattern" below
 
-6. **Database** (`src/common/database/`)
+6. **Database** (`src/common/src/common/database/`)
    - `indexes.py`: Model-agnostic DDL helpers for the per-model partial HNSW indexes on both
      embedding tables — `ensure_embedding_index()` / `drop_embedding_index()` plus
      `HNSW_MAX_DIMENSIONS`. It takes a `table_name` string rather than an ORM model, so it knows
@@ -292,12 +308,12 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   looks up the stored `properties` list for a batch of names in one query (`name.in_(names)`, scoped
   by `organization_id` and `graph_name`, optionally filtered by `type`), returning a
   `dict[name, list[str]]` that omits any name with no matching row (rather than mapping it to `[]`) —
-  the caller decides the default for a schema-less label. This is what `agent/tools.py`'s
+  the caller decides the default for a schema-less label. This is what `agent_runtime/tools.py`'s
   `get_node_schema` tool uses to attach property-**name** lists to its neighborhood summary (see the
-  `agent/tools.py` bullet under "Agents" above); the same `type` value is shared across all `names`
+  `agent_runtime/tools.py` bullet under "Agents" above); the same `type` value is shared across all `names`
   passed in one call, so a caller needing both node and relationship labels' properties makes two
   calls, not one
-- See: `src/common/models/graph_schema_registry.py` and `src/common/schemas/knowledge_base.py`
+- See: `src/common/src/common/models/graph_schema_registry.py` and `src/common/src/common/schemas/knowledge_base.py`
 
 ### Knowledge Base Lifecycle Pattern
 - `KnowledgeBaseService` owns the whole lifecycle of one knowledge base in one graph. There are two
@@ -363,9 +379,9 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
     repository's psycopg connection *could* run the `DELETE`s (same database) — and in one
     transaction with the drop, which this split does not get. **The original blocker is gone**: it
     was that naming the tables via `NodeEmbedding.__tablename__` would make
-    `repositories/age_graph_repository.py` import the pgvector ORM models, which `__init__.py`
-    imports at module level *before* `load_config()` — so the embedding column would have been sized
-    from defaults. ADR-0003's dimensionless columns removed that constraint entirely. What remains is
+    `repositories/age_graph_repository.py` import the pgvector ORM models, which
+    the old demo `__init__.py` imported at module level *before* `load_config()` — so the embedding
+    column would have been sized from defaults. ADR-0003's dimensionless columns removed that constraint entirely. What remains is
     a weaker argument (an ORM-model import in the repository layer crosses a layer boundary this
     codebase otherwise keeps clean), so moving the cleanup — and gaining a shared transaction with
     the graph drop — is now a reasonable, deliberate follow-up rather than something ruled out
@@ -374,7 +390,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   job, so a caller can batch several knowledge bases into one side-table transaction. The two stores
   are not in a shared transaction, so a failure between them can leave the graph ahead of the
   side-tables; re-running the upsert is idempotent and recovers
-- See: `src/common/services/knowledge_base_service.py` and the
+- See: `src/common/src/common/services/knowledge_base_service.py` and the
   `test_delete_knowledge_base_*` / `test_delete_graph_*` tests in `tests/test_graph_registry_model.py`
 
 ### Vector Embedding & Search Pattern
@@ -437,12 +453,12 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   - **`vector_search()` must repeat both the predicate and the expression** or the index is not used: it always filters `embedding_model_id == model.id` and orders by `cast(embedding, Vector(model.embedding_dimension))`. Both are derived from the `model` argument rather than passed separately — see the `vector_search` bullet below
   - Models wider than **2000 dimensions** (pgvector's HNSW limit for `vector`, e.g. OpenAI `text-embedding-3-large` at 3072) still work but cannot be indexed this way; `ensure_embedding_index()` raises rather than emitting DDL PostgreSQL would reject
   - `AppSettings` (`config.py`) is a pydantic `BaseModel` holding all app config, and loads YAML in its constructor: `AppSettings(path)` reads the top-level `models:` list into `models: list[Model]`, so the config file is parsed exactly once at startup. `AppSettings()` (no path) touches no disk and uses field defaults. There is deliberately **no** process-wide `embedding_dimension`: `Model.embedding_dimension`, per provider entry, is the only dimension knob in the system
-  - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from common.config import settings` see the loaded values — rebinding would leave them holding a stale object. `main()` in `__init__.py` is the single call site
-  - There is **no** `load_config()`-before-import ordering constraint any more. There used to be: the pgvector column width was fixed at class-definition time from `settings.embedding_dimension`, so importing a model module before `load_config()` silently baked in the default. Dimensionless columns (ADR-0003) removed the only thing read at class-definition time. The imports in `__init__.py`'s `run()` still have to precede `create_all`, but only so the tables register on `Base.metadata` — not for ordering against config
+  - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from common.config import settings` see the loaded values — rebinding would leave them holding a stale object. Each service entrypoint's `main()` is a call site (`agent_runtime/__init__.py`, `ingestion_worker/__init__.py`)
+  - There is **no** `load_config()`-before-import ordering constraint any more. There used to be: the pgvector column width was fixed at class-definition time from `settings.embedding_dimension`, so importing a model module before `load_config()` silently baked in the default. Dimensionless columns (ADR-0003) removed the only thing read at class-definition time. The model imports in `ingestion_worker/__init__.py`'s `run()` still have to precede `create_all`, but only so the tables register on `Base.metadata` — not for ordering against config
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
-  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `agent/`, `api/`, and `database/` have no `__init__.py` at all, for the same reason. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
+  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `api/`, and `database/` have no `__init__.py` at all, for the same reason — and the service packages (`agent_runtime/`, `ingestion_worker/`) are outside `common` entirely, so their `__init__.py` files are entrypoints, not part of this cycle. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
-  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both `upsert_records()` methods onto `embedding_model_id` (see above)
+  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent_runtime/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both `upsert_records()` methods onto `embedding_model_id` (see above)
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
 - Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `GraphSchemaRegistry.upsert_records()` stores the result on `record.embedding_row` (see above), `NodeEmbedding.upsert_records()` stores it directly on the record, as before
 - `vector_search(session, query, graph_name, organization_id, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator — requires PostgreSQL, raises `ValueError` if `model` is `None` or has no `embedding_dimension`. Both checks happen **before** `compute_embeddings()`, since that is a real billed provider call and a model we cannot search against should never reach it
@@ -450,12 +466,12 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, organization_id, model=None)` / `.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since neither `?|` nor `<=>` runs on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
-- See: `src/common/services/embedding_service.py`, `src/common/schemas/model.py`, `src/common/models/graph_schema_registry.py`, `src/common/models/schema_embedding.py`, `src/common/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
+- See: `src/common/src/common/services/embedding_service.py`, `src/common/src/common/schemas/model.py`, `src/common/src/common/models/graph_schema_registry.py`, `src/common/src/common/models/schema_embedding.py`, `src/common/src/common/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
 
 ### Direct Graph Query & Async Repository Pattern
 - `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; `KnowledgeBaseService.upsert_knowledge_base()` is `async def` too, since it awaits repository calls internally
-- Connection setup gotcha: every new Postgres session must run `SET search_path = ag_catalog, "$user", public;` before any `ag_catalog.*` call — AGE's internal DDL (e.g. the btree index it creates using its own `graphid_ops` operator class) resolves operator classes via `search_path`, not via schema-qualification of the calling query. Skipping this raises `psycopg.errors.UndefinedObject: operator class "graphid_ops" does not exist for access method "btree"` on `create_graph()`. `create_connection()` in `__init__.py` runs `CREATE EXTENSION IF NOT EXISTS age;` (creates the `ag_catalog` schema/tables — `LOAD 'age'` alone only loads the shared library into the current session and leaves `ag_catalog.ag_graph` etc. undefined, raising `psycopg.errors.UndefinedTable` on `graph_exists()`) before `LOAD 'age';`, per Apache AGE's own documented setup order; on Azure-hosted Postgres (detectable via `"database.azure.com" in host`) the `age` extension's shared library is pre-loaded via server-side config, so `LOAD` is skipped, but `CREATE EXTENSION` still runs there too
-- **Commit before handing off the connection:** `create_connection()`'s psycopg `AsyncConnection` defaults to non-autocommit, so its `CREATE EXTENSION`/`LOAD`/`SET search_path` setup statements sit in an open transaction until something commits. `run()` in `__init__.py` opens a *separate* SQLAlchemy engine/connection right after and calls `Base.metadata.create_all` to create tables with `VECTOR` columns — under Postgres MVCC that connection can't see an uncommitted `CREATE EXTENSION vector`, raising `psycopg.errors.UndefinedObject: type "vector" does not exist`. `create_connection()` therefore ends with `await connection.commit()` before returning, so the extensions are visible to any other connection opened afterward
+- Connection setup gotcha: every new Postgres session must run `SET search_path = ag_catalog, "$user", public;` before any `ag_catalog.*` call — AGE's internal DDL (e.g. the btree index it creates using its own `graphid_ops` operator class) resolves operator classes via `search_path`, not via schema-qualification of the calling query. Skipping this raises `psycopg.errors.UndefinedObject: operator class "graphid_ops" does not exist for access method "btree"` on `create_graph()`. `create_connection()` in `common/database/connection.py` runs `CREATE EXTENSION IF NOT EXISTS age;` (creates the `ag_catalog` schema/tables — `LOAD 'age'` alone only loads the shared library into the current session and leaves `ag_catalog.ag_graph` etc. undefined, raising `psycopg.errors.UndefinedTable` on `graph_exists()`) before `LOAD 'age';`, per Apache AGE's own documented setup order; on Azure-hosted Postgres (detectable via `"database.azure.com" in host`) the `age` extension's shared library is pre-loaded via server-side config, so `LOAD` is skipped, but `CREATE EXTENSION` still runs there too
+- **Commit before handing off the connection:** `create_connection()`'s psycopg `AsyncConnection` defaults to non-autocommit, so its `CREATE EXTENSION`/`LOAD`/`SET search_path` setup statements sit in an open transaction until something commits. `ingestion_worker/__init__.py`'s `run()` opens a *separate* SQLAlchemy engine/connection right after and calls `Base.metadata.create_all` to create tables with `VECTOR` columns — under Postgres MVCC that connection can't see an uncommitted `CREATE EXTENSION vector`, raising `psycopg.errors.UndefinedObject: type "vector" does not exist`. `create_connection()` therefore ends with `await connection.commit()` before returning, so the extensions are visible to any other connection opened afterward
 - Most methods only build and `.execute()` a Cypher query, returning the query string itself (used as an audit trail, e.g. by `upsert_knowledge_base()`) without fetching/parsing results — `graph_exists()` is the one exception that fetches, but only checks `(await cursor.fetchone()) is not None`
 - `get_node_neighbours(graph_name, node_id, relationship_labels=None)` is the first method that actually fetches and parses real result rows: it matches a node via its app-level `id` property (the same property `create_node`/`create_relationship` set — not Apache Age's own internal vertex id/graphid), traverses relationships in both directions (`MATCH (a {"id": ...})-[r]-(b)`), and returns a de-duplicated `list[tuple[dict, dict, dict]]` of `(source, relationship, target)`
   - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
@@ -508,14 +524,14 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   `ensure_edge_label`, each deduplicated with `dict.fromkeys(...)`) before its `create_node`/
   `create_relationship` loops — ensuring a label once, before anything `CREATE`s against it, sidesteps
   Age's auto-create race entirely rather than working around it after the fact
-- `agent/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
+- `agent_runtime/tools.py`'s `get_node_neighbours` tool wraps this repository method and reshapes the triplets via `agent_runtime/serializers.py`'s `AgentSerializer.node_neighbours_to_dict(node_id, label, properties, triplets)`, which drops Apache Age's internal integer ids (keeping only the app-level UUID `id` pulled out of each vertex's `properties`) and groups results under the queried node once — `{"node": {...}, "relationships": [{"label", "properties", "direction", "neighbor"}, ...]}` — with `direction` ("outgoing"/"incoming") replacing a repeated source/target pair per entry, since a flat triplet-per-relationship list would echo the queried node's full dict once per relationship
 - `search_relationships(graph_name, label, source_label=None, target_label=None, source_id=None, target_id=None, properties=None)` is `get_node_neighbours()`'s graph-wide counterpart: instead of traversing from one known node, it searches by relationship *type*, so `source_id`/`target_id` are optional constraints rather than the anchor of the match. It matches the single **directed** pattern `(a)-[r:label]->(b)` — the same orientation `create_relationship()` writes — so `source_label`/`source_id` always constrain the relationship's actual source and `target_label`/`target_id` its actual target; there is no undirected `-[r]-` traversal here, and therefore no `start_id`/`end_id` re-orientation or edge-id de-duplication like `get_node_neighbours()` needs. Endpoint labels are inlined as `:Label` on the pattern variable, endpoint ids and relationship `properties` are each rendered via `_age_properties_literal()`, and every filter is omitted (not just left empty) when its argument is `None`/falsy, so an all-`None` call degenerates to a plain `MATCH (a)-[r:label]->(b)`
-- `agent/tools.py`'s `get_relationship` tool wraps this repository method and reshapes the triplets via `agent/serializers.py`'s `AgentSerializer.relationship_matches_to_dict(triplets)` into `[{"source": {...}, "relationship": {"label", "properties"}, "target": {...}}, ...]`. Unlike `node_neighbours_to_dict()`, there is no queried node to group under — a relationship search can legitimately match relationships between different node pairs in one call — so each triplet is reshaped independently rather than nested under a shared anchor
+- `agent_runtime/tools.py`'s `get_relationship` tool wraps this repository method and reshapes the triplets via `agent_runtime/serializers.py`'s `AgentSerializer.relationship_matches_to_dict(triplets)` into `[{"source": {...}, "relationship": {"label", "properties"}, "target": {...}}, ...]`. Unlike `node_neighbours_to_dict()`, there is no queried node to group under — a relationship search can legitimately match relationships between different node pairs in one call — so each triplet is reshaped independently rather than nested under a shared anchor
 - No code in this repo yet constructs a real `psycopg.AsyncConnection` or wires a live `AgeGraphRepository` into `AgentContext` (`api/app.py` is empty) — this is a known, pre-existing gap; the async conversion makes `AgentContext`/`AgeGraphRepository` async-ready for whenever that wiring is added, it doesn't add the wiring itself
-- See: `src/common/repositories/age_graph_repository.py`, `src/common/agent/tools.py`, `src/common/agent/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` / `test_age_graph_repository_search_relationships_*` / `test_age_graph_repository_get_node_schema_*` / `test_age_graph_repository_get_label_schema_*` / `test_age_graph_repository_ensure_vertex_label_*` / `test_age_graph_repository_ensure_edge_label_*` tests in `tests/test_graph_registry_model.py`
+- See: `src/common/src/common/repositories/age_graph_repository.py`, `src/agent-runtime/src/agent_runtime/tools.py`, `src/agent-runtime/src/agent_runtime/serializers.py`, and the `test_age_graph_repository_get_node_neighbours_*` / `test_age_graph_repository_search_relationships_*` / `test_age_graph_repository_get_node_schema_*` / `test_age_graph_repository_get_label_schema_*` / `test_age_graph_repository_ensure_vertex_label_*` / `test_age_graph_repository_ensure_edge_label_*` tests in `tests/test_graph_registry_model.py`
 
 ### Deep Agent Assembly Pattern
-- `agent/deep_agent.py`'s `build_deep_agent()` is the **only** place the agent graph is built. It
+- `agent_runtime/deep_agent.py`'s `build_deep_agent()` is the **only** place the agent graph is built. It
   calls `deepagents.create_deep_agent()` with `GRAPH_TOOLS`, `GRAPH_AGENT_SYSTEM_PROMPT`,
   `context_schema=AgentContext`, and `middleware=[TodoListMiddleware(), *middleware]` — deepagents'
   default stack (filesystem, subagents, summarization, tool-call patching) plus the opt-in todo
@@ -577,8 +593,8 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   no Anthropic/Google credentials are needed as long as a model is always passed explicitly. The
   caching middleware no-ops for non-`ChatAnthropic` models, so routing to Anthropic *through
   litellm* forgoes prompt caching
-- See: `src/common/agent/deep_agent.py`, `agent/chat_model.py`, `agent/prompts.py`,
-  `agent/tools.py` (`GRAPH_TOOLS`), and `tests/test_deep_agent.py` / `tests/test_chat_model.py`
+- See: `src/agent-runtime/src/agent_runtime/deep_agent.py`, `agent_runtime/chat_model.py`, `agent_runtime/prompts.py`,
+  `agent_runtime/tools.py` (`GRAPH_TOOLS`), and `src/agent-runtime/tests/test_deep_agent.py` / `src/agent-runtime/tests/test_chat_model.py`
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -667,7 +683,8 @@ async with AsyncSession(engine) as session:
 ### Testing New Features
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`
 - See: `tests/test_graph_registry_model.py` for patterns
-- Run tests: `pytest tests/`
+- Run the `common` suite: `uv run --project src/common pytest tests/ -o asyncio_mode=auto`; run the
+  agent suite: `uv run --project src/agent-runtime pytest`
 
 ## Development Setup
 
@@ -677,55 +694,95 @@ async with AsyncSession(engine) as session:
 - pytest (for testing)
 
 ### Key Files
-- `src/common/pyproject.toml` - the `common` uv project: runtime dependencies, `uv_build`, and the
-  `graphrag-apacheage` script entry point (`common:main`). Standard uv layout, so the module sits at
-  `src/common/src/common/`
-- `src/common/src/common/` - main source directory, import package `common`. See ADR-0004 for the
-  target four-service topology (`common`, `api`, `agent-execution`, `ingestion`) this layout stages
-- `tests/` - test suite, at the repository root rather than inside a service project. There is no
-  repo-root `pyproject.toml`, so run it against the `common` project environment:
-  `uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite pytest tests/
-  -o asyncio_mode=auto`
+
+The repository is three standalone uv projects plus shared top-level data, per ADR-0004:
+`common` (shared library), `agent-runtime` (agent execution) and `ingestion-worker`
+(knowledge-base ingestion). Each has its own `pyproject.toml`, `.venv` and `uv.lock`; imports of the
+shared library resolve through a path dependency (`common` in `[project.dependencies]`, with
+`[tool.uv.sources] common = { path = "../common", editable = true }` in each service).
+
+- `src/common/pyproject.toml` - the `common` uv project: configuration, schemas, ORM models,
+  repositories, the embedding service, index DDL and the `api/` placeholder. Standard uv layout, so
+  the import package sits at `src/common/src/common/`
+- `src/common/src/common/` - shared import package `common`
+- `src/common/src/common/database/connection.py` - `create_connection()` / `database_url()`: the
+  Apache Age psycopg connection setup both services use
+- `src/agent-runtime/pyproject.toml` - the `agent-runtime` uv project: agent dependencies,
+  `uv_build`, the `agent-runtime` script entry point (`agent_runtime:main`), a `dev` group
+  (pytest, pytest-asyncio) and `asyncio_mode = "auto"`
+- `src/agent-runtime/src/agent_runtime/` - agent import package (`tools.py`, `prompts.py`,
+  `deep_agent.py`, `react_agent.py`, `context.py`, `models.py`, `serializers.py`, `chat_model.py`)
+- `src/ingestion-worker/pyproject.toml` - the `ingestion-worker` uv project: ingestion dependencies,
+  `uv_build`, the `ingestion-worker` script entry point (`ingestion_worker:main`)
+- `src/ingestion-worker/src/ingestion_worker/` - ingestion import package (`run()`/`main()`, the
+  knowledge-base -> graph + embeddings path)
+- `tests/` - test suite for the `common` project, at the repository root rather than inside it.
+  There is no repo-root `pyproject.toml`, so run it against the `common` project environment:
+  `uv run --project src/common pytest tests/ -o asyncio_mode=auto`
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
-- `tests/test_tools.py` - test suite for `agent/tools.py`'s `@tool`-decorated functions
-- `tests/test_serializers.py` - test suite for `agent/serializers.py`'s dict-conversion helpers
-- `tests/test_deep_agent.py` - test suite for `agent/deep_agent.py`'s `build_deep_agent()` factory
-- `tests/test_chat_model.py` - test suite for `agent/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
+- `src/agent-runtime/tests/test_tools.py` - test suite for `agent_runtime/tools.py`'s `@tool`-decorated functions, run inside the `agent-runtime` project (`uv run --project src/agent-runtime pytest src/agent-runtime/tests`)
+- `src/agent-runtime/tests/test_serializers.py` - test suite for `agent_runtime/serializers.py`'s dict-conversion helpers
+- `src/agent-runtime/tests/test_deep_agent.py` - test suite for `agent_runtime/deep_agent.py`'s `build_deep_agent()` factory
+- `src/agent-runtime/tests/test_chat_model.py` - test suite for `agent_runtime/chat_model.py`'s `Model` -> `ChatLiteLLM` mapping
 - `tests/test_model.py` - test suite for `schemas/model.py`'s `Model` validators:
   `reasoning_effort`'s embedding-exclusivity rule; that `id` is required (not auto-generated - see
   the "Schemas" section above for why a stable id matters); and that `id` must be a valid UUID
 - `dummy_data/f1_kb.json` - example knowledge base (Formula 1)
+- `configs/local.yaml` - runtime config, read by `common.config.load_config()` relative to the
+  working directory
 
 ### Running Tests
 
 There is no `pyproject.toml` at the repository root, so `uv run pytest` from the root has no project
-to resolve. Run the root-level suite against the `common` project environment instead:
+to resolve. Run each project's suite with its own environment:
 
 ```bash
-uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite \
-  pytest tests/ -o asyncio_mode=auto
+# common: shared library tests (root-level tests/ directory)
+uv run --project src/common pytest tests/ -o asyncio_mode=auto
+
+# agent-runtime: agent tool/prompt/factory tests (src/agent-runtime/tests/)
+uv run --project src/agent-runtime pytest src/agent-runtime/tests
 ```
 
-(`asyncio_mode = "auto"` used to come from the deleted root `pyproject.toml`, hence the `-o`.)
+`asyncio_mode = "auto"` is configured in `src/agent-runtime/pyproject.toml`; for the root-level
+`common` suite it is passed with `-o` because pytest does not discover a config file upward from
+`tests/`.
 
 ### Project Dependencies
+
+`common` (everything shared):
 - **pydantic** (>=2.13.5): Data validation and serialization
 - **sqlalchemy[asyncio]** (>=2.0.42): ORM and database abstraction (async engine/session)
 - **psycopg[binary]** (>=3.2): Async PostgreSQL/Apache Age connection (`AgeGraphRepository` is fully async via psycopg3's `AsyncConnection`/`AsyncCursor`)
 - **pgvector** (>=0.5.0): `Vector` column type for embedding storage/cosine search
 - **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); called only when a `Model` is passed to `EmbeddingService.compute_embeddings()`
+- **pyyaml** (>=6.0.3): `AppSettings` config-file reading
+- **fastapi[standard]** (>=0.141.1): reserved for the `common/api/` placeholder (the API service of
+  ADR-0004 has no project of its own yet)
+- Dev-only: **aiosqlite**, **pytest**, **pytest-asyncio** for the root-level `common` suite
+
+`agent-runtime`:
+- **common** (path `../common`, editable): shared schemas, models, repository and embedding service
 - **deepagents** (>=0.7.13): Agent harness — `create_deep_agent()` supplies the filesystem,
-  subagent, summarization and tool-call-patching middleware stack that `agent/deep_agent.py`
+  subagent, summarization and tool-call-patching middleware stack that `agent_runtime/deep_agent.py`
   assembles. Hard-depends on **langchain-anthropic** and **langchain-google-genai** (pure-Python; no
   credentials required when a model is always passed explicitly)
-- **langchain-litellm** (>=0.7.1): `ChatLiteLLM`, the chat-model counterpart to the
-  `litellm.aembedding()` call in `EmbeddingService` — built from a configured `Model` by
-  `agent/chat_model.py`
-- Dev-only: **aiosqlite** for async SQLite tests
+- **langchain** (>=1.4.0) / **langchain-litellm** (>=0.7.1): `create_agent()` and `ChatLiteLLM`, the
+  chat-model counterpart to the `litellm.aembedding()` call in `EmbeddingService` — built from a
+  configured `Model` by `agent_runtime/chat_model.py`
+- **pydantic**, **sqlalchemy[asyncio]**, **python-dotenv**: `AgentContext`/`NodeRef`,
+  `AsyncSession`, and `main()`'s `.env` loading
+- Dev-only: **pytest**, **pytest-asyncio**
+
+`ingestion-worker`:
+- **common** (path `../common`, editable): the schemas, models, repository and
+  `KnowledgeBaseService` the ingestion path drives
+- **psycopg[binary]**, **sqlalchemy[asyncio]**, **python-dotenv**: the Age connection, the
+  SQLAlchemy engine/session, and `main()`'s `.env` loading
 
 ## Important Notes
 
@@ -777,26 +834,26 @@ uv run --project src/common --with pytest --with pytest-asyncio --with aiosqlite
   - `test_get_properties_by_name_returns_properties_scoped_by_graph_and_type()` - a name shared by
     two `graph_name`s (or looked up under the wrong `type`) doesn't leak across the lookup; an empty
     `names` list short-circuits to `{}` with no query
-  - `test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node()` (`tests/test_tools.py`)
+  - `test_get_node_schema_returns_neighborhood_shape_grouped_under_the_node()` (`src/agent-runtime/tests/test_tools.py`)
     - monkeypatches `GraphSchemaRegistry.get_properties_by_name` (keyed by the `type` argument) to
     assert the tool attaches the right property-name list to the node, to each relationship label,
     and to each neighbor label
-  - `test_get_node_schema_returns_label_schema_when_id_is_omitted()` (`tests/test_tools.py`) - a
+  - `test_get_node_schema_returns_label_schema_when_id_is_omitted()` (`src/agent-runtime/tests/test_tools.py`) - a
     `NodeRef` with only `label` set calls `repository.get_label_schema()` (never `get_node_schema()`)
     and the result's `node` dict has no `node_id` key at all, not `node_id: None`
-  - `test_get_node_schema_raises_on_empty_label()` (`tests/test_tools.py`) - `label=""`/`"   "` raises
+  - `test_get_node_schema_raises_on_empty_label()` (`src/agent-runtime/tests/test_tools.py`) - `label=""`/`"   "` raises
     before either repository method is called
-  - `test_get_node_schema_raises_on_blank_id()` (`tests/test_tools.py`, renamed from
+  - `test_get_node_schema_raises_on_blank_id()` (`src/agent-runtime/tests/test_tools.py`, renamed from
     `test_get_node_schema_raises_on_empty_id`) - a `NodeRef` built with `""` or `"   "` as `id` still
     raises rather than silently falling back to label mode; only an *omitted* `id` selects that mode
-  - `test_node_ref_id_is_optional_but_never_generated()` (`tests/test_tools.py`, renamed from
+  - `test_node_ref_id_is_optional_but_never_generated()` (`src/agent-runtime/tests/test_tools.py`, renamed from
     `test_node_ref_requires_id`) - `NodeRef(label=...)` with no `id` now constructs fine with
     `id is None`, in contrast to `KnowledgeNode(label=...).id`, which is still auto-generated
   - `test_age_graph_repository_search_relationships_matches_directed_pattern_by_label()` /
     `..._filters_by_endpoint_labels_and_ids()` / `..._filters_by_relationship_properties()` - assert
     the directed `(a)-[r:label]->(b)` pattern and that each optional filter (endpoint label, endpoint
     id, relationship property) is inlined only when provided
-  - `test_get_relationship_reshapes_matches_via_serializer()` (`tests/test_tools.py`) - asserts the
+  - `test_get_relationship_reshapes_matches_via_serializer()` (`src/agent-runtime/tests/test_tools.py`) - asserts the
     tool passes every filter argument through to `AgeGraphRepository.search_relationships()` by
     keyword and reshapes the returned triplets via `AgentSerializer.relationship_matches_to_dict()`
   - `test_get_relationship_raises_on_empty_relationship_label()` - same fail-fast convention as
