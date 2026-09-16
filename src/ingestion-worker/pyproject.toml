@@ -1,5 +1,5 @@
 [project]
-name = "ingestion"
+name = "ingestion-worker"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -10,7 +10,7 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-ingestion = "ingestion:main"
+ingestion-worker = "ingestion_worker:main"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
