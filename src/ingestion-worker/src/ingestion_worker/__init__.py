@@ -8,6 +8,7 @@ project and are imported from there.
 """
 
 import asyncio
+import os
 
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -22,11 +23,14 @@ from common.schemas.knowledge_base import KnowledgeBase
 from common.schemas.model import Model, ModelType
 from common.services.knowledge_base_service import KnowledgeBaseService
 
+load_dotenv()
+
 # Placeholder until the Organization entity (ADR-0002) exists: every write/read
 # path now requires an organization_id, and this demo has exactly one org.
 DEMO_ORGANIZATION_ID = "demo-org"
 DEMO_GRAPH_NAME = "kb_graph"
-DEMO_KNOWLEDGE_BASE_PATH = "dummy_data/f1_kb.json"
+DEMO_KNOWLEDGE_BASE_PATH = os.getenv("DEMO_KNOWLEDGE_BASE_PATH")
+DEMO_CONFIG_PATH = os.getenv("DEMO_CONFIG_PATH")
 
 
 def embedding_model() -> Model | None:
@@ -85,7 +89,9 @@ async def run() -> None:
             # common/database/indexes.py. Cheap and idempotent.
             model = embedding_model()
             if model is not None:
-                await node_embedding.NodeEmbedding.ensure_embedding_index(session, model)
+                await node_embedding.NodeEmbedding.ensure_embedding_index(
+                    session, model
+                )
                 await schema_embedding.SchemaEmbedding.ensure_embedding_index(
                     session, model
                 )
@@ -103,8 +109,7 @@ async def run() -> None:
 
 def main() -> None:
     """Load environment/config and run one ingestion pass."""
-    load_dotenv()
-    load_config()
+    load_config(DEMO_CONFIG_PATH)
     asyncio.run(run())
 
 
