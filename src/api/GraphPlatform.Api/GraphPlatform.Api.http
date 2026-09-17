@@ -1,4 +1,4 @@
-@GraphPlatform.Api_HostAddress = http://localhost:5223
+@GraphPlatform.Api_HostAddress = http://localhost:5087
 
 GET {{GraphPlatform.Api_HostAddress}}/weatherforecast/
 Accept: application/json
