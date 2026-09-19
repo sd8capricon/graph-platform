@@ -10,3 +10,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# .NET build output
+bin/
+obj/
+
+# Test output
+TestResults/
+
+# macOS
+.DS_Store

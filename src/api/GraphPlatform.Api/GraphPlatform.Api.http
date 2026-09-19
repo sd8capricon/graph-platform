@@ -1,6 +1,109 @@
-@GraphPlatform.Api_HostAddress = http://localhost:5087
+@host = http://localhost:5087
 
-GET {{GraphPlatform.Api_HostAddress}}/weatherforecast/
-Accept: application/json
+### Sign up. The response's accessToken is what the requests below send as a bearer token.
+# @name signup
+POST {{host}}/api/auth/signup
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "correct-horse-battery",
+  "displayName": "Org Admin"
+}
+
+### Log in (same response shape as sign-up).
+# @name login
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@example.com",
+  "password": "correct-horse-battery"
+}
+
+@token = {{signup.response.body.$.accessToken}}
+
+### Who am I, including organization memberships.
+GET {{host}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Create an organization; the caller becomes its first Organization Admin.
+# @name createOrganization
+POST {{host}}/api/organizations
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Acme Racing"
+}
+
+@organizationId = {{createOrganization.response.body.$.id}}
+
+### Organizations the caller belongs to.
+GET {{host}}/api/organizations
+Authorization: Bearer {{token}}
+
+### Members of an organization.
+GET {{host}}/api/organizations/{{organizationId}}/members
+Authorization: Bearer {{token}}
+
+### Add an existing user (they must have signed up first).
+POST {{host}}/api/organizations/{{organizationId}}/members
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "email": "contributor@example.com",
+  "role": "contributor"
+}
+
+### Create an embedding model. The id is caller-assigned and must be a UUID; it is stamped as
+### embedding provenance, so it must not change across restarts.
+# @name createModel
+POST {{host}}/api/organizations/{{organizationId}}/models
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "id": "6f1e0a2c-8f2b-4d3a-9c1e-2b7d5a4f8e01",
+  "displayName": "OpenAI embeddings",
+  "name": "text-embedding-3-small",
+  "provider": "openai",
+  "authMode": "managed_identity",
+  "type": ["embedding"],
+  "embeddingDimension": 1536
+}
+
+@modelId = {{createModel.response.body.$.id}}
+
+### Create a chat model. apiKey is required when authMode is "api_key", and is never echoed back -
+### responses expose only hasApiKey.
+POST {{host}}/api/organizations/{{organizationId}}/models
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "id": "a4b9c1d2-3e4f-4a5b-8c6d-7e8f90a1b2c3",
+  "displayName": "Chat model",
+  "name": "gpt-4o",
+  "provider": "openai",
+  "authMode": "api_key",
+  "apiKey": "sk-replace-me",
+  "type": ["thinking"],
+  "reasoningEffort": "medium"
+}
+
+### List the organization's model configs.
+GET {{host}}/api/organizations/{{organizationId}}/models
+Authorization: Bearer {{token}}
+
+### Make a model the organization's active embedding model (Organization Admin only).
+PUT {{host}}/api/organizations/{{organizationId}}/embedding-model
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "modelId": "{{modelId}}"
+}
 
 ###

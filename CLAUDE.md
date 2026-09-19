@@ -892,3 +892,77 @@ uv run --project src/agent-runtime pytest src/agent-runtime/tests
 - Check test files for expected behavior patterns
 - Use `pytest -v` for detailed test output
 - Verify type hints with static checkers if available
+
+## API (`src/api`, .NET)
+
+`src/api` is an ASP.NET Core (net10.0) management API — the `api` service of ADR-0004 — and the first
+writer of the Organization/User/Model tables ADR-0002 Decisions 1–3 call for. It is *not* a Python
+project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two projects:
+`GraphPlatform.Api` (production code) and `GraphPlatform.Api.Tests`.
+
+### Layout and conventions
+- One production project, folder-based layering: `Controllers/`, `Dtos/`, `Data/`, `Models/`,
+  `Services/`, `Extensions/`. All DTOs share the single namespace `GraphPlatform.Api.Dtos` even though
+  the files sit in `Dtos/Auth`, `Dtos/Organizations`, `Dtos/ModelConfigs` — a `Dtos.Models` namespace
+  would make `Models.AuthMode` resolve to the DTO namespace instead of `GraphPlatform.Api.Models`.
+- `Models/` holds EF Core entities, the C# counterpart of Python's `models/`; `Data/AppDbContext.cs`
+  maps them and `Data/Migrations/` holds the single initial migration.
+- DTOs are hand-mapped in `Dtos/DtoMappings.cs` (`ToDto()` extensions) — no mapping library, because a
+  convention-based mapper is exactly how `ModelConfig.ApiKey` would leak onto a response. `ModelDto`
+  exposes only `HasApiKey`.
+- Validation mirrors `common/schemas/model.py`: `IValidatableObject` on `ModelWriteRequest` enforces
+  `auth_mode == api_key` ⇒ `apiKey` required, and `embedding ∈ type` ⇒ `embeddingDimension` required
+  and `reasoningEffort` forbidden. `[ApiController]` turns failures into 400 `ValidationProblemDetails`.
+
+### Shared-database contract with the Python services
+- One PostgreSQL database, two owners: Python's `Base.metadata.create_all` creates
+  `graph_registry`/`node_embedding`/`schema_embedding`; EF creates `organization`, `user_organization`,
+  `model_config` and Identity's `AspNet*` tables. `AppDbContext` deliberately knows nothing about the
+  Python tables, and the migration only ever creates tables.
+- **`organization_id` is a string (`varchar(255)`), never a `Guid`.** Python stores it as
+  `String(255)` and the shipped entrypoints hardcode `DEMO_ORGANIZATION_ID = "demo-org"`, so a `uuid`
+  key could not represent those rows. `ModelConfig.Id` is a string for the same reason (Python
+  documents `Model.id` as "stored as `str`, not `UUID`") while still being validated to parse as a UUID.
+- Enum values are persisted *and* serialized the way Python spells them — lower snake-case (`api_key`,
+  `managed_identity`, `embedding`, `organization_admin`, …). One helper does both: `Data/Converters.cs`'s
+  `SnakeCaseEnum<T>()` plus a global
+  `JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower, allowIntegerValues: false)` in
+  `Program.cs`. A plain `HasConversion<string>()` would silently persist `ApiKey`.
+- `ModelConfig.Type` is a `jsonb` column holding a JSON array, via a string value converter; Npgsql
+  documents a `string` property with `HasColumnType("jsonb")` as a supported mapping.
+- ADR-0002 roles are **per organization**, so they live in `user_organization.Role`, not in ASP.NET
+  Identity roles: the global role entities are removed with explicit `Ignore<IdentityRole>()` /
+  `Ignore<IdentityUserRole<string>>()` / `Ignore<IdentityRoleClaim<string>>()`, which is safe because
+  `AddIdentityCore` without `AddRoles` registers no role store. The JWT carries identity only (`sub`,
+  `email`, `jti`, `iat`, `exp`); the role is re-read from the membership table per request, so a role
+  change takes effect immediately instead of when the token expires.
+- Migrations are never applied automatically (`Database:AutoMigrate` is false even in
+  `appsettings.Development.json`) because the repository-root `.env` points at the shared instance.
+  Apply them deliberately: `dotnet ef database update --project GraphPlatform.Api`.
+- Connection string resolution (`Data/ConnectionStringFactory.cs`) is
+  `ConnectionStrings:GraphPlatform` → `ConnectionStrings:Default` →
+  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, the variables
+  `common/database/connection.py::database_url()` already reads. `Data/DotEnvLoader.cs` loads the
+  nearest `.env` with `NoClobber` and tolerates its absence, since `.env` is gitignored.
+
+### Authorization conventions
+Resolved by `Services/OrganizationAccessService.cs`. A non-member gets **404**, not 403, so the API
+never confirms that an organization the caller cannot see exists; a member lacking the role gets 403.
+Any authenticated user may `POST /api/organizations` (the bootstrap path — the creator becomes its
+first Organization Admin). Creating a model needs Contributor or Admin; choosing the org's active
+embedding model needs Admin (ADR-0002, Decision 3). The last Organization Admin cannot be demoted or
+removed (409), and the active embedding model cannot be deleted (409).
+
+### Testing, and the `dotnet test` gotcha
+- `dotnet test src/api/GraphPlatform.slnx` runs 32 integration tests through `WebApplicationFactory`
+  with the DbContext swapped for in-memory SQLite (`EnsureCreated`, since the Npgsql migration cannot
+  run there) — no PostgreSQL or network needed.
+- Use **xunit 2.x + `Microsoft.NET.Test.Sdk` + `xunit.runner.visualstudio`**. xunit.v3 4.x is
+  Microsoft.Testing.Platform-based, and on .NET 10 the SDK both refuses to drive MTP through VSTest
+  ("Testing with VSTest target is no longer supported ... on .NET 10 SDK and later") and failed the
+  MTP server-mode handshake here (the `global.json` `test.runner` opt-in produced zero tests and exit
+  code 5, with or without `UseMicrosoftTestingPlatformRunner`). The VSTest combination needs no extra
+  configuration.
+- SQLite covers model/DTO/validation/authorization behaviour. Not executed: applying the migration to
+  a live PostgreSQL (no local server was available), so the Npgsql `jsonb` round-trip rests on
+  Npgsql's documented mapping rather than a runtime check.

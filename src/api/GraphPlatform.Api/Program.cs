@@ -1,23 +1,131 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using GraphPlatform.Api.Data;
+using GraphPlatform.Api.Extensions;
+using GraphPlatform.Api.Models;
+using GraphPlatform.Api.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.OpenApi;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+
+// Load the repository-root .env before configuration is read, so the connection string and JWT
+// settings can come from the same gitignored file the Python services read. Its absence is normal on
+// a fresh clone, in which case real environment variables are the source of truth.
+DotEnvLoader.LoadFromAncestors();
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// Fail fast rather than booting an API whose every request would 401 on an unusable token config.
+var jwtOptions =
+    builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+jwtOptions.Validate();
+builder.Services.AddSingleton(jwtOptions);
 
-builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// The connection string is resolved lazily, when a context is first created, so a test host that
+// swaps the provider never needs PostgreSQL credentials to exist.
+builder.Services.AddDbContext<AppDbContext>(
+    (serviceProvider, options) =>
+    {
+        var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+        options.UseNpgsql(
+            ConnectionStringFactory.Resolve(configuration),
+            npgsql => npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)
+        );
+    }
+);
+
+// Identity owns credentials, password hashing and lockout. Per-organization roles deliberately do not
+// use Identity roles — see Models/Enums.cs (OrganizationRole) and Models/UserOrganization.cs.
+builder
+    .Services.AddIdentityCore<AppUser>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+        options.Password.RequiredLength = 8;
+        // Composition rules are deliberately off and length is the control: requiring a digit, mixed
+        // case and a symbol nudges users toward predictable substitutions without adding real
+        // strength. Stating them explicitly (rather than leaving Identity's defaults on) is what makes
+        // this policy readable from the code, and it is why the tests' passphrases are accepted.
+        options.Password.RequireDigit = false;
+        options.Password.RequireLowercase = false;
+        options.Password.RequireUppercase = false;
+        options.Password.RequireNonAlphanumeric = false;
+        options.Lockout.MaxFailedAccessAttempts = 5;
+        options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddSignInManager();
+
+builder
+    .Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        // Keep the token's own claim names ("sub") instead of letting the handler rewrite them to the
+        // long WS-Federation URIs; ApiControllerBase reads "sub".
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwtOptions.SigningKey)
+            ),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
+        };
+    });
+
+builder.Services.AddAuthorization();
+builder.Services.AddScoped<TokenService>();
+builder.Services.AddScoped<OrganizationAccessService>();
+
+builder
+    .Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // Enums travel as lower snake-case strings, matching the Python schemas' values exactly.
+        options.JsonSerializerOptions.Converters.Add(
+            new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower, allowIntegerValues: false)
+        );
+    });
+
+builder.Services.AddOpenApi(options =>
+    options.AddDocumentTransformer<BearerSecuritySchemeTransformer>()
+);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+
+    // Migrations run only when asked for. The API shares its database with the Python services, so
+    // migrating silently on every start is not something to do by default.
+    if (app.Configuration.GetValue("Database:AutoMigrate", false))
+    {
+        using var scope = app.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.MigrateAsync();
+    }
 }
 
 app.UseHttpsRedirection();
 
+// UseAuthentication must precede UseAuthorization: authorization reads the principal that
+// authentication puts on HttpContext.User.
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
 app.Run();
+
+/// <summary>
+/// Entry point marker so the integration tests' <c>WebApplicationFactory&lt;Program&gt;</c> can boot
+/// this host. Top-level statements otherwise produce an internal, unnamed entry point type.
+/// </summary>
+public partial class Program;
