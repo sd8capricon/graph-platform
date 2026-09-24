@@ -1,11 +1,11 @@
 """Narrow async data-access over the ingestion job-state tables.
 
 `IndexJobStore` is the ingestion worker's only window onto the API-owned
-`index_job`/`index_file` tables. Those use SQLAlchemy Core on private metadata;
-the shared `knowledge_base` resource uses the common ORM mapping and returns a
-Pydantic DTO. Every replayable job transition is a guarded `UPDATE` (a `WHERE`
-on the expected current status), so an at-least-once redelivery cannot
-double-apply it.
+`index_job`/`index_file` tables. Those use the worker's declarative ORM models
+on a private base; the shared `knowledge_base` resource uses the common ORM
+mapping and returns a Pydantic DTO. Every replayable job transition is a guarded
+`UPDATE` (a `WHERE` on the expected current status), so an at-least-once
+redelivery cannot double-apply it.
 """
 
 from dataclasses import dataclass
@@ -18,8 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from common.models.knowledge_base import KnowledgeBase
 from common.schemas.knowledge_base import KnowledgeBaseRecordDTO
 
-from ingestion_worker.models.index_file import index_file
-from ingestion_worker.models.index_job import index_job
+from ingestion_worker.models.index_file import IndexFile
+from ingestion_worker.models.index_job import IndexJob
 
 # index_job.status values (ADR-0005)
 JOB_QUEUED = "queued"
@@ -75,9 +75,9 @@ class IndexJobStore:
         use), so this stays functionally testable there.
         """
         stmt = (
-            select(index_job.c.id)
-            .where(index_job.c.status == JOB_QUEUED)
-            .order_by(index_job.c.created_at)
+            select(IndexJob.id)
+            .where(IndexJob.status == JOB_QUEUED)
+            .order_by(IndexJob.created_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
@@ -90,8 +90,8 @@ class IndexJobStore:
         Returns True when this call performed the transition.
         """
         result = await self.session.execute(
-            update(index_job)
-            .where(index_job.c.id == job_id, index_job.c.status == JOB_QUEUED)
+            update(IndexJob)
+            .where(IndexJob.id == job_id, IndexJob.status == JOB_QUEUED)
             .values(status=JOB_RUNNING, started_at=_now())
         )
         return result.rowcount > 0
@@ -99,11 +99,11 @@ class IndexJobStore:
     async def mark_job_completed(self, job_id: str) -> None:
         """Mark a job completed, treating every file as processed."""
         await self.session.execute(
-            update(index_job)
-            .where(index_job.c.id == job_id)
+            update(IndexJob)
+            .where(IndexJob.id == job_id)
             .values(
                 status=JOB_COMPLETED,
-                processed_files=index_job.c.total_files,
+                processed_files=IndexJob.total_files,
                 completed_at=_now(),
             )
         )
@@ -111,8 +111,8 @@ class IndexJobStore:
     async def mark_job_failed(self, job_id: str, error: str) -> None:
         """Mark a job failed with a durable error message."""
         await self.session.execute(
-            update(index_job)
-            .where(index_job.c.id == job_id)
+            update(IndexJob)
+            .where(IndexJob.id == job_id)
             .values(status=JOB_FAILED, error=error, completed_at=_now())
         )
 
@@ -120,28 +120,27 @@ class IndexJobStore:
         """Fetch one job by id, or None when it does not exist."""
         row = (
             await self.session.execute(
-                select(index_job).where(index_job.c.id == job_id)
+                select(IndexJob).where(IndexJob.id == job_id)
             )
-        ).first()
+        ).scalar_one_or_none()
         if row is None:
             return None
-        m = row._mapping
         return IndexJobRow(
-            id=m["id"],
-            organization_id=m["organization_id"],
-            knowledge_base_id=m["knowledge_base_id"],
-            graph_name=m["graph_name"],
-            status=m["status"],
-            total_files=m["total_files"],
-            processed_files=m["processed_files"],
-            failed_files=m["failed_files"],
-            graph_dispatched=bool(m["graph_dispatched"]),
-            embedding_model_id=m["embedding_model_id"],
-            requested_by=m["requested_by"],
-            error=m["error"],
-            created_at=m["created_at"],
-            started_at=m["started_at"],
-            completed_at=m["completed_at"],
+            id=row.id,
+            organization_id=row.organization_id,
+            knowledge_base_id=row.knowledge_base_id,
+            graph_name=row.graph_name,
+            status=row.status,
+            total_files=row.total_files,
+            processed_files=row.processed_files,
+            failed_files=row.failed_files,
+            graph_dispatched=row.graph_dispatched,
+            embedding_model_id=row.embedding_model_id,
+            requested_by=row.requested_by,
+            error=row.error,
+            created_at=row.created_at,
+            started_at=row.started_at,
+            completed_at=row.completed_at,
         )
 
     async def create_file(self, job_id: str, file_id: str) -> str:
@@ -151,7 +150,7 @@ class IndexJobStore:
         """
         row_id = str(uuid4())
         await self.session.execute(
-            insert(index_file).values(
+            insert(IndexFile).values(
                 id=row_id,
                 index_job_id=job_id,
                 file_id=file_id,
@@ -160,9 +159,9 @@ class IndexJobStore:
             )
         )
         await self.session.execute(
-            update(index_job)
-            .where(index_job.c.id == job_id)
-            .values(total_files=index_job.c.total_files + 1)
+            update(IndexJob)
+            .where(IndexJob.id == job_id)
+            .values(total_files=IndexJob.total_files + 1)
         )
         return row_id
 
@@ -174,31 +173,31 @@ class IndexJobStore:
         """
         row = (
             await self.session.execute(
-                select(index_file.c.id).where(
-                    index_file.c.index_job_id == job_id,
-                    index_file.c.file_id == file_id,
+                select(IndexFile.id).where(
+                    IndexFile.index_job_id == job_id,
+                    IndexFile.file_id == file_id,
                 )
             )
-        ).first()
-        return row[0] if row is not None else None
+        ).scalars().first()
+        return row
 
     async def mark_file_extracted(self, file_row_id: str) -> None:
         """Move a file row to `extracted`."""
         await self.session.execute(
-            update(index_file)
-            .where(index_file.c.id == file_row_id)
+            update(IndexFile)
+            .where(IndexFile.id == file_row_id)
             .values(status=FILE_EXTRACTED, completed_at=_now())
         )
 
     async def mark_file_failed(self, file_row_id: str, error: str) -> None:
         """Move a file row to `failed`, incrementing its attempt count."""
         await self.session.execute(
-            update(index_file)
-            .where(index_file.c.id == file_row_id)
+            update(IndexFile)
+            .where(IndexFile.id == file_row_id)
             .values(
                 status=FILE_FAILED,
                 error=error,
-                attempts=index_file.c.attempts + 1,
+                attempts=IndexFile.attempts + 1,
                 completed_at=_now(),
             )
         )
@@ -213,17 +212,17 @@ class IndexJobStore:
         safe under redelivery (ADR-0005, "Fan-out and fan-in").
         """
         await self.session.execute(
-            update(index_job)
-            .where(index_job.c.id == job_id)
-            .values(processed_files=index_job.c.processed_files + 1)
+            update(IndexJob)
+            .where(IndexJob.id == job_id)
+            .values(processed_files=IndexJob.processed_files + 1)
         )
         result = await self.session.execute(
-            update(index_job)
+            update(IndexJob)
             .where(
-                index_job.c.id == job_id,
-                index_job.c.graph_dispatched.is_(False),
-                index_job.c.processed_files + index_job.c.failed_files
-                >= index_job.c.total_files,
+                IndexJob.id == job_id,
+                IndexJob.graph_dispatched.is_(False),
+                IndexJob.processed_files + IndexJob.failed_files
+                >= IndexJob.total_files,
             )
             .values(graph_dispatched=True)
         )

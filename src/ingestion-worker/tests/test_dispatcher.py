@@ -2,13 +2,13 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from ingestion_worker.dispatcher import dispatch_queued_jobs
 from ingestion_worker.job_store import IndexJobStore
 from ingestion_worker.models.base import create_job_tables
-from ingestion_worker.models.index_job import index_job
+from ingestion_worker.models.index_job import IndexJob
 
 
 async def _engine():
@@ -22,7 +22,7 @@ async def _engine():
 
 async def _insert_job(session, job_id, status="queued"):
     await session.execute(
-        index_job.insert().values(
+        insert(IndexJob).values(
             id=job_id,
             organization_id="org-1",
             knowledge_base_id=f"kb-{job_id}",

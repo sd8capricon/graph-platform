@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from sqlalchemy import insert
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -14,7 +15,7 @@ from ingestion_worker.job_store import (
     IndexJobStore,
 )
 from ingestion_worker.models.base import create_job_tables
-from ingestion_worker.models.index_job import index_job
+from ingestion_worker.models.index_job import IndexJob
 
 knowledge_base = KnowledgeBase.__table__
 
@@ -42,7 +43,7 @@ async def _insert_job(session, **overrides):
         "created_at": datetime.now(UTC),
     }
     values.update(overrides)
-    await session.execute(index_job.insert().values(**values))
+    await session.execute(insert(IndexJob).values(**values))
     await session.commit()
 
 

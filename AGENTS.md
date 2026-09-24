@@ -440,10 +440,10 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   the source of truth). No result backend (`task_ignore_result=True`) and no Redis; the pipeline
   never reads Celery return values. Fan-in is a guarded Postgres counter, **not** Celery chords
 - `index_job`/`index_file` are API-owned DDL (EF migration), written by the Python worker through
-  `ingestion_worker.job_store.IndexJobStore` using SQLAlchemy **Core** on a private `IndexJobMetadata`
-  (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` — so `create_all`
-  never touches the API's tables. Their Core `Table`s live under `ingestion_worker/models/`, one
-  module per table. The shared API-owned `knowledge_base` table mapping lives at
+  `ingestion_worker.job_store.IndexJobStore` using declarative ORM classes on private
+  `IndexJobBase` (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` —
+  so `create_all` never touches the API's tables. `IndexJob` and `IndexFile` live under
+  `ingestion_worker/models/`, one class per model. The shared API-owned `knowledge_base` table mapping lives at
   `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads its
   `Data` graph JSON as `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same
   mapped model
@@ -454,7 +454,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   (`ingestion_worker/dispatcher.py`) claims it with `FOR UPDATE SKIP LOCKED` + a guarded
   `queued -> running` transition, commits, then publishes the task. Commit-before-publish means a
   crash leaves the job `running` for a future reconciler rather than losing it
-- Worker modules: `models/` (Core job-table definitions) + `job_store.py` (`IndexJobStore`),
+- Worker modules: `models/` (`IndexJob`/`IndexFile` ORM classes) + `job_store.py` (`IndexJobStore`),
   `celery_app.py` (app + `ingestion` topic exchange, per-stage `q.<stage>`, `q.<stage>.retry` and
   `q.<stage>.dlq`; Phase 1 routes the combined task to `q.ontology`), `tasks.py`
   (`ingest_knowledge_base_task`; sync wrapper over `asyncio.run`, `autoretry_for` the retryable error,
@@ -803,8 +803,8 @@ shared library resolve through a path dependency (`common` in `[project.dependen
 - `src/ingestion-worker/src/ingestion_worker/` - ingestion import package (`celery_app.py`,
   `tasks.py`, `dispatcher.py`, `jobs.py`, `errors.py`, `db.py`, `config.py`, the `ingestion/`
   write path, and the legacy `run()`/`main()` demo)
-- `src/ingestion-worker/src/ingestion_worker/models/` - Core `Table` definitions for the API-owned
-  `index_job`/`index_file` tables (one module per table, on a private `IndexJobMetadata`);
+- `src/ingestion-worker/src/ingestion_worker/models/` - declarative ORM classes for the API-owned
+  `index_job`/`index_file` tables (one model per module, on a private `IndexJobBase`);
   the shared `knowledge_base` ORM mapping is `common.models.knowledge_base.KnowledgeBase`;
   `ingestion_worker/job_store.py` holds `IndexJobStore`
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service
@@ -813,6 +813,8 @@ shared library resolve through a path dependency (`common` in `[project.dependen
   model (`KnowledgeBaseRecordDTO`, `GraphSchemaRegistryDTO`, `NodeEmbeddingDTO`, `SchemaEmbeddingDTO`)
 - `src/ingestion-worker/tests/test_job_store.py` - test suite for `IndexJobStore` (guarded
   transitions, fan-in gate, KB read/state, `FOR UPDATE SKIP LOCKED` compiled SQL)
+- `src/ingestion-worker/tests/test_models.py` - verifies class-based worker ORM mappings and
+  private metadata ownership
 - `tests/test_age_graph_repository_merge.py` - test suite for the idempotent `merge_node`/
   `merge_relationship` Cypher
 - `src/ingestion-worker/tests/test_ingestion.py` - test suite for the worker's extraction, writer,

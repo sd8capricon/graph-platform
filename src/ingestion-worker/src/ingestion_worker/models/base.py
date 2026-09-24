@@ -1,14 +1,18 @@
-"""Private metadata for the ingestion job-state tables.
+"""Private declarative base for the ingestion job-state models.
 
-It is a dedicated `MetaData`, never `Base.metadata`, so the Python services'
-`Base.metadata.create_all` never creates, alters or drops the API-owned
-`index_job`/`index_file` tables. The shared `knowledge_base` mapping lives in
-`common.models.knowledge_base` on its own API-owned metadata for the same reason.
+It is separate from both `common.models.base.Base` and
+`common.models.base.ApiOwnedBase`, so `Base.metadata.create_all()` only creates
+Python-owned shared tables. The API owns DDL for `index_job`/`index_file` and
+`knowledge_base`; the worker's class mappings only describe those tables.
 """
 
-from sqlalchemy import MetaData
+from sqlalchemy.orm import DeclarativeBase
 
-IndexJobMetadata = MetaData()
+
+class IndexJobBase(DeclarativeBase):
+    """Declarative base for API-owned ingestion job-state tables."""
+
+    pass
 
 
 def create_job_tables(bind, *, include_knowledge_base: bool = False) -> None:
@@ -20,15 +24,14 @@ def create_job_tables(bind, *, include_knowledge_base: bool = False) -> None:
     API-owned `knowledge_base` table. For an async engine, call it via
     `await conn.run_sync(lambda c: create_job_tables(c, ...))`.
     """
-    from ingestion_worker.models.index_file import index_file  # noqa: F401
-    from ingestion_worker.models.index_job import index_job
+    from ingestion_worker.models.index_file import IndexFile  # noqa: F401
+    from ingestion_worker.models.index_job import IndexJob  # noqa: F401
 
-    tables = [index_job, index_file]
-    IndexJobMetadata.create_all(bind, tables=tables)
+    IndexJobBase.metadata.create_all(bind)
     if include_knowledge_base:
         from common.models.knowledge_base import KnowledgeBase
 
         KnowledgeBase.metadata.create_all(bind, tables=[KnowledgeBase.__table__])
 
 
-__all__ = ["IndexJobMetadata", "create_job_tables"]
+__all__ = ["IndexJobBase", "create_job_tables"]

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from common.models.base import Base
@@ -16,8 +16,8 @@ from ingestion_worker.errors import NonRetryableIngestionError
 from ingestion_worker.job_store import IndexJobStore
 from ingestion_worker.jobs import ingest_job
 from ingestion_worker.models.base import create_job_tables
-from ingestion_worker.models.index_file import index_file
-from ingestion_worker.models.index_job import index_job
+from ingestion_worker.models.index_file import IndexFile
+from ingestion_worker.models.index_job import IndexJob
 
 knowledge_base = KnowledgeBaseRecord.__table__
 
@@ -96,7 +96,7 @@ async def _seed_job(session, *, knowledge_base_id="kb-1", job_id="job-1"):
         )
     )
     await session.execute(
-        index_job.insert().values(
+        insert(IndexJob).values(
             id=job_id,
             organization_id="org-1",
             knowledge_base_id=knowledge_base_id,
@@ -130,9 +130,9 @@ async def test_ingest_job_completes_and_publishes_the_knowledge_base():
         assert kb is not None
         assert kb.state == "published"
 
-        file_rows = (await session.execute(select(index_file))).all()
+        file_rows = (await session.execute(select(IndexFile))).scalars().all()
         assert len(file_rows) == 1
-        assert file_rows[0]._mapping["status"] == "extracted"
+        assert file_rows[0].status == "extracted"
 
         assert len((await session.execute(select(GraphSchemaRegistry))).scalars().all()) == 1
         assert len((await session.execute(select(NodeEmbedding))).scalars().all()) == 1
@@ -152,7 +152,7 @@ async def test_ingest_job_reuses_file_row_and_skips_when_completed():
         await ingest_job("job-1", session, repository)
 
         assert repository.commits == commits_after_first
-        file_rows = (await session.execute(select(index_file))).all()
+        file_rows = (await session.execute(select(IndexFile))).scalars().all()
         assert len(file_rows) == 1
 
     await engine.dispose()
@@ -177,7 +177,7 @@ async def test_ingest_job_raises_non_retryable_when_knowledge_base_missing():
     async with AsyncSession(engine) as session:
         now = datetime.now(UTC)
         await session.execute(
-            index_job.insert().values(
+            insert(IndexJob).values(
                 id="job-1",
                 organization_id="org-1",
                 knowledge_base_id="missing",
