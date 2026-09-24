@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from common.models.knowledge_base import KnowledgeBase
+
 from ingestion_worker.job_store import (
     JOB_COMPLETED,
     JOB_RUNNING,
@@ -12,7 +14,8 @@ from ingestion_worker.job_store import (
 )
 from ingestion_worker.models.base import create_job_tables
 from ingestion_worker.models.index_job import index_job
-from ingestion_worker.models.knowledge_base import knowledge_base
+
+knowledge_base = KnowledgeBase.__table__
 
 
 async def _store_engine(**kwargs):

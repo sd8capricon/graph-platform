@@ -1,6 +1,6 @@
 # Agent Customization for graphrag-apacheage
 
-> **Sync note:** This file and `AGENTS.md` must stay identical. Edit one, copy change to other, same commit.
+> **Sync note:** This file and its counterpart must stay identical. Edit one, copy change to the other, same commit.
 > **Keep current:** When you learn new patterns, conventions, or gotchas during work, add them to both files, same commit. Don't let docs drift from code.
 
 ## Project Overview
@@ -19,7 +19,7 @@ services do not import each other.
 
 | Project | Import package | Owns |
 |---|---|---|
-| `src/common` | `common` | Configuration, domain schemas, ORM models, repositories, `EmbeddingService`, index DDL, and the `api/` placeholder |
+| `src/common` | `common` | Configuration, domain schemas, shared ORM models, repositories, `EmbeddingService`, index DDL, and the `api/` placeholder |
 | `src/agent-runtime` | `agent_runtime` | Agent tools, prompt, `AgentContext`, serializers, and the deep/react agent assembly |
 | `src/ingestion-worker` | `ingestion_worker` | The ingestion write path (idempotent graph `MERGE` + schema-registry/node-embedding upserts), the Celery app/tasks, the job dispatcher, and the legacy one-shot demo |
 
@@ -70,7 +70,15 @@ the worker (ADR-0005).
      (`config.py`) owns file reading, and the config file is parsed exactly once.
 
 2. **Models** (`src/common/src/common/models/`)
-   - `Base` (`models/base.py`): shared SQLAlchemy `DeclarativeBase` for all ORM models
+   - `Base` (`models/base.py`): SQLAlchemy `DeclarativeBase` for Python-owned ORM tables
+   - `ApiOwnedBase` (`models/base.py`): separate metadata for ORM mappings of tables whose DDL
+     belongs to the management API; `create_all()` on `Base.metadata` does not include these
+   - `KnowledgeBase` (`models/knowledge_base.py`): shared ORM mapping of the management API's
+     `knowledge_base` resource table. It uses `ApiOwnedBase` metadata rather than `Base.metadata`,
+     because EF owns the table's DDL and Python `create_all()` must not create it. Its PascalCase
+     column names mirror the API migration; `job_store.py` uses its `__table__` for worker reads
+     and lifecycle-state updates. This is separate from `schemas.knowledge_base.KnowledgeBase`, the
+     graph payload model
    - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions
    - Stores: graph name, knowledge base IDs (list; a label may come from multiple knowledge bases), entity type, name, description, aliases, properties, source/target labels
    - Read methods: `vector_search()` (cosine-similarity search) and `get_properties_by_name()`. The upsert/merge write path is ingestion-only and lives in the worker as `ingestion_worker.ingestion.writer.upsert_schema_registry()`
@@ -418,10 +426,10 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - `index_job`/`index_file` are API-owned DDL (EF migration), written by the Python worker through
   `ingestion_worker.job_store.IndexJobStore` using SQLAlchemy **Core** on a private `IndexJobMetadata`
   (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` — so `create_all`
-  never touches the API's tables. The Core `Table`s live under `ingestion_worker/models/`, one module
-  per table (`index_job.py`, `index_file.py`, and a read-only `knowledge_base.py`), mirroring the
-  `common/models/` layout. The worker reads `knowledge_base.Data` (the graph JSON) by id through the
-  same store
+  never touches the API's tables. Their Core `Table`s live under `ingestion_worker/models/`, one
+  module per table. The shared API-owned `knowledge_base` table mapping lives at
+  `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads its
+  `Data` graph JSON and updates its lifecycle `State` through the same store
 - The API never calls a worker: it writes a `queued` job row, and the Celery Beat **dispatcher**
   (`ingestion_worker/dispatcher.py`) claims it with `FOR UPDATE SKIP LOCKED` + a guarded
   `queued -> running` transition, commits, then publishes the task. Commit-before-publish means a
@@ -774,8 +782,9 @@ shared library resolve through a path dependency (`common` in `[project.dependen
   `tasks.py`, `dispatcher.py`, `jobs.py`, `errors.py`, `db.py`, `config.py`, the `ingestion/`
   write path, and the legacy `run()`/`main()` demo)
 - `src/ingestion-worker/src/ingestion_worker/models/` - Core `Table` definitions for the API-owned
-  `index_job`/`index_file`/`knowledge_base` tables (one module per table, on a private
-  `IndexJobMetadata`); `ingestion_worker/job_store.py` holds `IndexJobStore`
+  `index_job`/`index_file` tables (one module per table, on a private `IndexJobMetadata`);
+  the shared `knowledge_base` ORM mapping is `common.models.knowledge_base.KnowledgeBase`;
+  `ingestion_worker/job_store.py` holds `IndexJobStore`
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service
   behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
 - `src/ingestion-worker/tests/test_job_store.py` - test suite for `IndexJobStore` (guarded
@@ -790,6 +799,8 @@ shared library resolve through a path dependency (`common` in `[project.dependen
 - `src/ingestion-worker/tests/test_celery_app.py` / `test_errors.py` - Celery topology/config and
   retryable/non-retryable error classification
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
+- `tests/test_knowledge_base_model.py` - verifies the shared API-owned `KnowledgeBase` mapping and
+  that it stays outside `Base.metadata`
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`

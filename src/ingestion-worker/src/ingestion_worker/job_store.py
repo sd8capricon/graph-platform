@@ -15,9 +15,12 @@ from uuid import uuid4
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from common.models.knowledge_base import KnowledgeBase
+
 from ingestion_worker.models.index_file import index_file
 from ingestion_worker.models.index_job import index_job
-from ingestion_worker.models.knowledge_base import knowledge_base
+
+knowledge_base = KnowledgeBase.__table__
 
 # index_job.status values (ADR-0005)
 JOB_QUEUED = "queued"

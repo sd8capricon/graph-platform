@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from common.models.base import Base
 from common.models.graph_schema_registry import GraphSchemaRegistry
+from common.models.knowledge_base import KnowledgeBase as KnowledgeBaseRecord
 from common.models.node_embedding import NodeEmbedding
 from common.schemas.knowledge_base import KnowledgeBase
 
@@ -17,7 +18,8 @@ from ingestion_worker.jobs import ingest_job
 from ingestion_worker.models.base import create_job_tables
 from ingestion_worker.models.index_file import index_file
 from ingestion_worker.models.index_job import index_job
-from ingestion_worker.models.knowledge_base import knowledge_base
+
+knowledge_base = KnowledgeBaseRecord.__table__
 
 
 def _demo_knowledge_base(kb_id: str = "kb-1") -> KnowledgeBase:
