@@ -263,6 +263,47 @@ class AgeGraphRepository:
         await cursor.execute(query)
         return query
 
+    async def merge_node(
+        self, graph_name: str, label: str, properties: dict[str, Any]
+    ) -> str:
+        """Idempotently create-or-update a node, keyed on its `id` property.
+
+        `create_node()` always issues a bare `CREATE`, so re-running it (e.g. an
+        at-least-once Celery redelivery) duplicates the node. `MERGE` on the
+        app-level `id` property makes the write repeatable: the first call
+        creates the node, later calls match it and merge the supplied properties
+        into it. This is the write path the ingestion pipeline needs before any
+        retry can be enabled (see ADR-0005's "Idempotency" section).
+
+        Args:
+            graph_name: The name of the graph.
+            label: The label (type) of the node. Must be a valid identifier.
+            properties: A dictionary of node properties. Must contain a non-empty
+                `id`, since that is the merge key.
+
+        Returns:
+            The SQL query string that was executed.
+
+        Raises:
+            ValueError: If `label` is not a valid identifier, or `properties` has
+                no `id` (a `MERGE` on a label alone would match every node of the
+                label rather than one node).
+        """
+        self._validate_label(label)
+        node_id = properties.get("id")
+        if not node_id:
+            raise ValueError("merge_node requires an 'id' property to merge on")
+        identity_literal = self._age_properties_literal({"id": node_id})
+        props_literal = self._age_properties_literal(properties)
+        query = (
+            f"SELECT * FROM cypher('{graph_name}', $$ "
+            f"MERGE (n:{label}{identity_literal}) SET n = n + {props_literal} "
+            "RETURN n $$) AS (n agtype);"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
+        return query
+
     async def update_node(
         self, graph_name: str, node_id: str, properties: dict[str, Any]
     ) -> str:
@@ -601,6 +642,55 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}}), '
             f'(b {{id:"{target_node_id}"}}) CREATE (a)-[:{label}{properties_literal}]->(b) '
             "RETURN a, b $$) AS (a agtype, b agtype);"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
+        return query
+
+    async def merge_relationship(
+        self,
+        graph_name: str,
+        source_node_id: str,
+        target_node_id: str,
+        label: str,
+        properties: dict[str, Any] | None = None,
+    ) -> str:
+        """Idempotently create-or-update a relationship between two nodes.
+
+        `create_relationship()` always issues a bare `CREATE`, so a retry
+        duplicates the edge. `MERGE` makes it repeatable. Apache Age is a
+        multigraph, so the merge key is the relationship's own
+        `relationship_id` property when one is supplied (letting two legitimate
+        parallel edges of the same type between the same pair survive); without
+        one it falls back to matching on the type alone, which collapses
+        parallel edges to a single edge.
+
+        Args:
+            graph_name: The name of the graph.
+            source_node_id: The `id` property of the source node.
+            target_node_id: The `id` property of the target node.
+            label: The label (type) of the relationship. Must be a valid identifier.
+            properties: Optional dictionary of relationship properties. When it
+                contains `relationship_id`, that is used as the merge key.
+
+        Returns:
+            The SQL query string that was executed.
+
+        Raises:
+            ValueError: If `label` is not a valid identifier.
+        """
+        self._validate_label(label)
+        properties = properties or {}
+        identity: dict[str, Any] = {}
+        if properties.get("relationship_id"):
+            identity["relationship_id"] = properties["relationship_id"]
+        identity_literal = self._age_properties_literal(identity)
+        props_literal = self._age_properties_literal(properties)
+        query = (
+            f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}}), '
+            f'(b {{id:"{target_node_id}"}}) '
+            f"MERGE (a)-[r:{label}{identity_literal}]->(b) "
+            f"SET r = r + {props_literal} RETURN r $$) AS (r agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)

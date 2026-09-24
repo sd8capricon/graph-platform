@@ -1,10 +1,16 @@
 """Ingestion worker entrypoint: read a knowledge base and write it to the graph.
 
-Owns the ingestion workload of ADR-0004: `KnowledgeBase.from_json_file()` plus
-`KnowledgeBaseService.upsert_knowledge_base()`, i.e. the graph write, the schema
-registry write and the node-embedding write. The shared pieces it drives -
-schemas, ORM models, the repository and the service - live in the `common`
-project and are imported from there.
+Two ways to run it:
+
+- The legacy one-shot demo: `ingestion-worker` (or `python -m ingestion_worker`)
+  reads a JSON file path from `DEMO_KNOWLEDGE_BASE_PATH` and ingests it once.
+- The Celery pipeline: `celery -A ingestion_worker.celery_app worker` and
+  `celery -A ingestion_worker.celery_app beat`. The dispatcher claims queued
+  `index_job` rows and the task runs the idempotent graph + side-table write,
+  recording status back to `index_job`/`index_file` (ADR-0005).
+
+The ingestion write logic lives in `ingestion_worker.ingestion`; the shared
+schemas, ORM reads, repository and `EmbeddingService` come from `common`.
 """
 
 import asyncio
@@ -16,12 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from common.config import load_config, settings
 from common.database.connection import create_connection, database_url
 from common.models import graph_schema_registry  # noqa: F401
-from common.models import node_embedding, schema_embedding
+from common.models import node_embedding, schema_embedding  # noqa: F401
 from common.models.base import Base
 from common.repositories.age_graph_repository import AgeGraphRepository
 from common.schemas.knowledge_base import KnowledgeBase
 from common.schemas.model import Model, ModelType
 from common.services.knowledge_base_service import KnowledgeBaseService
+
+from ingestion_worker.pipeline import ingest_knowledge_base
 
 load_dotenv()
 
@@ -44,19 +52,15 @@ async def create_knowledge_base(
     """Ingest the demo knowledge base into the graph and both side-tables.
 
     Creates the graph if it does not exist (a no-op when it does), then calls
-    `KnowledgeBaseService.upsert_knowledge_base()` - the single call that writes
-    the graph, the schema registry and the node embeddings - and commits the
-    SQLAlchemy session, which the service deliberately leaves to its caller.
-
-    Args:
-        repository: The Apache Age repository the graph writes go through.
-        session: The SQLAlchemy session the side-table writes go through.
+    the worker's `ingest_knowledge_base()` - the single call that merges the
+    graph, the schema registry and the node embeddings - and commits the
+    SQLAlchemy session, which the pipeline deliberately leaves to its caller.
     """
     knowledge_base = KnowledgeBase.from_json_file(DEMO_KNOWLEDGE_BASE_PATH)
-    knowledge_base_service = KnowledgeBaseService(repository)
-    await knowledge_base_service.create_graph(DEMO_GRAPH_NAME)
-    await knowledge_base_service.upsert_knowledge_base(
+    await KnowledgeBaseService(repository).create_graph(DEMO_GRAPH_NAME)
+    await ingest_knowledge_base(
         session,
+        repository,
         knowledge_base,
         DEMO_GRAPH_NAME,
         DEMO_ORGANIZATION_ID,
@@ -78,9 +82,6 @@ async def run() -> None:
     age_repository = AgeGraphRepository(pg_connection)
     engine = create_async_engine(database_url())
     try:
-        # The tables must exist before the graph is dropped: dropping it also
-        # clears the graph's side-table rows, which would otherwise be left
-        # orphaned from the previous run.
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         async with AsyncSession(engine) as session:
@@ -96,11 +97,6 @@ async def run() -> None:
                     session, model
                 )
                 await session.commit()
-            # SETUP KB
-            # await KnowledgeBaseService(age_repository).delete_graph(
-            #     session, DEMO_GRAPH_NAME, DEMO_ORGANIZATION_ID
-            # )
-            # await session.commit()
             await create_knowledge_base(age_repository, session)
     finally:
         await engine.dispose()

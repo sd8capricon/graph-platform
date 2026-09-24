@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "celery>=5.5",
     "common",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.2.3",
@@ -17,8 +18,18 @@ dependencies = [
 [project.scripts]
 ingestion-worker = "ingestion_worker:main"
 
+[dependency-groups]
+dev = [
+    "aiosqlite",
+    "pytest",
+    "pytest-asyncio",
+]
+
 [tool.uv.sources]
 common = { path = "../common", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]

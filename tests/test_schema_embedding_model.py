@@ -84,17 +84,6 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async def fake_compute(model, texts):
-        return [[0.1, 0.2, 0.3] for _ in texts] if texts else None
-
-    import common.models.graph_schema_registry as gsr_mod
-
-    class FakeModel:
-        id = "text-embedding-3-small"
-        identifier = "openai/text-embedding-3-small"
-
-    gsr_mod.EmbeddingService.compute_embeddings = staticmethod(fake_compute)
-
     async with AsyncSession(engine) as session:
         record = GraphSchemaRegistry(
             organization_id="org-1",
@@ -106,7 +95,12 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
             aliases=[],
             properties=[],
         )
-        await GraphSchemaRegistry.upsert_records(session, [record], model=FakeModel())
+        record.embedding_row = SchemaEmbedding(
+            organization_id="org-1",
+            embedding_model_id="text-embedding-3-small",
+            embedding=[0.1, 0.2, 0.3],
+        )
+        session.add(record)
         await session.commit()
 
     async with AsyncSession(engine) as session:
@@ -124,53 +118,3 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
         assert remaining == []
 
 
-async def test_upsert_records_keeps_separate_embedding_rows_per_organization():
-    # Mirrors NodeEmbedding's equivalent test: two organizations sharing a
-    # graph_name/type/name must not collide into one shared SchemaEmbedding row.
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async def fake_compute(model, texts):
-        return [[0.1, 0.2, 0.3] for _ in texts] if texts else None
-
-    import common.models.graph_schema_registry as gsr_mod
-
-    class FakeModel:
-        id = "text-embedding-3-small"
-        identifier = "openai/text-embedding-3-small"
-
-    gsr_mod.EmbeddingService.compute_embeddings = staticmethod(fake_compute)
-
-    def _driver(organization_id: str) -> GraphSchemaRegistry:
-        return GraphSchemaRegistry(
-            organization_id=organization_id,
-            graph_name="demo",
-            knowledge_base_ids=["kb-1"],
-            type=SchemaType.NODE,
-            name="Driver",
-            description="A racer",
-            aliases=[],
-            properties=[],
-        )
-
-    async with AsyncSession(engine) as session:
-        await GraphSchemaRegistry.upsert_records(
-            session, [_driver("org-1")], model=FakeModel()
-        )
-        await session.commit()
-
-        await GraphSchemaRegistry.upsert_records(
-            session, [_driver("org-2")], model=FakeModel()
-        )
-        await session.commit()
-
-        registry_rows = (
-            (await session.execute(select(GraphSchemaRegistry))).scalars().all()
-        )
-        embedding_rows = (await session.execute(select(SchemaEmbedding))).scalars().all()
-
-    assert len(registry_rows) == 2
-    assert {row.organization_id for row in registry_rows} == {"org-1", "org-2"}
-    assert len(embedding_rows) == 2
-    assert {row.organization_id for row in embedding_rows} == {"org-1", "org-2"}

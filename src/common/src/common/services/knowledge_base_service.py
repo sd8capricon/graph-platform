@@ -5,16 +5,17 @@ from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
 from common.models.schema_embedding import SchemaEmbedding
 from common.repositories.age_graph_repository import AgeGraphRepository
-from common.schemas.knowledge_base import KnowledgeBase
 from common.schemas.model import Model
 
 
 class KnowledgeBaseService:
-    """Service for managing knowledge base operations with Apache Age graph database.
+    """Lifecycle operations for a knowledge base in an Apache Age graph.
 
-    This service provides high-level operations for upserting and deleting knowledge
-    bases (nodes and relationships) in an Apache Age graph database, keeping the
-    `GraphSchemaRegistry` and `NodeEmbedding` side-tables in sync with the graph.
+    Owns creating and deleting a graph and a knowledge base's claim on it,
+    keeping the `GraphSchemaRegistry` and `NodeEmbedding` side-tables in sync.
+    The *write* paths (upserting a knowledge base, its schema registry rows and
+    its node embeddings) are ingestion-only and live in the ingestion worker
+    (ADR-0004 Decision 4); this service keeps only the shared lifecycle.
     """
 
     def __init__(self, repository: AgeGraphRepository):
@@ -25,99 +26,6 @@ class KnowledgeBaseService:
         """
         self.repository = repository
 
-    async def upsert_knowledge_base(
-        self,
-        session: AsyncSession,
-        knowledge_base: KnowledgeBase,
-        graph_name: str,
-        organization_id: str,
-        model: Model | None = None,
-    ) -> list[str]:
-        """Upsert a knowledge base into the Apache Age graph and its side-tables.
-
-        Performs the full ingestion of one knowledge base into one graph:
-
-        1. Inserts all nodes and relationships into the Apache Age graph (which
-           must already exist) and commits the graph connection.
-        2. Upserts the knowledge base's schema definitions into
-           `GraphSchemaRegistry`, merging with any definitions already contributed
-           by other knowledge bases feeding the same graph.
-        3. Upserts one `NodeEmbedding` row per node.
-
-        Steps 2 and 3 are flushed but not committed — committing `session` is the
-        caller's responsibility, so graph writes and side-table writes can be
-        reconciled by the caller.
-
-        Args:
-            session: SQLAlchemy async session used to persist the schema registry
-                records and node embeddings.
-            knowledge_base: The KnowledgeBase instance containing nodes and relationships.
-            graph_name: The name of the target Apache Age graph. Required.
-            organization_id: Id of the organization this graph belongs to (see
-                ADR-0002, Decision 1). Stamped onto every schema registry and node
-                embedding row written.
-            model: The embedding provider configuration used to embed the schema
-                registry records and node embeddings. If None, embedding computation
-                is skipped and rows are stored without an embedding.
-
-        Returns:
-            A list of SQL queries that were executed against the Apache Age graph.
-
-        Raises:
-            ValueError: If graph_name is not provided, if the graph does not exist
-                in the database, or if the knowledge base has no id.
-        """
-        if not graph_name:
-            raise ValueError(
-                "graph_name is required when upserting knowledge base to Apache Age graph"
-            )
-
-        if not await self.repository.graph_exists(graph_name):
-            raise ValueError(
-                f"Apache Age graph '{graph_name}' does not exist in the database"
-            )
-
-        queries: list[str] = []
-
-        for label in dict.fromkeys(node.label for node in knowledge_base.nodes):
-            await self.repository.ensure_vertex_label(graph_name, label)
-        for label in dict.fromkeys(
-            relationship.label for relationship in knowledge_base.relationships
-        ):
-            await self.repository.ensure_edge_label(graph_name, label)
-
-        for node in knowledge_base.nodes:
-            node_properties = dict(node.properties)
-            if node.id is not None:
-                node_properties["id"] = node.id
-            queries.append(
-                await self.repository.create_node(
-                    graph_name, node.label, node_properties
-                )
-            )
-
-        for relationship in knowledge_base.relationships:
-            queries.append(
-                await self.repository.create_relationship(
-                    graph_name,
-                    relationship.source_id,
-                    relationship.target_id,
-                    relationship.label,
-                    relationship.properties,
-                )
-            )
-
-        await self.repository.commit()
-
-        await self.upsert_graph_schema_registry(
-            session, knowledge_base, graph_name, organization_id, model=model
-        )
-        await self.upsert_node_embeddings(
-            session, knowledge_base, graph_name, organization_id, model=model
-        )
-
-        return queries
-
     async def delete_knowledge_base(
         self,
         session: AsyncSession,
@@ -127,24 +35,24 @@ class KnowledgeBaseService:
     ) -> list[str]:
         """Delete a knowledge base from the Apache Age graph and its side-tables.
 
-        The inverse of `upsert_knowledge_base()`:
+        The inverse of the worker's ingestion write:
 
         1. Deletes every node this knowledge base contributed to the graph, via
            `DETACH DELETE`, so the relationships attached to those nodes go with
            them. The node ids are read from the knowledge base's `NodeEmbedding`
-           rows, which are this service's record of what it wrote to the graph.
+           rows, which are the record of what was written to the graph.
         2. Deletes the knowledge base's `NodeEmbedding` rows.
         3. Adjusts `GraphSchemaRegistry`: drops this knowledge base's id from every
            schema row it contributed to, and deletes the rows left with no
            contributing knowledge base. Rows still claimed by another knowledge base
            are kept, since the same label may be defined by several knowledge bases
            feeding one graph. Note that such a surviving row keeps any aliases and
-           properties this knowledge base contributed — they were merged in on
+           properties this knowledge base contributed - they were merged in on
            upsert and cannot be attributed back to a single knowledge base. Re-upsert
            the remaining knowledge bases if an exact schema is needed.
 
-        As in `upsert_knowledge_base()`, the graph connection is committed but
-        `session` is not — committing it is the caller's responsibility.
+        The graph connection is committed but `session` is not - committing it is
+        the caller's responsibility.
 
         Args:
             session: SQLAlchemy async session used to read and delete the side-table rows.
@@ -217,7 +125,7 @@ class KnowledgeBaseService:
         repository calls. Takes no `session`: a brand new graph has no side-table
         rows, so there is nothing to create alongside it. (If a graph name is being
         *reused* after being dropped outside this service, call `delete_graph()`
-        first — it tolerates a missing graph and clears any orphaned rows.)
+        first - it tolerates a missing graph and clears any orphaned rows.)
 
         Args:
             graph_name: The name of the Apache Age graph to create. Required.
@@ -262,11 +170,11 @@ class KnowledgeBaseService:
 
         A missing graph is not an error. Dropping a graph is precisely the case
         that leaves the side-tables orphaned, so the rows are cleaned up either
-        way — refusing when the graph is already gone would make that orphaned
+        way - refusing when the graph is already gone would make that orphaned
         state unfixable through this API.
 
         As in `delete_knowledge_base()`, the graph connection is committed but
-        `session` is not — committing it is the caller's responsibility.
+        `session` is not - committing it is the caller's responsibility.
 
         Args:
             session: SQLAlchemy async session used to delete the side-table rows.
@@ -314,42 +222,6 @@ class KnowledgeBaseService:
 
         await session.flush()
         return query
-
-    async def upsert_graph_schema_registry(
-        self,
-        session: AsyncSession,
-        knowledge_base: KnowledgeBase,
-        graph_name: str,
-        organization_id: str,
-        model: Model | None = None,
-    ) -> list[GraphSchemaRegistry]:
-        """Extract and store a knowledge base's node/relationship type definitions.
-
-        Args:
-            session: SQLAlchemy async session used to persist the schema records.
-            knowledge_base: The KnowledgeBase whose schema should be registered.
-            graph_name: The name of the Apache Age graph these schemas belong to. Required.
-            organization_id: Id of the organization this graph belongs to (see
-                ADR-0002, Decision 1). Stamped onto every constructed record.
-            model: The embedding provider configuration to use. If None, embedding
-                computation is skipped and records are stored without an embedding.
-
-        Returns:
-            A list of persisted GraphSchemaRegistry records (newly inserted or updated).
-
-        Raises:
-            ValueError: If graph_name is not provided, or if the knowledge base has
-                no id.
-        """
-        if not graph_name:
-            raise ValueError(
-                "graph_name is required when upserting graph schema registry records"
-            )
-
-        records = knowledge_base.get_graph_schema_registry_records(
-            graph_name, organization_id
-        )
-        return await GraphSchemaRegistry.upsert_records(session, records, model=model)
 
     async def delete_graph_schema_registry(
         self,
@@ -413,38 +285,6 @@ class KnowledgeBaseService:
         await session.flush()
         return retained
 
-    async def upsert_node_embeddings(
-        self,
-        session: AsyncSession,
-        knowledge_base: KnowledgeBase,
-        graph_name: str,
-        organization_id: str,
-        model: Model | None = None,
-    ) -> list[NodeEmbedding]:
-        """Compute and store vector embeddings for a knowledge base's nodes.
-
-        Args:
-            session: SQLAlchemy async session used to persist node embeddings.
-            knowledge_base: The KnowledgeBase whose nodes should be embedded.
-            graph_name: The name of the Apache Age graph these nodes belong to. Required.
-            organization_id: Id of the organization this graph belongs to (see
-                ADR-0002, Decision 1). Stamped onto every constructed record.
-            model: The embedding provider configuration to use. If None, embedding
-                computation is skipped and nodes are stored without an embedding.
-
-        Returns:
-            A list of persisted NodeEmbedding records (newly inserted or updated).
-
-        Raises:
-            ValueError: If graph_name is not provided, or if the knowledge base has
-                no id.
-        """
-        if not graph_name:
-            raise ValueError("graph_name is required when upserting node embeddings")
-
-        records = knowledge_base.get_node_embedding_records(graph_name, organization_id)
-        return await NodeEmbedding.upsert_records(session, records, model=model)
-
     async def search_nodes(
         self,
         session: AsyncSession,
@@ -486,3 +326,6 @@ class KnowledgeBaseService:
             knowledge_base_id=knowledge_base_id,
             limit=limit,
         )
+
+
+__all__ = ["KnowledgeBaseService"]

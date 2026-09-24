@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
@@ -90,81 +89,6 @@ class NodeEmbedding(Base):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector().with_variant(JSON, "sqlite"), nullable=True
     )
-
-    def embedding_text(self) -> str:
-        """Build the text embedded for this node.
-
-        Returns:
-            The node's label followed by "key: value" pairs for each property.
-        """
-        parts = [
-            self.label,
-            *(f"{key}: {value}" for key, value in self.properties.items()),
-        ]
-        return " ".join(part for part in parts if part)
-
-    @classmethod
-    async def upsert_records(
-        cls,
-        session: AsyncSession,
-        records: Iterable["NodeEmbedding"],
-        model: Model | None = None,
-    ) -> list["NodeEmbedding"]:
-        """Upsert node embedding records into the database.
-
-        For each record, checks if it already exists based on
-        (organization_id, graph_name, knowledge_base_id, node_id).
-        - If not found: inserts the new record.
-        - If found: updates its label and properties.
-        Also (re)computes each persisted record's embedding from its post-merge
-        label/properties via litellm, provided an embedding `model` is passed,
-        stamping `embedding_model_id` (see `Model.id`) alongside it; otherwise
-        embeddings are left untouched.
-
-        Args:
-            session: SQLAlchemy database session for executing queries.
-            records: An iterable of NodeEmbedding records to upsert. Each record's
-                `organization_id` must already be set.
-            model: The embedding provider configuration to use. If None, embedding
-                computation is skipped and existing embeddings are left untouched.
-
-        Returns:
-            A list of persisted NodeEmbedding instances (newly inserted or updated).
-        """
-        persisted: list[NodeEmbedding] = []
-
-        for record in records:
-            existing = (
-                await session.execute(
-                    select(cls).where(
-                        cls.organization_id == record.organization_id,
-                        cls.graph_name == record.graph_name,
-                        cls.knowledge_base_id == record.knowledge_base_id,
-                        cls.node_id == record.node_id,
-                    )
-                )
-            ).scalar_one_or_none()
-
-            if existing is None:
-                session.add(record)
-                persisted.append(record)
-                continue
-
-            existing.label = record.label
-            existing.properties = record.properties
-            persisted.append(existing)
-
-        embeddings = await EmbeddingService.compute_embeddings(
-            model, [record.embedding_text() for record in persisted]
-        )
-        if embeddings is not None:
-            embedding_model_id = model.id if model is not None else None
-            for record, embedding in zip(persisted, embeddings):
-                record.embedding = embedding
-                record.embedding_model_id = embedding_model_id
-
-        await session.flush()
-        return persisted
 
     @classmethod
     async def vector_search(

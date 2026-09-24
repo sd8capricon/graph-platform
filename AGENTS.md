@@ -21,11 +21,22 @@ services do not import each other.
 |---|---|---|
 | `src/common` | `common` | Configuration, domain schemas, ORM models, repositories, `EmbeddingService`, index DDL, and the `api/` placeholder |
 | `src/agent-runtime` | `agent_runtime` | Agent tools, prompt, `AgentContext`, serializers, and the deep/react agent assembly |
-| `src/ingestion-worker` | `ingestion_worker` | Reading a knowledge base and writing it to the graph plus both embedding side-tables |
+| `src/ingestion-worker` | `ingestion_worker` | The ingestion write path (idempotent graph `MERGE` + schema-registry/node-embedding upserts), the Celery app/tasks, the job dispatcher, and the legacy one-shot demo |
 
 A module belongs in `common` only when at least two services need it, or it is a shared domain model
 or the database schema itself (ADR-0004 Decision 4). `api` from the ADR's target four-service
 topology has no project yet.
+
+**Ingestion writes live in the worker.** The graph write, the `GraphSchemaRegistry` upsert, the
+`NodeEmbedding` upsert and the `index_job`/`index_file` state store are ingestion-only, so they were
+moved out of `common` into `ingestion_worker/` (ADR-0004 Decision 4). `common` keeps the shared
+schemas, the ORM models' columns/relationships plus their **read** methods (`vector_search`,
+`get_properties_by_name`), the `AgeGraphRepository`, `EmbeddingService` and index DDL.
+`KnowledgeBaseService` in `common` is now lifecycle-only (`create_graph`/`delete_graph`/
+`delete_knowledge_base`/`delete_graph_schema_registry`/`search_nodes`); the former
+`upsert_knowledge_base`, `upsert_graph_schema_registry`, `upsert_node_embeddings`, the models'
+`upsert_records`/`embedding_text` and the schema's extraction methods were removed and re-homed in
+the worker (ADR-0005).
 
 ## Architecture
 
@@ -35,7 +46,6 @@ topology has no project yet.
    - `KnowledgeBase`: Container for nodes and relationships with JSON serialization
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
-   - Schema extraction to `GraphSchemaRegistry` for database storage
    - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (id, display_name,
      name, provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
      reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
@@ -63,10 +73,10 @@ topology has no project yet.
    - `Base` (`models/base.py`): shared SQLAlchemy `DeclarativeBase` for all ORM models
    - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions
    - Stores: graph name, knowledge base IDs (list; a label may come from multiple knowledge bases), entity type, name, description, aliases, properties, source/target labels
-   - Core method: `upsert_records()` - merges new schemas with existing definitions
+   - Read methods: `vector_search()` (cosine-similarity search) and `get_properties_by_name()`. The upsert/merge write path is ingestion-only and lives in the worker as `ingestion_worker.ingestion.writer.upsert_schema_registry()`
    - `NodeEmbedding`: SQLAlchemy ORM model storing one vector embedding per knowledge base node
    - Stores: graph name, knowledge base ID, node ID, label, properties snapshot, embedding vector
-   - Core methods: `upsert_records()` - inserts/updates node embeddings; `vector_search()` - cosine-similarity search
+   - Read methods: `vector_search()` - cosine-similarity search; plus `ensure_embedding_index()` / `drop_embedding_index()` DDL. The upsert write path lives in the worker as `ingestion_worker.ingestion.writer.upsert_node_embeddings()`
    - Both models share the pgvector embedding column pattern and delegate embedding computation
      to `EmbeddingService`; see "Vector Embedding & Search Pattern" below
 
@@ -180,7 +190,7 @@ topology has no project yet.
      tool's modes — `[node.label]` names the anchor label whether or not `node.id` is also set — and
      is **not** sourced from `GraphSchemaRegistry` for the relationships/neighbour-label side of label
      mode instead: the registry stores only one `source_label`/`target_label` pair per relationship
-     row (see "Schema Registry Pattern" and `KnowledgeBase.get_graph_schema_registry_records()`), so
+     row (see "Schema Registry Pattern"), so
      it cannot represent a relationship used against several neighbour labels and carries no counts —
      only a live `MATCH (a:Label)-[r]->(b)` aggregation gives the real answer, which is exactly what
      `AgeGraphRepository.get_label_schema()` runs. The tool's `node` argument is a `NodeRef` (see
@@ -226,22 +236,24 @@ topology has no project yet.
      `from agent_runtime.tools import GRAPH_TOOLS`
 
 4. **Services** (`src/common/src/common/services/`)
-   - `KnowledgeBaseService`: High-level service for knowledge base operations. Every method is
+   - `KnowledgeBaseService`: Lifecycle-only service for knowledge base operations. Every method is
      `async def` (awaits the fully-async `AgeGraphRepository` and/or the awaited litellm embedding
-     calls). `upsert_knowledge_base()` / `delete_knowledge_base()` are the orchestrating pair that
-     keep the graph and both side-tables in sync — see "Knowledge Base Lifecycle Pattern" below
+     calls). It owns `create_graph`/`delete_graph`/`delete_knowledge_base`/
+     `delete_graph_schema_registry`/`search_nodes` — see "Knowledge Base Lifecycle Pattern" below.
+     The write path (`upsert_*`) was moved to the ingestion worker (ADR-0004 Decision 4)
    - `EmbeddingService` (`services/embedding_service.py`): Computes text embeddings via litellm,
-     shared by any ORM model with a vector embedding column
+     shared by any ORM model with a vector embedding column and by the worker's upserts
 
 5. **Repositories** (`src/common/src/common/repositories/`)
    - `AgeGraphRepository`: Data access layer for Apache Age graph operations. Fully async, backed
      by `psycopg` v3's `AsyncConnection`/`AsyncCursor` (not `psycopg2`, which has no async mode).
      Most methods only build and `.execute()` a Cypher query, returning the query string itself
-     (used as an audit trail, e.g. by `KnowledgeBaseService.upsert_knowledge_base()`) without
+     (used as an audit trail) without
      fetching/parsing results — `graph_exists()` fetches but only checks `(await cursor.fetchone())
      is not None`. `get_node_neighbours()` and `get_node_schema()` are the methods that
      actually fetch and parse real result rows — see "Direct Graph Query & Async Repository
-     Pattern" below
+     Pattern" below. `merge_node()`/`merge_relationship()` are the idempotent (`MERGE`-on-`id`)
+     write path the worker uses instead of `create_node()`/`create_relationship()`
 
 6. **Database** (`src/common/src/common/database/`)
    - `indexes.py`: Model-agnostic DDL helpers for the per-model partial HNSW indexes on both
@@ -253,15 +265,19 @@ topology has no project yet.
 ### Data Flow
 
 ```
-JSON File → KnowledgeBase.from_json_file() → KnowledgeBaseService.upsert_knowledge_base(
-    session, kb, graph_name, organization_id, model) → 3 writes in one call:
-  1. nodes/relationships → AgeGraphRepository.create_node()/create_relationship() → Apache Age graph
-  2. get_graph_schema_registry_records(graph_name, organization_id) → GraphSchemaRegistry.upsert_records()
+JSON File / API knowledge_base.Data → (worker) ingest_knowledge_base(
+    session, repository, kb, graph_name, organization_id, model) → 3 writes in one call:
+  1. nodes/relationships → ingestion_worker.ingestion.graph.merge_knowledge_base() →
+     AgeGraphRepository.merge_node()/merge_relationship() (idempotent MERGE) → Apache Age graph
+  2. ingestion_worker.ingestion.extraction.graph_schema_registry_records(...) →
+     ingestion_worker.ingestion.writer.upsert_schema_registry()
      (embedding stored on the row's `embedding_row`, a SchemaEmbedding — see "Vector Embedding &
      Search Pattern")
-  3. get_node_embedding_records(graph_name, organization_id) → NodeEmbedding.upsert_records() (embeds via litellm)
+  3. ingestion_worker.ingestion.extraction.node_embedding_records(...) →
+     ingestion_worker.ingestion.writer.upsert_node_embeddings() (embeds via litellm)
 
-KnowledgeBaseService.delete_knowledge_base(session, kb_id, graph_name, organization_id) → the inverse:
+KnowledgeBaseService.delete_knowledge_base(session, kb_id, graph_name, organization_id) →
+the inverse (lifecycle stays in common):
   1. NodeEmbedding rows (organization_id, kb_id, graph_name) → node ids → repository.delete_node() (DETACH DELETE)
   2. DELETE those NodeEmbedding rows
   3. GraphSchemaRegistry: drop kb_id from knowledge_base_ids; delete rows left with none (their
@@ -276,7 +292,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - **UUID generation**: Node, relationship, and knowledge base IDs are auto-generated as UUIDs if not provided
 - Uses `@model_validator(mode="before")` in Pydantic models to ensure IDs exist
 - See: `KnowledgeNode.ensure_id()`, `KnowledgeRelationship.ensure_related_ids()`, `KnowledgeBase.ensure_knowledge_base_id()`
-- `KnowledgeBase.id` is required by `get_graph_schema_registry_records()` / `get_node_embedding_records()` — both raise `ValueError` when it is falsy. The id is auto-generated when the `id` key is absent from input, but an explicit `"id": null` survives `setdefault` and still raises
+- `ingestion_worker.ingestion.extraction.graph_schema_registry_records()` / `node_embedding_records()` raise `ValueError` when the knowledge base `id` is falsy. The id is auto-generated when the `id` key is absent from input, but an explicit `"id": null` survives `setdefault` and still raises
 
 ### Schema Registry Pattern
 - One row per `(organization_id, graph_name, type, name)` — `organization_id` is part of the match key
@@ -285,7 +301,8 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   still legitimately be defined by more than one knowledge base feeding the same graph *within* one
   organization, so the match key does **not** include the knowledge base id — instead the row is
   shared and accumulates every contributing knowledge base's id
-- `GraphSchemaRegistry.upsert_records()` performs smart merging:
+- `ingestion_worker.ingestion.writer.upsert_schema_registry()` (moved out of the model as
+  `GraphSchemaRegistry.upsert_records()`) performs smart merging:
   - Creates new records if not found
   - Merges aliases: `existing.aliases = sorted(set(existing.aliases) | set(record.aliases))`
   - Merges properties: `existing.properties = sorted(set(existing.properties) | set(record.properties))`
@@ -295,9 +312,9 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
     stores the vector on the record's `embedding_row` (a `SchemaEmbedding`, see "Vector Embedding &
     Search Pattern" below) rather than on `GraphSchemaRegistry` itself — reading/assigning
     `record.embedding_row` before the record is flushed is load-bearing, see that section
-- `KnowledgeBase.get_graph_schema_registry_records(graph_name, organization_id)` extracts schema records
-  - Requires both `graph_name` and `organization_id` (neither stored on the model, both passed to the
-    method); stamps `organization_id` onto every constructed record
+- `ingestion_worker.ingestion.extraction.graph_schema_registry_records(knowledge_base, graph_name, organization_id)` extracts schema records
+  - Requires both `graph_name` and `organization_id` (neither stored on the model, both passed as
+    arguments); stamps `organization_id` onto every constructed record
   - Requires `self.id` to be set (raises `ValueError` otherwise); sets `knowledge_base_ids=[self.id]` on each constructed record
   - Returns list of `GraphSchemaRegistry` records for nodes and relationships
   - Both node and relationship records always get `aliases=[]` — there is deliberately no alias
@@ -316,30 +333,31 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - See: `src/common/src/common/models/graph_schema_registry.py` and `src/common/src/common/schemas/knowledge_base.py`
 
 ### Knowledge Base Lifecycle Pattern
-- `KnowledgeBaseService` owns the whole lifecycle of one knowledge base in one graph. There are two
-  orchestrating methods; the four single-concern methods they call
-  (`upsert_graph_schema_registry()`, `delete_graph_schema_registry()`, `upsert_node_embeddings()`,
-  `search_nodes()`) stay public so a caller can drive one side-table alone
-- `upsert_knowledge_base(session, knowledge_base, graph_name, organization_id, model=None)` does
-  three writes: the graph (`create_node`/`create_relationship` + `repository.commit()`), then
-  `GraphSchemaRegistry.upsert_records()`, then `NodeEmbedding.upsert_records()`. It returns only the
-  list of executed Cypher queries (the graph audit trail) — call the single-concern methods directly
-  if you need the persisted side-table records back. `organization_id` (see ADR-0002, Decision 1) is
-  stamped onto every schema registry and node embedding row written, via
-  `KnowledgeBase.get_graph_schema_registry_records()`/`get_node_embedding_records()`
-  - Before either create loop, it calls `repository.ensure_vertex_label()` once per distinct node
+- `KnowledgeBaseService` owns the lifecycle of one knowledge base in one graph. It is now
+  lifecycle-only — `create_graph`/`delete_graph`/`delete_knowledge_base`/
+  `delete_graph_schema_registry`/`search_nodes` — because the ingestion write path moved to the
+  worker (ADR-0004 Decision 4)
+- The worker's `ingestion_worker.ingestion.pipeline.ingest_knowledge_base(session, repository,
+  knowledge_base, graph_name, organization_id, model=None)` replaces the former
+  `upsert_knowledge_base()`: it merges the graph
+  (`ingestion_worker.ingestion.graph.merge_knowledge_base()` → `merge_node`/`merge_relationship` +
+  `repository.commit()`), then `writer.upsert_schema_registry()`, then
+  `writer.upsert_node_embeddings()`. It returns the list of executed Cypher queries (the graph
+  audit trail). `organization_id` (see ADR-0002, Decision 1) is stamped onto every schema registry
+  and node embedding row written, via the worker's extraction functions
+  - Before either merge loop, it calls `repository.ensure_vertex_label()` once per distinct node
     label and `repository.ensure_edge_label()` once per distinct relationship label (deduplicated via
     `dict.fromkeys(...)`) — see the `ensure_vertex_label`/`ensure_edge_label` bullet under "Direct
     Graph Query & Async Repository Pattern" below for why: without it, a knowledge base with several
     nodes sharing a brand-new label (e.g. 27 `Driver`s) can raise
     `psycopg.errors.DuplicateTable: relation "Driver" already exists` from Apache Age's own racy
-    implicit label auto-create, since all the `create_node`/`create_relationship` calls here run in
-    one transaction before the single `repository.commit()`
+    implicit label auto-create, since all the merge calls here run in one transaction before the
+    single `repository.commit()`
 - `delete_knowledge_base(session, knowledge_base_id, graph_name, organization_id)` is the inverse and
   takes an **id**, not a `KnowledgeBase`: at delete time the source JSON is usually long gone. It
   gets the node ids to delete from the knowledge base's own `NodeEmbedding` rows (scoped to
   `organization_id`), which are the service's record of what it wrote to the graph — so a knowledge
-  base written by something *other* than `upsert_knowledge_base()` (no `NodeEmbedding` rows) will not
+  base written by something *other* than the worker's `ingest_knowledge_base()` (no `NodeEmbedding` rows) will not
   have its graph nodes removed
   - Nodes are removed with `repository.delete_node()`, i.e. `DETACH DELETE`, so relationships go
     with their nodes and no separate relationship pass is needed
@@ -347,7 +365,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
     deletes only the rows left with no contributing knowledge base, since a label may be defined by
     several knowledge bases feeding one graph (see "Schema Registry Pattern")
   - **Known limitation:** a surviving shared row keeps the aliases and properties the deleted
-    knowledge base contributed — the merge in `upsert_records()` is lossy and cannot be attributed
+    knowledge base contributed — the merge in `upsert_schema_registry()` is lossy and cannot be attributed
     back per knowledge base. Re-upsert the remaining knowledge bases if an exact schema is required
   - `delete_graph_schema_registry()` filters rows in **Python**, not SQL: `knowledge_base_ids` is a
     plain JSON column and a graph holds one registry row per label, so the scan is cheap and works
@@ -393,6 +411,36 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - See: `src/common/src/common/services/knowledge_base_service.py` and the
   `test_delete_knowledge_base_*` / `test_delete_graph_*` tests in `tests/test_graph_registry_model.py`
 
+### Ingestion Pipeline Pattern (ADR-0005)
+- RabbitMQ (broker) + Celery (task execution) + Postgres (`index_job`/`index_file` orchestration,
+  the source of truth). No result backend (`task_ignore_result=True`) and no Redis; the pipeline
+  never reads Celery return values. Fan-in is a guarded Postgres counter, **not** Celery chords
+- `index_job`/`index_file` are API-owned DDL (EF migration), written by the Python worker through
+  `ingestion_worker.job_store.IndexJobStore` using SQLAlchemy **Core** on a private `IndexJobMetadata`
+  (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` — so `create_all`
+  never touches the API's tables. The Core `Table`s live under `ingestion_worker/models/`, one module
+  per table (`index_job.py`, `index_file.py`, and a read-only `knowledge_base.py`), mirroring the
+  `common/models/` layout. The worker reads `knowledge_base.Data` (the graph JSON) by id through the
+  same store
+- The API never calls a worker: it writes a `queued` job row, and the Celery Beat **dispatcher**
+  (`ingestion_worker/dispatcher.py`) claims it with `FOR UPDATE SKIP LOCKED` + a guarded
+  `queued -> running` transition, commits, then publishes the task. Commit-before-publish means a
+  crash leaves the job `running` for a future reconciler rather than losing it
+- Worker modules: `models/` (Core job-table definitions) + `job_store.py` (`IndexJobStore`),
+  `celery_app.py` (app + `ingestion` topic exchange, per-stage `q.<stage>`, `q.<stage>.retry` and
+  `q.<stage>.dlq`; Phase 1 routes the combined task to `q.ontology`), `tasks.py`
+  (`ingest_knowledge_base_task`; sync wrapper over `asyncio.run`, `autoretry_for` the retryable error,
+  `on_failure` records the terminal failure), `jobs.py` (Celery-free `ingest_job`/`run_job`/`fail_job`),
+  `errors.py` (retryable vs non-retryable classification: 429/5xx/timeout vs 4xx/parse), `db.py`,
+  `config.py`
+- Idempotency (required by `acks_late`): graph writes use `MERGE`-on-`id`
+  (`AgeGraphRepository.merge_node`/`merge_relationship`), side-table writes are upserts, and the
+  file row is reused via `IndexJobStore.find_file` on redelivery. A job already in a terminal state
+  is skipped
+- Phase 1 treats the whole knowledge base as one file and runs graph + embeddings in one task; the
+  four-stage ontology/entity fan-out + guarded fan-in (`IndexJobStore.increment_and_check_fan_in`)
+  and the files model are Phase 2
+
 ### Vector Embedding & Search Pattern
 - **Schema-registry embeddings live in their own table, `SchemaEmbedding`** (`models/schema_embedding.py`,
   table `schema_embedding`), not inline on `GraphSchemaRegistry` — this is ADR-0002 Decision 5,
@@ -407,7 +455,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
     `passive_deletes=True`** — with it, `await session.delete(parent)` leaves the child row behind
     on SQLite (no `PRAGMA foreign_keys=ON` in tests, so the DB-level `ON DELETE CASCADE` is
     Postgres-only belt-and-braces; the ORM cascade is what actually deletes the child in tests)
-  - **Autoflush/lazy-load trap in `upsert_records()`:** for a brand-new record, `record.embedding_row = None`
+  - **Autoflush/lazy-load trap in `upsert_schema_registry()`:** for a brand-new record, `record.embedding_row = None`
     must be assigned *before* `session.add(record)` — the loop's next `select()` autoflushes the
     previous record to persistent state, and reading an *unloaded* relationship on a persistent
     object under `AsyncSession` raises `MissingGreenlet`. `lazy="selectin"` does not prevent this: it
@@ -441,7 +489,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   `SchemaEmbedding.embedding_model_id` and `NodeEmbedding.embedding_model_id` store the configured
   `Model.id` (not `Model.identifier` — a `provider/name` pair is not a stable identity for a
   configured model entry, since two entries can share one while differing in endpoint, auth mode, or
-  dimension) that produced the row's vector, stamped by `upsert_records()` whenever an embedding is
+  dimension) that produced the row's vector, stamped by the worker upserts whenever an embedding is
   computed. There is deliberately no separate `embedding_model_id` filter parameter on either
   `vector_search()` — during the window between an organization admin changing the org's active
   embedding model and ADR-0002 Decision 4's mandatory recalculation finishing, a search is scoped to
@@ -456,23 +504,23 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from common.config import settings` see the loaded values — rebinding would leave them holding a stale object. Each service entrypoint's `main()` is a call site (`agent_runtime/__init__.py`, `ingestion_worker/__init__.py`)
   - There is **no** `load_config()`-before-import ordering constraint any more. There used to be: the pgvector column width was fixed at class-definition time from `settings.embedding_dimension`, so importing a model module before `load_config()` silently baked in the default. Dimensionless columns (ADR-0003) removed the only thing read at class-definition time. The model imports in `ingestion_worker/__init__.py`'s `run()` still have to precede `create_all`, but only so the tables register on `Base.metadata` — not for ordering against config
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
-  - Import-cycle hazard: `models/graph_schema_registry.py` imports `services.embedding_service`, `services/knowledge_base_service.py` imports `schemas.knowledge_base`, and `schemas/knowledge_base.py` imports back into `models.graph_schema_registry` — a real cycle. It's cut by keeping `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `api/`, and `database/` have no `__init__.py` at all, for the same reason — and the service packages (`agent_runtime/`, `ingestion_worker/`) are outside `common` entirely, so their `__init__.py` files are entrypoints, not part of this cycle. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
+  - Import-cycle history: `models/graph_schema_registry.py` imports `services.embedding_service` and `services/knowledge_base_service.py` imports `schemas.knowledge_base`, but `schemas/knowledge_base.py` no longer imports back into `models.*` (its extraction methods moved to the worker), so the old cycle is gone. The empty-`__init__.py` discipline is still kept: `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` are **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `api/`, and `database/` have no `__init__.py` at all, for the same reason — and the service packages (`agent_runtime/`, `ingestion_worker/`) are outside `common` entirely, so their `__init__.py` files are entrypoints, not part of this cycle. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
-  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent_runtime/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both `upsert_records()` methods onto `embedding_model_id` (see above)
+  - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent_runtime/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both worker upserts onto `embedding_model_id` (see above)
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
-- Each ORM model builds its own `embedding_text()` (name/description/aliases for `GraphSchemaRegistry`; label + `"key: value"` properties for `NodeEmbedding`) and (re)computes it inside `upsert_records(session, records, model=...)` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `GraphSchemaRegistry.upsert_records()` stores the result on `record.embedding_row` (see above), `NodeEmbedding.upsert_records()` stores it directly on the record, as before
+- The worker builds the embedded text via helpers (`schema_embedding_text` — name/description/aliases; `node_embedding_text` — label + `"key: value"` properties) and (re)computes it inside `upsert_schema_registry()` / `upsert_node_embeddings()` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `upsert_schema_registry()` stores the result on `record.embedding_row` (see above), `upsert_node_embeddings()` stores it directly on the record
 - `vector_search(session, query, graph_name, organization_id, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator — requires PostgreSQL, raises `ValueError` if `model` is `None` or has no `embedding_dimension`. Both checks happen **before** `compute_embeddings()`, since that is a real billed provider call and a model we cannot search against should never reach it
   - The search is always confined to rows `model` itself produced: it filters `embedding_model_id == model.id` and orders by `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. There is deliberately **no** `embedding_model_id` parameter — both are derived from `model`, because both must agree with the query vector to mean anything (a cosine distance between two models' vectors is a meaningless number; between two *widths* it is an error), and because that pairing is exactly what makes the partial expression index matchable. A search therefore only ever sees rows embedded by the searching model — during an ADR-0002 recalculation window that is the desired behavior, not a limitation
-- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `KnowledgeBase.get_node_embedding_records(graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `self.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.upsert_node_embeddings(session, kb, graph_name, organization_id, model=None)` / `.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wrap the upsert/search calls and pass `model` straight through (upsert defaults to `None` — skip embedding; search requires a `model`). `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
+- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `ingestion_worker.ingestion.extraction.node_embedding_records(knowledge_base, graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `knowledge_base.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wraps the search call and passes `model` straight through. `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since neither `?|` nor `<=>` runs on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/common/src/common/services/embedding_service.py`, `src/common/src/common/schemas/model.py`, `src/common/src/common/models/graph_schema_registry.py`, `src/common/src/common/models/schema_embedding.py`, `src/common/src/common/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
 
 ### Direct Graph Query & Async Repository Pattern
-- `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; `KnowledgeBaseService.upsert_knowledge_base()` is `async def` too, since it awaits repository calls internally
+- `AgeGraphRepository` (`repositories/age_graph_repository.py`) is fully async, backed by `psycopg` v3's `AsyncConnection`/`AsyncCursor` — every method is `async def`. This replaced an earlier synchronous `psycopg2`-based repository, since `psycopg2` has no async mode at all; the worker's `ingest_knowledge_base()` is `async def` too, since it awaits repository calls internally
 - Connection setup gotcha: every new Postgres session must run `SET search_path = ag_catalog, "$user", public;` before any `ag_catalog.*` call — AGE's internal DDL (e.g. the btree index it creates using its own `graphid_ops` operator class) resolves operator classes via `search_path`, not via schema-qualification of the calling query. Skipping this raises `psycopg.errors.UndefinedObject: operator class "graphid_ops" does not exist for access method "btree"` on `create_graph()`. `create_connection()` in `common/database/connection.py` runs `CREATE EXTENSION IF NOT EXISTS age;` (creates the `ag_catalog` schema/tables — `LOAD 'age'` alone only loads the shared library into the current session and leaves `ag_catalog.ag_graph` etc. undefined, raising `psycopg.errors.UndefinedTable` on `graph_exists()`) before `LOAD 'age';`, per Apache AGE's own documented setup order; on Azure-hosted Postgres (detectable via `"database.azure.com" in host`) the `age` extension's shared library is pre-loaded via server-side config, so `LOAD` is skipped, but `CREATE EXTENSION` still runs there too
 - **Commit before handing off the connection:** `create_connection()`'s psycopg `AsyncConnection` defaults to non-autocommit, so its `CREATE EXTENSION`/`LOAD`/`SET search_path` setup statements sit in an open transaction until something commits. `ingestion_worker/__init__.py`'s `run()` opens a *separate* SQLAlchemy engine/connection right after and calls `Base.metadata.create_all` to create tables with `VECTOR` columns — under Postgres MVCC that connection can't see an uncommitted `CREATE EXTENSION vector`, raising `psycopg.errors.UndefinedObject: type "vector" does not exist`. `create_connection()` therefore ends with `await connection.commit()` before returning, so the extensions are visible to any other connection opened afterward
-- Most methods only build and `.execute()` a Cypher query, returning the query string itself (used as an audit trail, e.g. by `upsert_knowledge_base()`) without fetching/parsing results — `graph_exists()` is the one exception that fetches, but only checks `(await cursor.fetchone()) is not None`
+- Most methods only build and `.execute()` a Cypher query, returning the query string itself (used as an audit trail, e.g. by the worker's `ingest_knowledge_base()`) without fetching/parsing results — `graph_exists()` is the one exception that fetches, but only checks `(await cursor.fetchone()) is not None`
 - `get_node_neighbours(graph_name, node_id, relationship_labels=None)` is the first method that actually fetches and parses real result rows: it matches a node via its app-level `id` property (the same property `create_node`/`create_relationship` set — not Apache Age's own internal vertex id/graphid), traverses relationships in both directions (`MATCH (a {"id": ...})-[r]-(b)`), and returns a de-duplicated `list[tuple[dict, dict, dict]]` of `(source, relationship, target)`
   - Apache Age returns each vertex/edge `agtype` column as a string suffixed with its Cypher type, e.g. `{"id": ..., "label": ..., "properties": {...}}::vertex` / `...::edge`. `_parse_agtype()` strips the `::vertex`/`::edge` suffix and `json.loads`es the remainder
   - De-duplicates on the edge's own internal `id` (not on a `(source, label, target)` tuple), since Apache Age can return the same physical edge twice for an undirected `()-[r]-()` pattern; a source/label/target-based key would incorrectly collapse legitimate parallel edges, since Apache Age is a multigraph
@@ -519,7 +567,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   first checks `ag_catalog.ag_label` joined to `ag_catalog.ag_graph` on `graphid` for a row matching
   `(graph_name, label)`, and only calls `ag_catalog.create_vlabel`/`ag_catalog.create_elabel` when
   none is found — so it is safe to call every run, including against a graph whose labels already
-  exist from a previous run. `KnowledgeBaseService.upsert_knowledge_base()` calls one of these once
+  exist from a previous run. The worker's `merge_knowledge_base()` calls one of these once
   per **distinct** label (nodes' labels via `ensure_vertex_label`, relationships' labels via
   `ensure_edge_label`, each deduplicated with `dict.fromkeys(...)`) before its `create_node`/
   `create_relationship` loops — ensuring a label once, before anything `CREATE`s against it, sidesteps
@@ -600,7 +648,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
 - Tests verify this constraint is enforced: `test_graph_registry_type_accepts_only_node_or_relationship()`
 - `NodeEmbedding` has a `UniqueConstraint("organization_id", "graph_name", "knowledge_base_id", "node_id")` — one row per node per knowledge base per graph per organization
-- `KnowledgeBase.get_graph_schema_registry_records()` / `get_node_embedding_records()` raise `ValueError` if `self.id` is falsy
+- `ingestion_worker.ingestion.extraction.graph_schema_registry_records()` / `node_embedding_records()` raise `ValueError` if the knowledge base `id` is falsy
 
 ## Common Tasks
 
@@ -612,6 +660,9 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 ### Loading and Registering a Knowledge Base
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from common.services.knowledge_base_service import KnowledgeBaseService
+from ingestion_worker.pipeline import ingest_knowledge_base
 
 kb = KnowledgeBase.from_json_file("path/to/kb.json")  # kb.id must be set
 
@@ -626,16 +677,18 @@ embedding_model = Model(
     embedding_dimension=1536,
 )
 
+# Graph lifecycle stays in common.
 service = KnowledgeBaseService(repository)
 await service.create_graph("my_age_graph")  # no-op if it already exists
 
 organization_id = "org-1"  # see ADR-0002, Decision 1 - no Organization entity exists yet
 
 async with AsyncSession(engine) as session:
-    # Writes the graph, the schema registry and the node embeddings; commits the
-    # graph connection itself, leaves the session commit to us.
-    await service.upsert_knowledge_base(
-        session, kb, "my_age_graph", organization_id, model=embedding_model
+    # The ingestion write lives in the worker: it merges the graph
+    # (idempotent MERGE), then upserts the schema registry and node embeddings.
+    # Commits the graph connection itself, leaves the session commit to us.
+    await ingest_knowledge_base(
+        session, repository, kb, "my_age_graph", organization_id, model=embedding_model
     )
     await session.commit()
 
@@ -659,17 +712,18 @@ async with AsyncSession(engine) as session:
    index needs — see step 6), and the `embedding` column itself:
    `Vector().with_variant(JSON, "sqlite")` — dimensionless, per ADR-0003; do **not** declare a width,
    that would pin every organization to one embedding model size
-4. Implement `embedding_text()` to build the text that gets embedded
-5. Implement `upsert_records(session, records, model=None)` and
-   `vector_search(session, query, graph_name, organization_id, model, ...)` following the
-   `NodeEmbedding` pattern (call `EmbeddingService.compute_embeddings(model, texts)` from
-   `services/embedding_service.py` — don't duplicate the litellm call; stamp
-   `record.embedding_model_id = model.id` alongside the vector). `organization_id` is always
-   applied in `vector_search()`, not an optional filter — a row outside the caller's organization is
-   never a valid match. If using a side table (step 2), see `GraphSchemaRegistry.upsert_records()`'s
-   two documented traps: assign `record.embedding_row = None` before `session.add()` on a new record
-   (autoflush + `MissingGreenlet` otherwise), and mutate an existing child in place rather than
-   replacing it (`IntegrityError` otherwise)
+4. Implement an embedding-text helper in `ingestion_worker/ingestion/writer.py`
+   (`schema_embedding_text` / `node_embedding_text`) to build the text that gets embedded
+5. Implement the upsert in `ingestion_worker/ingestion/writer.py` (the write path is ingestion-only,
+   ADR-0004 Decision 4) and `vector_search(session, query, graph_name, organization_id, model, ...)`
+   on the model, following the `NodeEmbedding` pattern (call
+   `EmbeddingService.compute_embeddings(model, texts)` from `services/embedding_service.py` —
+   don't duplicate the litellm call; stamp `record.embedding_model_id = model.id` alongside the
+   vector). `organization_id` is always applied in `vector_search()`, not an optional filter — a row
+   outside the caller's organization is never a valid match. If using a side table (step 2), see
+   `upsert_schema_registry()`'s two documented traps: assign `record.embedding_row = None` before
+   `session.add()` on a new record (autoflush + `MissingGreenlet` otherwise), and mutate an existing
+   child in place rather than replacing it (`IntegrityError` otherwise)
 6. In `vector_search()`, derive the model scope from the `model` argument — filter
    `embedding_model_id == model.id` and order by
    `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. Don't add an
@@ -684,7 +738,8 @@ async with AsyncSession(engine) as session:
 - Use in-memory SQLite for fast tests: `create_engine("sqlite:///:memory:")`
 - See: `tests/test_graph_registry_model.py` for patterns
 - Run the `common` suite: `uv run --project src/common pytest tests/ -o asyncio_mode=auto`; run the
-  agent suite: `uv run --project src/agent-runtime pytest`
+  agent suite: `uv run --project src/agent-runtime pytest`; run the worker suite:
+  `uv run --project src/ingestion-worker pytest src/ingestion-worker/tests`
 
 ## Development Setup
 
@@ -712,14 +767,28 @@ shared library resolve through a path dependency (`common` in `[project.dependen
   (pytest, pytest-asyncio) and `asyncio_mode = "auto"`
 - `src/agent-runtime/src/agent_runtime/` - agent import package (`tools.py`, `prompts.py`,
   `deep_agent.py`, `react_agent.py`, `context.py`, `models.py`, `serializers.py`, `chat_model.py`)
-- `src/ingestion-worker/pyproject.toml` - the `ingestion-worker` uv project: ingestion dependencies,
-  `uv_build`, the `ingestion-worker` script entry point (`ingestion_worker:main`)
-- `src/ingestion-worker/src/ingestion_worker/` - ingestion import package (`run()`/`main()`, the
-  knowledge-base -> graph + embeddings path)
-- `tests/` - test suite for the `common` project, at the repository root rather than inside it.
-  There is no repo-root `pyproject.toml`, so run it against the `common` project environment:
-  `uv run --project src/common pytest tests/ -o asyncio_mode=auto`
-- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
+- `src/ingestion-worker/pyproject.toml` - the `ingestion-worker` uv project: ingestion/Celery
+  dependencies, `uv_build`, the `ingestion-worker` script entry point (`ingestion_worker:main`), a
+  `dev` group (pytest, pytest-asyncio) and `asyncio_mode = "auto"`
+- `src/ingestion-worker/src/ingestion_worker/` - ingestion import package (`celery_app.py`,
+  `tasks.py`, `dispatcher.py`, `jobs.py`, `errors.py`, `db.py`, `config.py`, the `ingestion/`
+  write path, and the legacy `run()`/`main()` demo)
+- `src/ingestion-worker/src/ingestion_worker/models/` - Core `Table` definitions for the API-owned
+  `index_job`/`index_file`/`knowledge_base` tables (one module per table, on a private
+  `IndexJobMetadata`); `ingestion_worker/job_store.py` holds `IndexJobStore`
+- `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service
+  behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
+- `src/ingestion-worker/tests/test_job_store.py` - test suite for `IndexJobStore` (guarded
+  transitions, fan-in gate, KB read/state, `FOR UPDATE SKIP LOCKED` compiled SQL)
+- `tests/test_age_graph_repository_merge.py` - test suite for the idempotent `merge_node`/
+  `merge_relationship` Cypher
+- `src/ingestion-worker/tests/test_ingestion.py` - test suite for the worker's extraction, writer,
+  graph-merge and `ingest_knowledge_base()` pipeline
+- `src/ingestion-worker/tests/test_jobs.py` - test suite for `jobs.ingest_job()` (completion,
+  idempotent redelivery, graph creation, classified failure)
+- `src/ingestion-worker/tests/test_dispatcher.py` - test suite for the claim-then-publish dispatcher
+- `src/ingestion-worker/tests/test_celery_app.py` / `test_errors.py` - Celery topology/config and
+  retryable/non-retryable error classification
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
@@ -746,11 +815,14 @@ uv run --project src/common pytest tests/ -o asyncio_mode=auto
 
 # agent-runtime: agent tool/prompt/factory tests (src/agent-runtime/tests/)
 uv run --project src/agent-runtime pytest src/agent-runtime/tests
+
+# ingestion-worker: ingestion/Celery/dispatcher tests (src/ingestion-worker/tests/)
+uv run --project src/ingestion-worker pytest src/ingestion-worker/tests
 ```
 
-`asyncio_mode = "auto"` is configured in `src/agent-runtime/pyproject.toml`; for the root-level
-`common` suite it is passed with `-o` because pytest does not discover a config file upward from
-`tests/`.
+`asyncio_mode = "auto"` is configured in the `agent-runtime` and `ingestion-worker`
+`pyproject.toml`s; for the root-level `common` suite it is passed with `-o` because pytest does not
+discover a config file upward from `tests/`.
 
 ### Project Dependencies
 
@@ -779,10 +851,13 @@ uv run --project src/agent-runtime pytest src/agent-runtime/tests
 - Dev-only: **pytest**, **pytest-asyncio**
 
 `ingestion-worker`:
-- **common** (path `../common`, editable): the schemas, models, repository and
-  `KnowledgeBaseService` the ingestion path drives
+- **common** (path `../common`, editable): the schemas, models, repository, `EmbeddingService`,
+  lifecycle `KnowledgeBaseService` and the worker's own Core job-state store the ingestion path drives
+- **celery** (>=5.5): the task execution/transport framework and RabbitMQ topology (kombu/amqp
+  come transitively). Requires a running RabbitMQ broker (`RABBITMQ_URL`)
 - **psycopg[binary]**, **sqlalchemy[asyncio]**, **python-dotenv**: the Age connection, the
   SQLAlchemy engine/session, and `main()`'s `.env` loading
+- Dev-only: **aiosqlite**, **pytest**, **pytest-asyncio**
 
 ## Important Notes
 
@@ -790,6 +865,14 @@ uv run --project src/agent-runtime pytest src/agent-runtime/tests
 ### Testing Strategy
 - Tests use SQLite in-memory databases (no PostgreSQL required for unit tests)
 - Tests validate schema structure, constraints, and upsert logic
+  - Ingestion-write tests (the upsert/extraction logic, `upsert_knowledge_base`) moved with the code
+    into `src/ingestion-worker/tests/` (`test_ingestion.py`, `test_jobs.py`, `test_dispatcher.py`,
+    `test_job_store.py`, `test_celery_app.py`, `test_errors.py`); the root `tests/` suite keeps the
+    model/table/read/`vector_search`/repository/lifecycle coverage
+  - `src/ingestion-worker/tests/test_job_store.py` - `IndexJobStore`: guarded transitions, fan-in
+    gate, KB read/state, and the Postgres `FOR UPDATE SKIP LOCKED` compiled statement
+  - `tests/test_age_graph_repository_merge.py` - the idempotent `merge_node`/`merge_relationship`
+    Cypher
 - Key tests:
   - `test_knowledge_base_parses_json_and_upserts_registry_rows()` - end-to-end JSON→DB flow
   - `test_graph_registry_type_accepts_only_node_or_relationship()` - constraint validation

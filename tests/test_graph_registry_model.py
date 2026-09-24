@@ -56,73 +56,6 @@ def test_graph_registry_table_exists_and_tracks_graph_name():
     assert expected.issubset(columns)
 
 
-async def test_upsert_records_skips_embedding_when_model_not_provided():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    record = GraphSchemaRegistry(
-        organization_id="org-1",
-        graph_name="demo",
-        knowledge_base_ids=["kb-1"],
-        type=SchemaType.NODE,
-        name="Driver",
-        description="A racer",
-        aliases=[],
-        properties=[],
-    )
-
-    async with AsyncSession(engine) as session:
-        persisted = await GraphSchemaRegistry.upsert_records(session, [record])
-        embedding_row = persisted[0].embedding_row
-        await session.commit()
-
-    assert embedding_row is None
-
-
-async def test_upsert_records_computes_embedding_via_litellm_when_configured(monkeypatch):
-    import common.services.embedding_service as embedding_service
-
-    captured = {}
-
-    class FakeResponse:
-        data = [{"embedding": [0.1, 0.2, 0.3]}]
-
-    async def fake_aembedding(**kwargs):
-        captured.update(kwargs)
-        return FakeResponse()
-
-    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
-
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    record = GraphSchemaRegistry(
-        organization_id="org-1",
-        graph_name="demo",
-        knowledge_base_ids=["kb-1"],
-        type=SchemaType.NODE,
-        name="Driver",
-        description="A racer",
-        aliases=["Racer"],
-        properties=[],
-    )
-
-    async with AsyncSession(engine) as session:
-        persisted = await GraphSchemaRegistry.upsert_records(
-            session, [record], model=_embedding_model()
-        )
-        embedding = persisted[0].embedding_row.embedding
-        embedding_model_id = persisted[0].embedding_row.embedding_model_id
-        await session.commit()
-
-    assert embedding == [0.1, 0.2, 0.3]
-    assert embedding_model_id == "550e8400-e29b-41d4-a716-446655440000"
-    assert captured["model"] == "openai/text-embedding-3-small"
-    assert captured["input"] == ["Driver A racer Racer"]
-
-
 async def test_vector_search_embeds_query_and_builds_cosine_distance_statement(monkeypatch):
     # vector_search relies on pgvector's `<=>` cosine distance operator, which
     # only exists on PostgreSQL, so we capture the statement it builds via a
@@ -280,271 +213,6 @@ def test_missing_ids_are_uuid_generated_and_existing_ids_are_preserved():
     ).relationships[0]
     assert relationship.source_id == "node-1"
     assert relationship.target_id == "node-2"
-
-
-async def test_knowledge_base_parses_json_and_upserts_registry_rows():
-    payload_path = Path(__file__).resolve().parents[1] / "dummy_data" / "f1_kb.json"
-    knowledge_base = KnowledgeBase.model_validate_json(payload_path.read_text())
-
-    # Pass graph_name to the method instead of storing it on model
-    node_records = knowledge_base.get_graph_schema_registry_records("F1 kb", "org-1")
-    assert any(
-        record.type == SchemaType.NODE and record.name == "Driver"
-        for record in node_records
-    )
-    assert any(
-        record.type == SchemaType.RELATIONSHIP and record.name == "RACED_FOR"
-        for record in node_records
-    )
-
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async with AsyncSession(engine) as session:
-        await GraphSchemaRegistry.upsert_records(session, node_records)
-        await session.commit()
-
-        rows = (
-            (
-                await session.execute(
-                    select(GraphSchemaRegistry).where(
-                        GraphSchemaRegistry.graph_name == "F1 kb"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    assert any(row.type == SchemaType.NODE and row.name == "Driver" for row in rows)
-    assert any(
-        row.type == SchemaType.RELATIONSHIP and row.name == "RACED_FOR" for row in rows
-    )
-
-    driver_row = next(
-        row for row in rows if row.type == SchemaType.NODE and row.name == "Driver"
-    )
-    assert driver_row.knowledge_base_ids == [knowledge_base.id]
-
-
-def test_knowledge_base_graph_name_is_provided_to_service_not_stored():
-    knowledge_base = KnowledgeBase.model_validate(
-        {
-            "name": "custom_kb",
-            "nodes": [{"label": "Driver", "properties": {"name": "Alice"}}],
-        }
-    )
-
-    # graph_name is not stored on model, only passed to methods
-    assert knowledge_base.name == "custom_kb"
-
-    records = knowledge_base.get_graph_schema_registry_records(
-        "shared_age_graph", "org-1"
-    )
-    assert records[0].graph_name == "shared_age_graph"
-    assert records[0].organization_id == "org-1"
-    assert records[0].knowledge_base_ids == [knowledge_base.id]
-
-
-async def test_knowledge_base_service_raises_error_if_graph_name_not_provided():
-    from common.services.knowledge_base_service import KnowledgeBaseService
-    from common.repositories.age_graph_repository import AgeGraphRepository
-
-    knowledge_base = KnowledgeBase.model_validate(
-        {
-            "name": "demo_kb",
-            "nodes": [
-                {
-                    "id": "node-1",
-                    "label": "Driver",
-                    "properties": {"name": "Max Verstappen"},
-                },
-            ],
-        }
-    )
-
-    class DummyRepository:
-        pass
-
-    service = KnowledgeBaseService(DummyRepository())
-
-    with pytest.raises(ValueError, match="graph_name is required"):
-        # graph_name is a mandatory parameter; an empty value should still raise ValueError
-        await service.upsert_knowledge_base(None, knowledge_base, "", "org-1")
-
-
-async def test_knowledge_base_service_raises_error_if_graph_does_not_exist():
-    from common.services.knowledge_base_service import KnowledgeBaseService
-
-    knowledge_base = KnowledgeBase.model_validate(
-        {
-            "name": "demo_kb",
-            "nodes": [
-                {
-                    "id": "node-1",
-                    "label": "Driver",
-                    "properties": {"name": "Max Verstappen"},
-                },
-            ],
-        }
-    )
-
-    class MockRepository:
-        async def graph_exists(self, graph_name):
-            return False  # Graph does not exist
-
-    service = KnowledgeBaseService(MockRepository())
-
-    with pytest.raises(ValueError, match="does not exist in the database"):
-        await service.upsert_knowledge_base(
-            None, knowledge_base, graph_name="nonexistent_graph", organization_id="org-1"
-        )
-
-
-async def test_knowledge_base_can_write_nodes_and_relationships_to_age_graph():
-    knowledge_base = KnowledgeBase.model_validate(
-        {
-            "name": "demo_kb",
-            "nodes": [
-                {
-                    "id": "node-1",
-                    "label": "Driver",
-                    "properties": {"name": "Max Verstappen"},
-                },
-                {
-                    "id": "node-2",
-                    "label": "Team",
-                    "properties": {"name": "Red Bull"},
-                },
-            ],
-            "relationships": [
-                {
-                    "source_id": "node-1",
-                    "target_id": "node-2",
-                    "label": "DRIVES_FOR",
-                    "properties": {"season": 2025},
-                }
-            ],
-        }
-    )
-
-    class RecordingCursor:
-        def __init__(self):
-            self.calls = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        async def execute(self, query, params=None):
-            self.calls.append((query, params))
-
-    class RecordingConnection:
-        def __init__(self):
-            self.cursor_obj = RecordingCursor()
-
-        def cursor(self):
-            return self.cursor_obj
-
-    connection = RecordingConnection()
-    from common.services.knowledge_base_service import KnowledgeBaseService
-
-    class RecordingRepository:
-        def __init__(self, connection):
-            self.connection = connection
-
-        async def graph_exists(self, graph_name):
-            return True  # Mock graph exists
-
-        async def create_graph(self, graph_name):
-            query = f"SELECT * FROM ag_catalog.create_graph('{graph_name}');"
-            connection.cursor_obj.calls.append((query, None))
-            return query
-
-        async def ensure_vertex_label(self, graph_name, label):
-            connection.cursor_obj.calls.append(
-                (f"SELECT ag_catalog.create_vlabel('{graph_name}', '{label}');", None)
-            )
-
-        async def ensure_edge_label(self, graph_name, label):
-            connection.cursor_obj.calls.append(
-                (f"SELECT ag_catalog.create_elabel('{graph_name}', '{label}');", None)
-            )
-
-        async def create_node(self, graph_name, label, properties):
-            query = (
-                f"SELECT * FROM cypher('{graph_name}', $$ CREATE (n:{label} {properties}) "
-                "RETURN n $$) AS (v agtype);"
-            )
-            connection.cursor_obj.calls.append((query, None))
-            return query
-
-        async def create_relationship(
-            self, graph_name, source_node_id, target_node_id, label, properties
-        ):
-            query = (
-                f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{"id":"{source_node_id}"}}), '
-                f'(b {{"id":"{target_node_id}"}}) CREATE (a)-[:{label} {properties}]->(b) '
-                "RETURN a, b $$) AS (v agtype);"
-            )
-            connection.cursor_obj.calls.append((query, None))
-            return query
-
-        async def commit(self):
-            return None
-
-    service = KnowledgeBaseService(RecordingRepository(connection))
-
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    async with AsyncSession(engine) as session:
-        await service.upsert_knowledge_base(
-            session, knowledge_base, graph_name="demo_graph", organization_id="org-1"
-        )
-        await session.commit()
-
-        # The one call writes the graph and both side-tables.
-        schema_names = set(
-            (
-                await session.execute(
-                    select(GraphSchemaRegistry.name).where(
-                        GraphSchemaRegistry.graph_name == "demo_graph"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert schema_names == {"Driver", "Team", "DRIVES_FOR"}
-
-        embedded_node_ids = set(
-            (
-                await session.execute(
-                    select(NodeEmbedding.node_id).where(
-                        NodeEmbedding.graph_name == "demo_graph"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert embedded_node_ids == {"node-1", "node-2"}
-
-    executed_queries = connection.cursor_obj.calls
-    # Graph already exists, so no create_graph call should be made
-    assert not any("create_graph" in query.lower() for query, _ in executed_queries)
-    assert any(
-        "CREATE (n:Driver" in query or "CREATE (n:Team" in query
-        for query, _ in executed_queries
-    )
-    assert any(
-        "MATCH (a" in query and "DRIVES_FOR" in query for query, _ in executed_queries
-    )
 
 
 async def test_age_graph_repository_graph_exists_checks_if_graph_exists():
@@ -860,65 +528,6 @@ async def test_age_graph_repository_get_node_neighbours_returns_empty_list_when_
     assert await repository.get_node_neighbours("demo_graph", "driver-1") == []
 
 
-async def test_upsert_records_merges_knowledge_base_ids_for_same_label_across_knowledge_bases():
-    # The same label (e.g. "Driver") may be defined by more than one knowledge base
-    # feeding the same graph; the registry keeps a single shared row and accumulates
-    # every contributing knowledge base's id instead of splitting into separate rows.
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    def _driver(knowledge_base_id: str) -> GraphSchemaRegistry:
-        return GraphSchemaRegistry(
-            organization_id="org-1",
-            graph_name="shared_graph",
-            knowledge_base_ids=[knowledge_base_id],
-            type=SchemaType.NODE,
-            name="Driver",
-            description="A racer",
-            aliases=[],
-            properties=[],
-        )
-
-    async with AsyncSession(engine) as session:
-        await GraphSchemaRegistry.upsert_records(session, [_driver("kb-b")])
-        await session.commit()
-
-        await GraphSchemaRegistry.upsert_records(session, [_driver("kb-a")])
-        await session.commit()
-
-        rows = (
-            (
-                await session.execute(
-                    select(GraphSchemaRegistry).where(GraphSchemaRegistry.name == "Driver")
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    assert len(rows) == 1
-    assert rows[0].knowledge_base_ids == ["kb-a", "kb-b"]
-
-
-def test_get_graph_schema_registry_records_requires_knowledge_base_id():
-    knowledge_base = KnowledgeBase.model_validate(
-        {"id": None, "name": "demo", "nodes": [{"label": "Driver"}]}
-    )
-
-    with pytest.raises(ValueError, match="id is required"):
-        knowledge_base.get_graph_schema_registry_records("demo", "org-1")
-
-
-def test_get_graph_schema_registry_records_requires_organization_id():
-    knowledge_base = KnowledgeBase.model_validate(
-        {"name": "demo", "nodes": [{"label": "Driver"}]}
-    )
-
-    with pytest.raises(ValueError, match="organization_id is required"):
-        knowledge_base.get_graph_schema_registry_records("demo", "")
-
-
 async def test_age_graph_repository_get_node_schema_queries_both_directions_by_id_property():
     from common.repositories.age_graph_repository import AgeGraphRepository
 
@@ -1119,66 +728,79 @@ def _demo_knowledge_base(knowledge_base_id: str) -> KnowledgeBase:
     )
 
 
-async def test_upsert_knowledge_base_ensures_labels_once_before_creating_nodes():
-    # Regression test: Apache Age's implicit auto-create-on-first-CREATE races
-    # when several CREATEs for the same brand-new label run in one uncommitted
-    # transaction, raising DuplicateTable. Every label must be ensured exactly
-    # once, before any CREATE that references it - even when multiple nodes
-    # share the label.
-    from common.services.knowledge_base_service import KnowledgeBaseService
+async def _seed_side_tables(session, knowledge_base, graph_name, organization_id):
+    """Seed the registry/embedding rows the worker write would have persisted.
 
-    repository = _RecordingAgeRepository()
-    service = KnowledgeBaseService(repository)
-    knowledge_base = KnowledgeBase.model_validate(
-        {
-            "id": "kb-multi",
-            "name": "kb_multi",
-            "nodes": [
-                {"id": "kb-multi-d1", "label": "Driver", "properties": {"name": "A"}},
-                {"id": "kb-multi-d2", "label": "Driver", "properties": {"name": "B"}},
-            ],
-            "relationships": [
-                {
-                    "source_id": "kb-multi-d1",
-                    "target_id": "kb-multi-d2",
-                    "label": "TEAMMATE_OF",
-                    "properties": {},
-                }
-            ],
-        }
-    )
+    Mirrors the worker's two side-table upserts (schema registry merges by label;
+    node embedding rows are one per node) without the graph write, so the
+    lifecycle/delete tests can run without importing the ingestion worker.
+    """
+    kb_id = knowledge_base.id
 
-    async with await _sqlite_session() as session:
-        await service.upsert_knowledge_base(
-            session, knowledge_base, "demo_graph", "org-1"
+    async def _schema_row(name, schema_type, properties, source_label=None, target_label=None):
+        row = (
+            await session.execute(
+                select(GraphSchemaRegistry).where(
+                    GraphSchemaRegistry.organization_id == organization_id,
+                    GraphSchemaRegistry.graph_name == graph_name,
+                    GraphSchemaRegistry.name == name,
+                    GraphSchemaRegistry.type == schema_type,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = GraphSchemaRegistry(
+                organization_id=organization_id,
+                graph_name=graph_name,
+                knowledge_base_ids=[kb_id],
+                type=schema_type,
+                name=name,
+                description="",
+                aliases=[],
+                properties=sorted(properties),
+                source_label=source_label,
+                target_label=target_label,
+            )
+            row.embedding_row = None
+            session.add(row)
+        else:
+            row.knowledge_base_ids = sorted(set(row.knowledge_base_ids) | {kb_id})
+
+    node_properties: dict[str, set] = {}
+    for node in knowledge_base.nodes:
+        node_properties.setdefault(node.label, set()).update(node.properties.keys())
+    for label, props in node_properties.items():
+        await _schema_row(label, SchemaType.NODE, props)
+
+    for relationship in knowledge_base.relationships:
+        source_label = next(
+            (n.label for n in knowledge_base.nodes if n.id == relationship.source_id),
+            None,
+        )
+        target_label = next(
+            (n.label for n in knowledge_base.nodes if n.id == relationship.target_id),
+            None,
+        )
+        await _schema_row(
+            relationship.label,
+            SchemaType.RELATIONSHIP,
+            relationship.properties.keys(),
+            source_label,
+            target_label,
         )
 
-    ensure_vertex_calls = [q for q in repository.queries if "create_vlabel" in q]
-    ensure_edge_calls = [q for q in repository.queries if "create_elabel" in q]
-    create_node_indices = [
-        i
-        for i, q in enumerate(repository.queries)
-        if q.startswith("CREATE (n:Driver")
-    ]
-    create_relationship_indices = [
-        i
-        for i, q in enumerate(repository.queries)
-        if q.startswith("CREATE (") and "TEAMMATE_OF" in q
-    ]
-
-    # Ensured exactly once, even though two Driver nodes are created.
-    assert ensure_vertex_calls == [
-        "SELECT ag_catalog.create_vlabel('demo_graph', 'Driver');"
-    ]
-    assert ensure_edge_calls == [
-        "SELECT ag_catalog.create_elabel('demo_graph', 'TEAMMATE_OF');"
-    ]
-
-    # And before any CREATE that references the label.
-    vertex_ensure_index = repository.queries.index(ensure_vertex_calls[0])
-    edge_ensure_index = repository.queries.index(ensure_edge_calls[0])
-    assert all(vertex_ensure_index < i for i in create_node_indices)
-    assert all(edge_ensure_index < i for i in create_relationship_indices)
+    for node in knowledge_base.nodes:
+        session.add(
+            NodeEmbedding(
+                organization_id=organization_id,
+                graph_name=graph_name,
+                knowledge_base_id=kb_id,
+                node_id=node.id,
+                label=node.label,
+                properties=dict(node.properties),
+            )
+        )
+    await session.flush()
 
 
 async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows():
@@ -1190,9 +812,7 @@ async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows(
     knowledge_base = _demo_knowledge_base("kb-1")
 
     async with await _sqlite_session() as session:
-        await service.upsert_knowledge_base(
-            session, knowledge_base, "demo_graph", "org-1"
-        )
+        await _seed_side_tables(session, knowledge_base, "demo_graph", "org-1")
         await session.commit()
 
         repository.queries.clear()
@@ -1230,12 +850,8 @@ async def test_delete_knowledge_base_keeps_registry_rows_shared_with_another_bas
     service = KnowledgeBaseService(repository)
 
     async with await _sqlite_session() as session:
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1"
-        )
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-2"), "demo_graph", "org-1"
-        )
+        await _seed_side_tables(session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1")
+        await _seed_side_tables(session, _demo_knowledge_base("kb-2"), "demo_graph", "org-1")
         await session.commit()
 
         rows = (await session.execute(select(GraphSchemaRegistry))).scalars().all()
@@ -1285,15 +901,9 @@ async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():
 
     async with await _sqlite_session() as session:
         # Two knowledge bases in the graph being dropped, one in a graph that stays.
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "doomed_graph", "org-1"
-        )
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-2"), "doomed_graph", "org-1"
-        )
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-3"), "other_graph", "org-1"
-        )
+        await _seed_side_tables(session, _demo_knowledge_base("kb-1"), "doomed_graph", "org-1")
+        await _seed_side_tables(session, _demo_knowledge_base("kb-2"), "doomed_graph", "org-1")
+        await _seed_side_tables(session, _demo_knowledge_base("kb-3"), "other_graph", "org-1")
         await session.commit()
 
         repository.queries.clear()
@@ -1328,9 +938,7 @@ async def test_delete_graph_cleans_side_tables_even_when_the_graph_is_already_go
     service = KnowledgeBaseService(repository)
 
     async with await _sqlite_session() as session:
-        await service.upsert_knowledge_base(
-            session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1"
-        )
+        await _seed_side_tables(session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1")
         await session.commit()
 
         repository._graph_exists = False
