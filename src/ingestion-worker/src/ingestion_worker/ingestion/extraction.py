@@ -6,14 +6,14 @@ the moved home of `KnowledgeBase.get_graph_schema_registry_records()` and
 `KnowledgeBase.get_node_embedding_records()`.
 """
 
-from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
-from common.models.node_embedding import NodeEmbedding
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO, SchemaType
 from common.schemas.knowledge_base import KnowledgeBase
+from common.schemas.node_embedding import NodeEmbeddingDTO
 
 
 def graph_schema_registry_records(
     knowledge_base: KnowledgeBase, graph_name: str, organization_id: str
-) -> list[GraphSchemaRegistry]:
+) -> list[GraphSchemaRegistryDTO]:
     """Extract schema registry records from a knowledge base.
 
     Groups nodes by label and relationships by label into one record each,
@@ -31,13 +31,13 @@ def graph_schema_registry_records(
         )
     knowledge_base_id = knowledge_base.id
 
-    grouped: dict[tuple[str, str, str], GraphSchemaRegistry] = {}
+    grouped: dict[tuple[str, str, str], GraphSchemaRegistryDTO] = {}
 
     for node in knowledge_base.nodes:
         key = (graph_name, SchemaType.NODE.value, node.label)
         row = grouped.setdefault(
             key,
-            GraphSchemaRegistry(
+            GraphSchemaRegistryDTO(
                 organization_id=organization_id,
                 graph_name=graph_name,
                 knowledge_base_ids=[knowledge_base_id],
@@ -72,7 +72,7 @@ def graph_schema_registry_records(
         key = (graph_name, SchemaType.RELATIONSHIP.value, relationship.label)
         row = grouped.setdefault(
             key,
-            GraphSchemaRegistry(
+            GraphSchemaRegistryDTO(
                 organization_id=organization_id,
                 graph_name=graph_name,
                 knowledge_base_ids=[knowledge_base_id],
@@ -96,8 +96,8 @@ def graph_schema_registry_records(
 
 def node_embedding_records(
     knowledge_base: KnowledgeBase, graph_name: str, organization_id: str
-) -> list[NodeEmbedding]:
-    """Build one unsaved NodeEmbedding record per node in the knowledge base."""
+) -> list[NodeEmbeddingDTO]:
+    """Build one NodeEmbeddingDTO per node in the knowledge base."""
     if not knowledge_base.id:
         raise ValueError(
             "id is required on the knowledge base when building node embedding records"
@@ -109,7 +109,7 @@ def node_embedding_records(
     knowledge_base_id = knowledge_base.id
 
     return [
-        NodeEmbedding(
+        NodeEmbeddingDTO(
             organization_id=organization_id,
             graph_name=graph_name,
             knowledge_base_id=knowledge_base_id,

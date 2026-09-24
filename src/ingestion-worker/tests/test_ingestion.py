@@ -4,11 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from common.models.base import Base
-from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
 from common.models.schema_embedding import SchemaEmbedding
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO, SchemaType
 from common.schemas.knowledge_base import KnowledgeBase
 from common.schemas.model import AuthMode, Model, ModelType
+from common.schemas.node_embedding import NodeEmbeddingDTO
 
 from ingestion_worker.ingestion.extraction import (
     graph_schema_registry_records,
@@ -116,6 +118,7 @@ def _fake_aembedding(monkeypatch):
 def test_graph_schema_registry_records_groups_by_label():
     records = graph_schema_registry_records(_demo_knowledge_base(), "graph-1", "org-1")
 
+    assert all(isinstance(record, GraphSchemaRegistryDTO) for record in records)
     by_name = {record.name: record for record in records}
     assert set(by_name) == {"Driver", "Team", "DRIVES_FOR"}
     assert by_name["Driver"].type == SchemaType.NODE
@@ -139,6 +142,7 @@ def test_graph_schema_registry_records_require_knowledge_base_id():
 def test_node_embedding_records_one_per_node():
     records = node_embedding_records(_demo_knowledge_base(), "graph-1", "org-1")
 
+    assert all(isinstance(record, NodeEmbeddingDTO) for record in records)
     assert {record.node_id for record in records} == {"kb-1-d", "kb-1-t"}
     assert all(record.knowledge_base_id == "kb-1" for record in records)
     assert all(record.graph_name == "graph-1" for record in records)
@@ -149,7 +153,8 @@ async def test_upsert_schema_registry_inserts_then_merges_knowledge_base_ids():
     async with session:
         first = graph_schema_registry_records(_demo_knowledge_base("kb-1"), "g", "org-1")
         second = graph_schema_registry_records(_demo_knowledge_base("kb-2"), "g", "org-1")
-        await upsert_schema_registry(session, first)
+        persisted = await upsert_schema_registry(session, first)
+        assert all(isinstance(record, GraphSchemaRegistryDTO) for record in persisted)
         await upsert_schema_registry(session, second)
         await session.commit()
 
@@ -183,7 +188,8 @@ async def test_upsert_node_embeddings_updates_existing_and_stamps_model(monkeypa
     model = _embedding_model()
     async with session:
         records = node_embedding_records(_demo_knowledge_base(), "g", "org-1")
-        await upsert_node_embeddings(session, records, model=model)
+        persisted = await upsert_node_embeddings(session, records, model=model)
+        assert all(isinstance(record, NodeEmbeddingDTO) for record in persisted)
         await session.commit()
 
         # Re-upserting the same nodes updates, not duplicates.

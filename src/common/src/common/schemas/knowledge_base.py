@@ -1,8 +1,27 @@
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class KnowledgeBaseRecordDTO(BaseModel):
+    """DTO for the API-owned `common.models.knowledge_base.KnowledgeBase` row.
+
+    This resource record is distinct from the graph-payload `KnowledgeBase`
+    defined below. `data` carries the serialized graph payload read by ingestion.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    organization_id: str
+    name: str
+    data: str
+    state: str
+    created_at_utc: datetime
+    updated_at_utc: datetime
 
 
 class KnowledgeNode(BaseModel):
@@ -128,6 +147,7 @@ class KnowledgeBase(BaseModel):
 
 __all__ = [
     "KnowledgeBase",
+    "KnowledgeBaseRecordDTO",
     "KnowledgeNode",
     "KnowledgeRelationship",
 ]

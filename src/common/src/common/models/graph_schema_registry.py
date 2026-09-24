@@ -1,5 +1,3 @@
-from enum import Enum
-
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, CheckConstraint, String, Text, cast, select
 from sqlalchemy.dialects.postgresql import JSONB, array
@@ -8,20 +6,9 @@ from sqlalchemy.orm import Mapped, contains_eager, mapped_column, relationship
 
 from common.models.base import Base
 from common.models.schema_embedding import SchemaEmbedding
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO, SchemaType
 from common.schemas.model import Model
 from common.services.embedding_service import EmbeddingService
-
-
-class SchemaType(str, Enum):
-    """Enumeration of valid schema types in the graph registry.
-
-    Attributes:
-        NODE: Represents a node/vertex type in the knowledge graph.
-        RELATIONSHIP: Represents a relationship/edge type in the knowledge graph.
-    """
-
-    NODE = "node"
-    RELATIONSHIP = "relationship"
 
 
 class GraphSchemaRegistry(Base):
@@ -99,7 +86,7 @@ class GraphSchemaRegistry(Base):
         type: SchemaType | None = None,
         knowledge_base_ids: list[str] | None = None,
         top_k: int = 5,
-    ) -> list["GraphSchemaRegistry"]:
+    ) -> list[GraphSchemaRegistryDTO]:
         """Find the schema registry records whose embedding is closest to a text query.
 
         Embeds the query text via litellm (see `EmbeddingService.compute_embeddings`) and orders stored
@@ -140,7 +127,7 @@ class GraphSchemaRegistry(Base):
             top_k: Maximum number of records to return, ordered by similarity.
 
         Returns:
-            A list of GraphSchemaRegistry records ordered from most to least similar.
+            A list of GraphSchemaRegistryDTOs ordered from most to least similar.
 
         Raises:
             ValueError: If `model` is None, since no embedding provider is configured
@@ -190,7 +177,8 @@ class GraphSchemaRegistry(Base):
                 cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))
             )
 
-        return list((await session.execute(stmt)).scalars().all())
+        rows = (await session.execute(stmt)).scalars().all()
+        return [GraphSchemaRegistryDTO.model_validate(row) for row in rows]
 
     @classmethod
     async def get_properties_by_name(

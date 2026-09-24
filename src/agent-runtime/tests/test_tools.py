@@ -13,12 +13,12 @@ from agent_runtime.tools import (
     search_entities,
     search_schema_registry,
 )
-from common.models.graph_schema_registry import (
-    GraphSchemaRegistry,
-    SchemaType,
-)
+from common.models.graph_schema_registry import GraphSchemaRegistry
+from common.models.node_embedding import NodeEmbedding
 from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO, SchemaType
 from common.schemas.knowledge_base import KnowledgeNode
+from common.schemas.node_embedding import NodeEmbeddingDTO
 
 
 def _context(repository) -> AgentContext:
@@ -39,6 +39,66 @@ def _runtime(context: AgentContext) -> ToolRuntime:
         tool_call_id=None,
         store=None,
     )
+
+
+async def test_search_schema_registry_serializes_dto_results(monkeypatch):
+    record = GraphSchemaRegistryDTO(
+        organization_id="org-1",
+        graph_name="demo_graph",
+        type=SchemaType.NODE,
+        name="Driver",
+        description="Racing driver",
+        aliases=["pilot"],
+        properties=["name"],
+    )
+
+    async def fake_vector_search(*args, **kwargs):
+        assert args[1:4] == ("driver", "demo_graph", "org-1")
+        return [record]
+
+    monkeypatch.setattr(GraphSchemaRegistry, "vector_search", fake_vector_search)
+
+    result = await search_schema_registry.coroutine(
+        query="driver", runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository)))
+    )
+
+    assert result == [
+        {
+            "type": SchemaType.NODE,
+            "name": "Driver",
+            "description": "Racing driver",
+            "aliases": ["pilot"],
+            "properties": ["name"],
+        }
+    ]
+
+
+async def test_search_entities_serializes_dto_results(monkeypatch):
+    record = NodeEmbeddingDTO(
+        organization_id="org-1",
+        graph_name="demo_graph",
+        knowledge_base_id="kb-1",
+        node_id="driver-1",
+        label="Driver",
+        properties={"name": "Lewis"},
+    )
+
+    async def fake_vector_search(*args, **kwargs):
+        assert args[1:4] == ("driver", "demo_graph", "org-1")
+        assert kwargs["labels"] == ["Driver"]
+        return [record]
+
+    monkeypatch.setattr(NodeEmbedding, "vector_search", fake_vector_search)
+
+    result = await search_entities.coroutine(
+        query="driver",
+        runtime=_runtime(_context(MagicMock(spec=AgeGraphRepository))),
+        labels=["Driver"],
+    )
+
+    assert result == [
+        {"node_id": "driver-1", "label": "Driver", "properties": {"name": "Lewis"}}
+    ]
 
 
 async def test_get_node_neighbours_groups_relationships_under_the_node_once():

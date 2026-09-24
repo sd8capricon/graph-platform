@@ -46,6 +46,14 @@ the worker (ADR-0005).
    - `KnowledgeBase`: Container for nodes and relationships with JSON serialization
    - `KnowledgeNode`: Graph node with unique ID, label, and properties
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
+   - Graph-payload schemas are input DTOs for ingestion; they are not ORM mappings. ORM-facing
+     schemas are explicit Pydantic DTOs with `from_attributes=True`, kept in one schema module per
+     model: `KnowledgeBaseRecordDTO`, `GraphSchemaRegistryDTO`, `NodeEmbeddingDTO`, and
+     `SchemaEmbeddingDTO`. Persistence queries return DTOs, and ingestion extraction returns DTOs
+     that the worker writer maps into ORM rows. `KnowledgeBaseRecordDTO` represents the API-owned
+     resource row (`id`, organization/name/state/timestamps, serialized `data`) and is distinct
+     from the graph-payload `KnowledgeBase` above. `schemas/model.py`'s `Model` is provider config,
+     not an ORM DTO; Python has no ModelConfig ORM mapping.
    - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (id, display_name,
      name, provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
      reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
@@ -75,18 +83,23 @@ the worker (ADR-0005).
      belongs to the management API; `create_all()` on `Base.metadata` does not include these
    - `KnowledgeBase` (`models/knowledge_base.py`): shared ORM mapping of the management API's
      `knowledge_base` resource table. It uses `ApiOwnedBase` metadata rather than `Base.metadata`,
-     because EF owns the table's DDL and Python `create_all()` must not create it. Its PascalCase
-     column names mirror the API migration; `job_store.py` uses its `__table__` for worker reads
-     and lifecycle-state updates. This is separate from `schemas.knowledge_base.KnowledgeBase`, the
-     graph payload model
-   - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions
+      because EF owns the table's DDL and Python `create_all()` must not create it. Its PascalCase
+      column names mirror the API migration; `job_store.py` uses this mapping for persistence and
+      transfers the resource row as `KnowledgeBaseRecordDTO`. This is separate from
+      `schemas.knowledge_base.KnowledgeBase`, the graph payload model
+   - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions;
+     `vector_search()` returns `GraphSchemaRegistryDTO`. `SchemaType` lives with that DTO in
+     `schemas/graph_schema_registry.py` (the model module keeps a re-export for compatibility)
    - Stores: graph name, knowledge base IDs (list; a label may come from multiple knowledge bases), entity type, name, description, aliases, properties, source/target labels
    - Read methods: `vector_search()` (cosine-similarity search) and `get_properties_by_name()`. The upsert/merge write path is ingestion-only and lives in the worker as `ingestion_worker.ingestion.writer.upsert_schema_registry()`
-   - `NodeEmbedding`: SQLAlchemy ORM model storing one vector embedding per knowledge base node
+   - `NodeEmbedding`: SQLAlchemy ORM model storing one vector embedding per knowledge base node;
+     `vector_search()` returns `NodeEmbeddingDTO`
    - Stores: graph name, knowledge base ID, node ID, label, properties snapshot, embedding vector
    - Read methods: `vector_search()` - cosine-similarity search; plus `ensure_embedding_index()` / `drop_embedding_index()` DDL. The upsert write path lives in the worker as `ingestion_worker.ingestion.writer.upsert_node_embeddings()`
-   - Both models share the pgvector embedding column pattern and delegate embedding computation
-     to `EmbeddingService`; see "Vector Embedding & Search Pattern" below
+    - Both models share the pgvector embedding column pattern and delegate embedding computation
+      to `EmbeddingService`; see "Vector Embedding & Search Pattern" below
+   - `SchemaEmbedding`: SQLAlchemy ORM model holding the schema vector side table; represented in
+     transfers by `SchemaEmbeddingDTO`, nested under `GraphSchemaRegistryDTO` where appropriate
 
 3. **Agents** (`src/agent-runtime/src/agent_runtime/`)
    - `context.py` - `AgentContext`: pydantic model passed as `context_schema` to LangChain's
@@ -132,9 +145,11 @@ the worker (ADR-0005).
      `GraphSchemaRegistry.vector_search(context.session, query, context.graph_name, context.model,
      knowledge_base_ids=context.attached_kb_ids)` and reshapes each result into a plain dict
      (type/name/description/aliases/properties/source_label/target_label) since tool return values
-     must be JSON-serializable, not ORM instances. `search_entities(query, runtime, labels=None)`
+      must be JSON-serializable, not ORM instances; the model method already returns a DTO rather
+      than an ORM row. `search_entities(query, runtime, labels=None)`
      calls `NodeEmbedding.vector_search(context.session, query, context.graph_name, context.model,
-     labels=labels)` and reshapes each result into a plain dict (node_id/label/properties) for the
+      labels=labels)` and reshapes each `NodeEmbeddingDTO` into a plain dict
+      (node_id/label/properties) for the
      same JSON-serializability reason. Unlike `search_schema_registry`, it does not scope to
      `context.attached_kb_ids` — `NodeEmbedding.vector_search`'s `knowledge_base_id` filter is a
      single-value equality filter (one knowledge base at a time), not a multi-id overlap filter like
@@ -175,7 +190,8 @@ the worker (ADR-0005).
    - `serializers.py` - `AgentSerializer`, a class of `@staticmethod`/`@classmethod` conversions
      (`schema_registry_record_to_dict()` / `node_embedding_record_to_dict()` /
      `node_neighbours_to_dict()` / `node_schema_to_dict()` / `relationship_matches_to_dict()`) shared by
-     `tools.py`'s tool implementations. Grouped as one class purely for a single, discoverable import
+     `tools.py`'s tool implementations. Search-record serializers take the matching Pydantic DTO,
+     not an ORM instance. Grouped as one class purely for a single, discoverable import
      surface — none hold or need instance state. Kept in their own module, not prefixed with `_`, so
      they're importable/testable independent of any `@tool`-decorated function
    - `prompts.py` - `GRAPH_AGENT_SYSTEM_PROMPT`, the agent's system prompt. Its own module so
@@ -429,7 +445,11 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   never touches the API's tables. Their Core `Table`s live under `ingestion_worker/models/`, one
   module per table. The shared API-owned `knowledge_base` table mapping lives at
   `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads its
-  `Data` graph JSON and updates its lifecycle `State` through the same store
+  `Data` graph JSON as `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same
+  mapped model
+- Ingestion extraction returns `GraphSchemaRegistryDTO` / `NodeEmbeddingDTO` rather than transient
+  ORM instances. `ingestion_worker.ingestion.writer` maps those DTOs into ORM rows for upsert and
+  returns DTOs; no ORM objects cross the ingestion extraction/writer boundary
 - The API never calls a worker: it writes a `queued` job row, and the Celery Beat **dispatcher**
   (`ingestion_worker/dispatcher.py`) claims it with `FOR UPDATE SKIP LOCKED` + a guarded
   `queued -> running` transition, commits, then publishes the task. Commit-before-publish means a
@@ -519,7 +539,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - The worker builds the embedded text via helpers (`schema_embedding_text` — name/description/aliases; `node_embedding_text` — label + `"key: value"` properties) and (re)computes it inside `upsert_schema_registry()` / `upsert_node_embeddings()` after merging/updating fields, by calling `EmbeddingService.compute_embeddings(model, texts)` — `upsert_schema_registry()` stores the result on `record.embedding_row` (see above), `upsert_node_embeddings()` stores it directly on the record
 - `vector_search(session, query, graph_name, organization_id, model, ..., limit=5)` embeds the query text via the given `model`, then orders rows with pgvector's cosine distance operator — requires PostgreSQL, raises `ValueError` if `model` is `None` or has no `embedding_dimension`. Both checks happen **before** `compute_embeddings()`, since that is a real billed provider call and a model we cannot search against should never reach it
   - The search is always confined to rows `model` itself produced: it filters `embedding_model_id == model.id` and orders by `cast(embedding, Vector(model.embedding_dimension)).cosine_distance(...)`. There is deliberately **no** `embedding_model_id` parameter — both are derived from `model`, because both must agree with the query vector to mean anything (a cosine distance between two models' vectors is a meaningless number; between two *widths* it is an error), and because that pairing is exactly what makes the partial expression index matchable. A search therefore only ever sees rows embedded by the searching model — during an ADR-0002 recalculation window that is the desired behavior, not a limitation
-- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `ingestion_worker.ingestion.extraction.node_embedding_records(knowledge_base, graph_name, organization_id)` builds one unsaved `NodeEmbedding` per node, requiring `knowledge_base.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each record; `KnowledgeBaseService.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wraps the search call and passes `model` straight through. `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
+- `NodeEmbedding` rows are keyed by `organization_id` + `graph_name` + `knowledge_base_id` + `node_id` (a `UniqueConstraint`), since the same `node_id` may legitimately be contributed by more than one knowledge base feeding the same graph — each combination is stored as its own row. `ingestion_worker.ingestion.extraction.node_embedding_records(knowledge_base, graph_name, organization_id)` builds one `NodeEmbeddingDTO` per node, requiring `knowledge_base.id` to be set (raises `ValueError` otherwise) and stamping `organization_id`/`knowledge_base_id` onto each DTO; `KnowledgeBaseService.search_nodes(session, query, graph_name, organization_id, model, ..., knowledge_base_id=None, ...)` wraps the search call and returns `NodeEmbeddingDTO` results. `NodeEmbedding.vector_search()` / `search_nodes()` take an optional `knowledge_base_id` (singular, equality filter) to scope a search to one knowledge base, and an optional `labels: list[str] | None` filtered via `cls.label.in_(labels)` (only applied when the list is non-empty) — plural because a caller (e.g. the `search_entities` agent tool) may want nodes matching any of several labels in one query, unlike the single-knowledge-base-at-a-time `knowledge_base_id` filter
 - `GraphSchemaRegistry.vector_search()` takes an optional `knowledge_base_ids: list[str] | None` (plural, overlap filter) since a schema row's `knowledge_base_ids` is shared across contributing knowledge bases by design. Implemented as PostgreSQL-only: `cast(cls.knowledge_base_ids, JSONB).op("?|")(array(knowledge_base_ids))` — casts the plain-JSON column to `JSONB` at query time (no column-type change needed) and uses jsonb's `?|` "any of these strings present" operator; only applied when the list is non-empty, and covered by a compiled-SQL test the same way as the cosine-distance test (`FakeSession` capturing the statement, compiled against `postgresql.dialect()`) since neither `?|` nor `<=>` runs on SQLite
 - Tests monkeypatch `embedding_service.litellm.aembedding` (import the module as `embedding_service`, not the individual ORM model modules) and pass a `Model` built via a small `_embedding_model()` test helper, to avoid real API calls
 - See: `src/common/src/common/services/embedding_service.py`, `src/common/src/common/schemas/model.py`, `src/common/src/common/models/graph_schema_registry.py`, `src/common/src/common/models/schema_embedding.py`, `src/common/src/common/models/node_embedding.py`, and `tests/test_embedding_service.py` / `tests/test_schema_embedding_model.py` / `tests/test_node_embedding_model.py`
@@ -768,6 +788,8 @@ shared library resolve through a path dependency (`common` in `[project.dependen
   repositories, the embedding service, index DDL and the `api/` placeholder. Standard uv layout, so
   the import package sits at `src/common/src/common/`
 - `src/common/src/common/` - shared import package `common`
+- `src/common/src/common/schemas/` - Pydantic DTOs paired with ORM models (one module per model),
+  alongside the graph-payload schemas and provider configuration schema
 - `src/common/src/common/database/connection.py` - `create_connection()` / `database_url()`: the
   Apache Age psycopg connection setup both services use
 - `src/agent-runtime/pyproject.toml` - the `agent-runtime` uv project: agent dependencies,
@@ -787,6 +809,8 @@ shared library resolve through a path dependency (`common` in `[project.dependen
   `ingestion_worker/job_store.py` holds `IndexJobStore`
 - `tests/test_graph_registry_model.py` - test suite (schema registry, general KnowledgeBase/service
   behavior, and `AgeGraphRepository` incl. `get_node_neighbours`)
+- `tests/test_model_dtos.py` - verifies `from_attributes` conversions for DTOs paired with each ORM
+  model (`KnowledgeBaseRecordDTO`, `GraphSchemaRegistryDTO`, `NodeEmbeddingDTO`, `SchemaEmbeddingDTO`)
 - `src/ingestion-worker/tests/test_job_store.py` - test suite for `IndexJobStore` (guarded
   transitions, fan-in gate, KB read/state, `FOR UPDATE SKIP LOCKED` compiled SQL)
 - `tests/test_age_graph_repository_merge.py` - test suite for the idempotent `merge_node`/

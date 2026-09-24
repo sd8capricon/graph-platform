@@ -3,11 +3,9 @@ from langchain.tools import ToolRuntime, tool
 from agent_runtime.context import AgentContext
 from agent_runtime.models import NodeRef
 from agent_runtime.serializers import AgentSerializer
-from common.models.graph_schema_registry import (
-    GraphSchemaRegistry,
-    SchemaType,
-)
+from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
+from common.schemas.graph_schema_registry import SchemaType
 from common.schemas.knowledge_base import KnowledgeNode
 
 

@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateTable
 
 from common.models.base import Base
-from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.schema_embedding import SchemaEmbedding
+from common.schemas.graph_schema_registry import SchemaType
 
 
 def test_schema_embedding_column_is_dimensionless():
@@ -116,5 +117,4 @@ async def test_deleting_the_registry_row_cascades_to_its_embedding_row():
     async with AsyncSession(engine) as session:
         remaining = (await session.execute(select(SchemaEmbedding))).scalars().all()
         assert remaining == []
-
 

@@ -5,7 +5,9 @@ from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
 from common.models.schema_embedding import SchemaEmbedding
 from common.repositories.age_graph_repository import AgeGraphRepository
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO
 from common.schemas.model import Model
+from common.schemas.node_embedding import NodeEmbeddingDTO
 
 
 class KnowledgeBaseService:
@@ -229,7 +231,7 @@ class KnowledgeBaseService:
         knowledge_base_id: str,
         graph_name: str,
         organization_id: str,
-    ) -> list[GraphSchemaRegistry]:
+    ) -> list[GraphSchemaRegistryDTO]:
         """Drop a knowledge base's claim on a graph's schema registry rows.
 
         Removes `knowledge_base_id` from the `knowledge_base_ids` of every schema
@@ -251,7 +253,7 @@ class KnowledgeBaseService:
                 ADR-0002, Decision 1). Scopes which rows are read/adjusted.
 
         Returns:
-            A list of the surviving GraphSchemaRegistry rows the id was removed from.
+            A list of the surviving GraphSchemaRegistryDTOs the id was removed from.
             Rows deleted because they had no remaining contributor are not included.
         """
         rows = (
@@ -283,7 +285,7 @@ class KnowledgeBaseService:
                 await session.delete(row)
 
         await session.flush()
-        return retained
+        return [GraphSchemaRegistryDTO.model_validate(row) for row in retained]
 
     async def search_nodes(
         self,
@@ -295,7 +297,7 @@ class KnowledgeBaseService:
         labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
         limit: int = 5,
-    ) -> list[NodeEmbedding]:
+    ) -> list[NodeEmbeddingDTO]:
         """Find knowledge base nodes whose embedding is closest to a text query.
 
         Args:
@@ -314,7 +316,7 @@ class KnowledgeBaseService:
             limit: Maximum number of nodes to return, ordered by similarity.
 
         Returns:
-            A list of NodeEmbedding records ordered from most to least similar.
+            A list of NodeEmbeddingDTOs ordered from most to least similar.
         """
         return await NodeEmbedding.vector_search(
             session,

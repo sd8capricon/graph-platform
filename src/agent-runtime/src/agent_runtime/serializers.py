@@ -1,11 +1,11 @@
 from typing import Any
 
-from common.models.graph_schema_registry import GraphSchemaRegistry
-from common.models.node_embedding import NodeEmbedding
+from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO
+from common.schemas.node_embedding import NodeEmbeddingDTO
 
 
 class AgentSerializer:
-    """ORM-record/agtype-to-plain-dict conversions shared by `agent_runtime/tools.py`.
+    """DTO/agtype-to-plain-dict conversions shared by `agent_runtime/tools.py`.
 
     Grouped as staticmethods on one class (rather than left as module-level
     functions) purely for a single, discoverable import surface — none of them
@@ -15,7 +15,7 @@ class AgentSerializer:
     """
 
     @staticmethod
-    def schema_registry_record_to_dict(record: GraphSchemaRegistry) -> dict:
+    def schema_registry_record_to_dict(record: GraphSchemaRegistryDTO) -> dict:
         return {
             key: value
             for key, value in {
@@ -31,7 +31,7 @@ class AgentSerializer:
         }
 
     @staticmethod
-    def node_embedding_record_to_dict(record: NodeEmbedding) -> dict:
+    def node_embedding_record_to_dict(record: NodeEmbeddingDTO) -> dict:
         return {
             "node_id": record.node_id,
             "label": record.label,

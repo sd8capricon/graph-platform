@@ -11,6 +11,7 @@ from common.database.indexes import (
 )
 from common.models.base import Base
 from common.schemas.model import Model
+from common.schemas.node_embedding import NodeEmbeddingDTO
 from common.services.embedding_service import EmbeddingService
 
 
@@ -101,7 +102,7 @@ class NodeEmbedding(Base):
         labels: list[str] | None = None,
         knowledge_base_id: str | None = None,
         limit: int = 5,
-    ) -> list["NodeEmbedding"]:
+    ) -> list[NodeEmbeddingDTO]:
         """Find the node embedding records whose embedding is closest to a text query.
 
         Embeds the query text via litellm (see `EmbeddingService.compute_embeddings`) and orders stored
@@ -136,7 +137,7 @@ class NodeEmbedding(Base):
             limit: Maximum number of records to return, ordered by similarity.
 
         Returns:
-            A list of NodeEmbedding records ordered from most to least similar.
+            A list of NodeEmbeddingDTOs ordered from most to least similar.
 
         Raises:
             ValueError: If `model` is None, since no embedding provider is configured
@@ -179,7 +180,8 @@ class NodeEmbedding(Base):
         if knowledge_base_id is not None:
             stmt = stmt.where(cls.knowledge_base_id == knowledge_base_id)
 
-        return list((await session.execute(stmt)).scalars().all())
+        rows = (await session.execute(stmt)).scalars().all()
+        return [NodeEmbeddingDTO.model_validate(row) for row in rows]
 
     @classmethod
     async def ensure_embedding_index(cls, session: AsyncSession, model: Model) -> str:

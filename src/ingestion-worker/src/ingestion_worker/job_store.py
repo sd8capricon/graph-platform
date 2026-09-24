@@ -1,11 +1,11 @@
 """Narrow async data-access over the ingestion job-state tables.
 
 `IndexJobStore` is the ingestion worker's only window onto the API-owned
-`index_job`/`index_file` tables. It uses SQLAlchemy Core (not ORM models) so that
-registering it never touches `common.models.base.Base.metadata`; the tables live
-under `ingestion_worker/models/`. Every transition that can be replayed is a
-guarded `UPDATE` (a `WHERE` on the expected current status), so an at-least-once
-redelivery cannot double-apply it.
+`index_job`/`index_file` tables. Those use SQLAlchemy Core on private metadata;
+the shared `knowledge_base` resource uses the common ORM mapping and returns a
+Pydantic DTO. Every replayable job transition is a guarded `UPDATE` (a `WHERE`
+on the expected current status), so an at-least-once redelivery cannot
+double-apply it.
 """
 
 from dataclasses import dataclass
@@ -16,11 +16,10 @@ from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.models.knowledge_base import KnowledgeBase
+from common.schemas.knowledge_base import KnowledgeBaseRecordDTO
 
 from ingestion_worker.models.index_file import index_file
 from ingestion_worker.models.index_job import index_job
-
-knowledge_base = KnowledgeBase.__table__
 
 # index_job.status values (ADR-0005)
 JOB_QUEUED = "queued"
@@ -59,15 +58,6 @@ class IndexJobRow:
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class KnowledgeBaseRow:
-    id: str
-    organization_id: str
-    name: str
-    data: str
-    state: str
 
 
 class IndexJobStore:
@@ -239,37 +229,31 @@ class IndexJobStore:
         )
         return result.rowcount > 0
 
-    async def read_knowledge_base(self, knowledge_base_id: str) -> KnowledgeBaseRow | None:
+    async def read_knowledge_base(
+        self, knowledge_base_id: str
+    ) -> KnowledgeBaseRecordDTO | None:
         """Read the KB row's payload, name, organization and user-facing state."""
         row = (
             await self.session.execute(
-                select(knowledge_base).where(knowledge_base.c.Id == knowledge_base_id)
+                select(KnowledgeBase).where(KnowledgeBase.id == knowledge_base_id)
             )
-        ).first()
+        ).scalar_one_or_none()
         if row is None:
             return None
-        m = row._mapping
-        return KnowledgeBaseRow(
-            id=m["Id"],
-            organization_id=m["OrganizationId"],
-            name=m["Name"],
-            data=m["Data"],
-            state=m["State"],
-        )
+        return KnowledgeBaseRecordDTO.model_validate(row)
 
     async def set_knowledge_base_state(self, knowledge_base_id: str, state: str) -> None:
         """Set the KB's coarse user-facing `State` column."""
         await self.session.execute(
-            update(knowledge_base)
-            .where(knowledge_base.c.Id == knowledge_base_id)
-            .values(State=state, UpdatedAtUtc=_now())
+            update(KnowledgeBase)
+            .where(KnowledgeBase.id == knowledge_base_id)
+            .values(state=state, updated_at_utc=_now())
         )
 
 
 __all__ = [
     "IndexJobStore",
     "IndexJobRow",
-    "KnowledgeBaseRow",
     "JOB_QUEUED",
     "JOB_RUNNING",
     "JOB_COMPLETED",

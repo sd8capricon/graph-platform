@@ -10,9 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from common.models.base import Base
-from common.models.graph_schema_registry import GraphSchemaRegistry, SchemaType
+from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
 from common.schemas.knowledge_base import KnowledgeBase
+from common.schemas.graph_schema_registry import SchemaType
 from common.schemas.model import AuthMode, Model, ModelType
 
 

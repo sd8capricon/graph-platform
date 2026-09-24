@@ -6,6 +6,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from common.models.knowledge_base import KnowledgeBase
+from common.schemas.knowledge_base import KnowledgeBaseRecordDTO
 
 from ingestion_worker.job_store import (
     JOB_COMPLETED,
@@ -117,6 +118,7 @@ async def test_read_and_set_knowledge_base_state():
         store = IndexJobStore(session)
         kb = await store.read_knowledge_base("kb-1")
         assert kb is not None
+        assert isinstance(kb, KnowledgeBaseRecordDTO)
         assert kb.name == "F1"
         assert kb.organization_id == "org-1"
         assert kb.data == '{"nodes": []}'

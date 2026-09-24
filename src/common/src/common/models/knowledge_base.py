@@ -13,7 +13,9 @@ class KnowledgeBase(ApiOwnedBase):
 
     The API owns this table's DDL. Its PascalCase column names match the EF
     migration; the separate `ApiOwnedBase` metadata keeps it out of the Python
-    services' normal `Base.metadata.create_all()` calls.
+    services' normal `Base.metadata.create_all()` calls. The ingestion worker
+    uses this mapping for persistence and transfers resource data as
+    `KnowledgeBaseRecordDTO`.
     """
 
     __tablename__ = "knowledge_base"
