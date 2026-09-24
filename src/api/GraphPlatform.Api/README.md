@@ -19,22 +19,24 @@ or supply the equivalent environment variables.
 
 ### ConnectionStrings
 
-The API must reach the same PostgreSQL instance as the Python services. `Data/ConnectionStringFactory.cs`
-resolves its connection string in this order:
-
-1. `ConnectionStrings:PgConnectionString`
-2. `ConnectionStrings:Default` (fallback, tried only when `PgConnectionString` is blank)
-3. The `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` / `PGPASSWORD` environment variables — the same
-   ones `common/database/connection.py::database_url()` reads
-
-When none of them is present, resolving the connection string throws
-(`No PostgreSQL connection configured. …`). `Program.cs` registers the context behind a lazy factory,
-so this surfaces when the first `AppDbContext` is created — i.e. on the first database-backed request,
-or at startup when `Database:AutoMigrate` is `true` — rather than while the host is still building.
+The API must reach the same PostgreSQL instance as the Python services. The connection string is read
+straight from configuration in both hosts — `Program.cs` for the web host and
+`Data/AppDbContextFactory.cs` for `dotnet ef` — from the standard `ConnectionStrings` section, key
+`PgConnectionString`. The key name is the constant `AppDbContext.ConnectionStringName`, so the two
+call sites cannot drift apart.
 
 The committed `appsettings.json` carries `ConnectionStrings:PgConnectionString` as an **empty stub**,
 so the key is discoverable without a value ever reaching source control. Configure the real value in
 one of the three ways below.
+
+> **A blank or absent value is not detected.** Nothing validates this key at build or startup any
+> more (the removed `ConnectionStringFactory` was what used to throw
+> `No PostgreSQL connection configured. …`). `UseNpgsql` accepts an empty string — and even a missing
+> key — and hands it to Npgsql, whose own defaults then apply (`localhost`, current OS user). Observed
+> with `dotnet ef dbcontext info` against the empty stub: an empty `Database name` and `Data source`,
+> and no error. The practical consequence is that a deployment missing the key fails later as an
+> ordinary connection error on the first database-backed request, and could in principle reach an
+> unintended local PostgreSQL instance. Set the key explicitly in every environment.
 
 #### 1. `appsettings.Development.json` (default for local development)
 
@@ -66,8 +68,9 @@ Set the composed key, using `__` as the configuration separator:
 export ConnectionStrings__PgConnectionString='Host=<PGHOST>;Port=<PGPORT>;Database=<PGDATABASE>;Username=<PGUSER>;Password=<PGPASSWORD>'
 ```
 
-Or export all five `PG*` variables and let the third fallback build the string. This is the intended
-path outside Development, where no `appsettings.{Environment}.json` is committed.
+`__` (double underscore) is the configuration separator that maps the variable onto the nested
+`ConnectionStrings:PgConnectionString` key. This is the intended path outside Development, where no
+`appsettings.{Environment}.json` is committed.
 
 #### 3. User secrets (local, outside the repository tree)
 
@@ -87,9 +90,10 @@ committed change.
 #### Migrations
 
 `dotnet ef` resolves the same way: `Data/AppDbContextFactory.cs` builds the same configuration
-(`appsettings.json`, then `appsettings.Development.json`, then environment variables), so
-`dotnet ef database update --project GraphPlatform.Api` uses whichever source you configured. Note
-that the factory does **not** read user secrets.
+(`appsettings.json`, then `appsettings.Development.json`, then environment variables) and reads the
+same key, so `dotnet ef database update --project GraphPlatform.Api` uses whichever source you
+configured. Note that the factory does **not** read user secrets, so a connection string set only
+there is invisible to migrations.
 
 ### Database
 
@@ -123,8 +127,8 @@ Configuration resolves in the standard ASP.NET Core order — later wins:
 1. `appsettings.json` (base; secret keys are present but empty)
 2. `appsettings.{Environment}.json` — `appsettings.Development.json` is gitignored and
    holds the local connection string and signing key
-3. Environment variables (e.g. `Jwt__SigningKey` / `JWT_SIGNING_KEY` for the
-   signing key, or the `PG*` variables for the connection)
+3. Environment variables (e.g. `ConnectionStrings__PgConnectionString` for the
+   connection, or `Jwt__SigningKey` / `JWT_SIGNING_KEY` for the signing key)
 
 Never commit a real signing key or connection string. On a fresh clone, recreate
 `appsettings.Development.json` with the development database connection string and a signing key

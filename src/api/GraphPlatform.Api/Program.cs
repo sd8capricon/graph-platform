@@ -19,14 +19,14 @@ var jwtOptions =
 jwtOptions.Validate();
 builder.Services.AddSingleton(jwtOptions);
 
-// The connection string is resolved lazily, when a context is first created, so a test host that
-// swaps the provider never needs PostgreSQL credentials to exist.
+// The connection string is read lazily, when a context is first created, so a test host that swaps
+// the provider never needs PostgreSQL credentials to exist.
 builder.Services.AddDbContext<AppDbContext>(
     (serviceProvider, options) =>
     {
         var configuration = serviceProvider.GetRequiredService<IConfiguration>();
         options.UseNpgsql(
-            ConnectionStringFactory.Resolve(configuration),
+            configuration.GetConnectionString(AppDbContext.ConnectionStringName),
             npgsql => npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)
         );
     }

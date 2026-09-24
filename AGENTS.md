@@ -939,10 +939,16 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
 - Migrations are never applied automatically (`Database:AutoMigrate` is false even in
   `appsettings.Development.json`) because the API shares its database with the Python services.
   Apply them deliberately: `dotnet ef database update --project GraphPlatform.Api`.
-- Connection string resolution (`Data/ConnectionStringFactory.cs`) is
-  `ConnectionStrings:PgConnectionString` → `ConnectionStrings:Default` →
-  `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, the variables
-  `common/database/connection.py::database_url()` already reads.
+- Connection string resolution is a direct read of `ConnectionStrings:PgConnectionString` — no
+  factory, no fallback chain (the old `Data/ConnectionStringFactory.cs`, its `ConnectionStrings:Default`
+  fallback and its `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD` fallback are gone). The key name is the
+  constant `AppDbContext.ConnectionStringName`, read by both `Program.cs` and
+  `Data/AppDbContextFactory.cs` so the two cannot drift. **Removing the factory also removed the only
+  validation of this key:** `UseNpgsql` accepts an empty string or a null (verified with the committed
+  empty stub, and with the key deleted, via `dotnet ef dbcontext info` — both yield an empty
+  `Database name`/`Data source` and no error), so Npgsql's own defaults (`localhost`, current OS user)
+  apply instead of a startup failure. A missing key is therefore a silent misconfiguration that
+  surfaces later as a connection error, not a fail-fast.
 - Secrets — the development connection string and the JWT signing key — live in
   `appsettings.Development.json`, which is **gitignored**; the committed `appsettings.json` carries
   empty stubs for `ConnectionStrings:PgConnectionString` and `Jwt:SigningKey` so the keys stay
@@ -951,8 +957,8 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   string was copied from that `.env` into the gitignored file, so the API and the Python services
   reach the same database, and the two copies must be kept in step by hand. A fresh clone therefore
   has no usable Development configuration — create `appsettings.Development.json`, or set
-  `ConnectionStrings__PgConnectionString`/`Jwt__SigningKey` (or the `PG*` variables), before starting
-  the API. Tests are unaffected: `GraphPlatformApiFactory` sets `Jwt__*` and swaps the context to SQLite.
+  `ConnectionStrings__PgConnectionString`/`Jwt__SigningKey`, before starting the API. Tests are
+  unaffected: `GraphPlatformApiFactory` sets `Jwt__*` and swaps the context to SQLite.
 
 ### Authorization conventions
 Resolved by `Services/OrganizationAccessService.cs`. A non-member gets **404**, not 403, so the API

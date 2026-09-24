@@ -28,7 +28,7 @@ public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseNpgsql(
-                ConnectionStringFactory.Resolve(configuration),
+                configuration.GetConnectionString(AppDbContext.ConnectionStringName),
                 npgsql => npgsql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)
             )
             .Options;

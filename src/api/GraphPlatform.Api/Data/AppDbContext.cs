@@ -26,6 +26,17 @@ namespace GraphPlatform.Api.Data;
 /// <param name="options">Context options supplied by dependency injection.</param>
 public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbContext<AppUser>(options)
 {
+    /// <summary>
+    /// Name of the configuration entry holding the Npgsql connection string, under the standard
+    /// <c>ConnectionStrings</c> section — i.e. the key <c>ConnectionStrings:PgConnectionString</c>.
+    /// </summary>
+    /// <remarks>
+    /// The context owns the key name because it owns the connection: both the web host
+    /// (<c>Program.cs</c>) and the design-time factory read the value straight from configuration
+    /// with this constant, so a rename cannot drift between them.
+    /// </remarks>
+    public const string ConnectionStringName = "PgConnectionString";
+
     /// <summary>Organizations, the tenancy boundary (ADR-0002, Decision 1).</summary>
     public DbSet<Organization> Organizations => Set<Organization>();
 
