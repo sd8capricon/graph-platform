@@ -937,13 +937,22 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   `email`, `jti`, `iat`, `exp`); the role is re-read from the membership table per request, so a role
   change takes effect immediately instead of when the token expires.
 - Migrations are never applied automatically (`Database:AutoMigrate` is false even in
-  `appsettings.Development.json`) because the repository-root `.env` points at the shared instance.
+  `appsettings.Development.json`) because the API shares its database with the Python services.
   Apply them deliberately: `dotnet ef database update --project GraphPlatform.Api`.
 - Connection string resolution (`Data/ConnectionStringFactory.cs`) is
-  `ConnectionStrings:GraphPlatform` → `ConnectionStrings:Default` →
+  `ConnectionStrings:PgConnectionString` → `ConnectionStrings:Default` →
   `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD`, the variables
-  `common/database/connection.py::database_url()` already reads. `Data/DotEnvLoader.cs` loads the
-  nearest `.env` with `NoClobber` and tolerates its absence, since `.env` is gitignored.
+  `common/database/connection.py::database_url()` already reads.
+- Secrets — the development connection string and the JWT signing key — live in
+  `appsettings.Development.json`, which is **gitignored**; the committed `appsettings.json` carries
+  empty stubs for `ConnectionStrings:PgConnectionString` and `Jwt:SigningKey` so the keys stay
+  discoverable without a value ever being committed. The API no longer loads the repository-root
+  `.env`: `Data/DotEnvLoader.cs` and the `DotNetEnv` package are gone. The Development connection
+  string was copied from that `.env` into the gitignored file, so the API and the Python services
+  reach the same database, and the two copies must be kept in step by hand. A fresh clone therefore
+  has no usable Development configuration — create `appsettings.Development.json`, or set
+  `ConnectionStrings__PgConnectionString`/`Jwt__SigningKey` (or the `PG*` variables), before starting
+  the API. Tests are unaffected: `GraphPlatformApiFactory` sets `Jwt__*` and swaps the context to SQLite.
 
 ### Authorization conventions
 Resolved by `Services/OrganizationAccessService.cs`. A non-member gets **404**, not 403, so the API

@@ -11,11 +11,6 @@ using Microsoft.AspNetCore.OpenApi;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
-// Load the repository-root .env before configuration is read, so the connection string and JWT
-// settings can come from the same gitignored file the Python services read. Its absence is normal on
-// a fresh clone, in which case real environment variables are the source of truth.
-DotEnvLoader.LoadFromAncestors();
-
 var builder = WebApplication.CreateBuilder(args);
 
 // Fail fast rather than booting an API whose every request would 401 on an unusable token config.

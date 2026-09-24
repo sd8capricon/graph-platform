@@ -17,8 +17,6 @@ public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
     /// <inheritdoc />
     public AppDbContext CreateDbContext(string[] args)
     {
-        DotEnvLoader.LoadFromAncestors();
-
         // appsettings*.json are copied next to the built assembly, which is where `dotnet ef` runs
         // this factory from, so the output directory is the reliable base path here.
         var configuration = new ConfigurationBuilder()

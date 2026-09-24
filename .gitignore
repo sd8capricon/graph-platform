@@ -15,6 +15,9 @@ wheels/
 bin/
 obj/
 
+# Local API secrets (development database connection string, JWT signing key)
+src/api/GraphPlatform.Api/appsettings.Development.json
+
 # Test output
 TestResults/
 
