@@ -79,4 +79,19 @@ public static class DtoMappings
             CreatedAtUtc = model.CreatedAtUtc,
             UpdatedAtUtc = model.UpdatedAtUtc,
         };
+
+    /// <summary>Projects a Knowledge Base, parsing the persisted JSON payload.</summary>
+    /// <param name="knowledgeBase">The Knowledge Base to project.</param>
+    /// <returns>The Knowledge Base DTO.</returns>
+    public static KnowledgeBaseDto ToDto(this KnowledgeBase knowledgeBase) =>
+        new()
+        {
+            Id = knowledgeBase.Id,
+            OrganizationId = knowledgeBase.OrganizationId,
+            Name = knowledgeBase.Name,
+            Data = System.Text.Json.JsonDocument.Parse(knowledgeBase.Data).RootElement.Clone(),
+            State = knowledgeBase.State,
+            CreatedAtUtc = knowledgeBase.CreatedAtUtc,
+            UpdatedAtUtc = knowledgeBase.UpdatedAtUtc,
+        };
 }

@@ -46,6 +46,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
     /// <summary>Configured LLM/embedding provider connections, owned by one organization each.</summary>
     public DbSet<ModelConfig> ModelConfigs => Set<ModelConfig>();
 
+    /// <summary>Knowledge Bases and their graph JSON, owned by one organization each.</summary>
+    public DbSet<KnowledgeBase> KnowledgeBases => Set<KnowledgeBase>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -161,6 +164,36 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
             model
                 .HasOne(entity => entity.Organization)
                 .WithMany(organization => organization.Models)
+                .HasForeignKey(entity => entity.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<KnowledgeBase>(knowledgeBase =>
+        {
+            knowledgeBase.ToTable("knowledge_base");
+            knowledgeBase.HasKey(entity => entity.Id);
+            knowledgeBase.Property(entity => entity.Id).HasMaxLength(KnowledgeBase.IdMaxLength);
+            knowledgeBase
+                .Property(entity => entity.OrganizationId)
+                .HasMaxLength(Organization.IdMaxLength)
+                .IsRequired();
+            knowledgeBase
+                .Property(entity => entity.Name)
+                .HasMaxLength(KnowledgeBase.NameMaxLength)
+                .IsRequired();
+            knowledgeBase.Property(entity => entity.Data).HasColumnType("jsonb").IsRequired();
+            knowledgeBase
+                .Property(entity => entity.State)
+                .HasMaxLength(Converters.EnumMaxLength)
+                .HasConversion(Converters.SnakeCaseEnum<KnowledgeBaseState>())
+                .IsRequired();
+            knowledgeBase.Property(entity => entity.CreatedAtUtc).IsRequired();
+            knowledgeBase.Property(entity => entity.UpdatedAtUtc).IsRequired();
+            knowledgeBase.HasIndex(entity => entity.OrganizationId);
+
+            knowledgeBase
+                .HasOne(entity => entity.Organization)
+                .WithMany(organization => organization.KnowledgeBases)
                 .HasForeignKey(entity => entity.OrganizationId)
                 .OnDelete(DeleteBehavior.Cascade);
         });

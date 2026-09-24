@@ -896,17 +896,17 @@ uv run --project src/agent-runtime pytest src/agent-runtime/tests
 ## API (`src/api`, .NET)
 
 `src/api` is an ASP.NET Core (net10.0) management API — the `api` service of ADR-0004 — and the first
-writer of the Organization/User/Model tables ADR-0002 Decisions 1–3 call for. It is *not* a Python
+writer of the Organization/User/Model/Knowledge Base tables ADR-0002 Decisions 1–3 call for. It is *not* a Python
 project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two projects:
 `GraphPlatform.Api` (production code) and `GraphPlatform.Api.Tests`.
 
 ### Layout and conventions
 - One production project, folder-based layering: `Controllers/`, `Dtos/`, `Data/`, `Models/`,
   `Services/`, `Extensions/`. All DTOs share the single namespace `GraphPlatform.Api.Dtos` even though
-  the files sit in `Dtos/Auth`, `Dtos/Organizations`, `Dtos/ModelConfigs` — a `Dtos.Models` namespace
+  the files sit in `Dtos/Auth`, `Dtos/Organizations`, `Dtos/ModelConfigs`, `Dtos/KnowledgeBases` — a `Dtos.Models` namespace
   would make `Models.AuthMode` resolve to the DTO namespace instead of `GraphPlatform.Api.Models`.
 - `Models/` holds EF Core entities, the C# counterpart of Python's `models/`; `Data/AppDbContext.cs`
-  maps them and `Data/Migrations/` holds the single initial migration.
+  maps them and `Data/Migrations/` holds the EF migrations.
 - DTOs are hand-mapped in `Dtos/DtoMappings.cs` (`ToDto()` extensions) — no mapping library, because a
   convention-based mapper is exactly how `ModelConfig.ApiKey` would leak onto a response. `ModelDto`
   exposes only `HasApiKey`.
@@ -917,7 +917,7 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
 ### Shared-database contract with the Python services
 - One PostgreSQL database, two owners: Python's `Base.metadata.create_all` creates
   `graph_registry`/`node_embedding`/`schema_embedding`; EF creates `organization`, `user_organization`,
-  `model_config` and Identity's `AspNet*` tables. `AppDbContext` deliberately knows nothing about the
+  `model_config`, `knowledge_base` and Identity's `AspNet*` tables. `AppDbContext` deliberately knows nothing about the
   Python tables, and the migration only ever creates tables.
 - **`organization_id` is a string (`varchar(255)`), never a `Guid`.** Python stores it as
   `String(255)` and the shipped entrypoints hardcode `DEMO_ORGANIZATION_ID = "demo-org"`, so a `uuid`
@@ -930,6 +930,14 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   `Program.cs`. A plain `HasConversion<string>()` would silently persist `ApiKey`.
 - `ModelConfig.Type` is a `jsonb` column holding a JSON array, via a string value converter; Npgsql
   documents a `string` property with `HasColumnType("jsonb")` as a supported mapping.
+- `KnowledgeBase` (`Models/KnowledgeBase.cs`) stores the outer resource `Id`/`Name` and the graph
+  payload as `Data` (`jsonb`), plus its organization, UTC timestamps and `KnowledgeBaseState`. The API
+  overlays outer `id`/`name` onto the payload root so ingestion sees the same stable identity and
+  name. `KnowledgeBaseWriteRequest` mirrors `common.schemas.knowledge_base.KnowledgeBase`'s graph
+  structure while retaining arbitrary JSON property values. Member reads are organization-scoped;
+  Contributor/Admin mutations create drafts, and update/delete are draft-only. Publish changes a
+  draft to `indexing`; the ingestion worker and dispatch/completion bridge are not wired to this API,
+  so completion to `published` remains future integration work.
 - ADR-0002 roles are **per organization**, so they live in `user_organization.Role`, not in ASP.NET
   Identity roles: the global role entities are removed with explicit `Ignore<IdentityRole>()` /
   `Ignore<IdentityUserRole<string>>()` / `Ignore<IdentityRoleClaim<string>>()`, which is safe because
@@ -966,10 +974,12 @@ never confirms that an organization the caller cannot see exists; a member lacki
 Any authenticated user may `POST /api/organizations` (the bootstrap path — the creator becomes its
 first Organization Admin). Creating a model needs Contributor or Admin; choosing the org's active
 embedding model needs Admin (ADR-0002, Decision 3). The last Organization Admin cannot be demoted or
-removed (409), and the active embedding model cannot be deleted (409).
+removed (409), and the active embedding model cannot be deleted (409). Knowledge Base reads are
+available to any member; create/update/delete/publish require Contributor or Admin, with update and
+delete additionally restricted to drafts.
 
 ### Testing, and the `dotnet test` gotcha
-- `dotnet test src/api/GraphPlatform.slnx` runs 32 integration tests through `WebApplicationFactory`
+- `dotnet test src/api/GraphPlatform.slnx` runs 39 integration tests through `WebApplicationFactory`
   with the DbContext swapped for in-memory SQLite (`EnsureCreated`, since the Npgsql migration cannot
   run there) — no PostgreSQL or network needed.
 - Use **xunit 2.x + `Microsoft.NET.Test.Sdk` + `xunit.runner.visualstudio`**. xunit.v3 4.x is

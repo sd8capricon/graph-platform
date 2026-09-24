@@ -47,4 +47,7 @@ public class Organization
 
     /// <summary>Model configs owned by this organization.</summary>
     public ICollection<ModelConfig> Models { get; set; } = [];
+
+    /// <summary>Knowledge Bases owned by this organization.</summary>
+    public ICollection<KnowledgeBase> KnowledgeBases { get; set; } = [];
 }

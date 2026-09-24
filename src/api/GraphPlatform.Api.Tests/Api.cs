@@ -143,6 +143,27 @@ internal static class Api
         );
     }
 
+    /// <summary>Creates a Knowledge Base in an organization.</summary>
+    /// <param name="factory">The test host factory.</param>
+    /// <param name="accessToken">Token of the caller.</param>
+    /// <param name="organizationId">Owning organization.</param>
+    /// <param name="request">The Knowledge Base to create.</param>
+    /// <returns>The raw response, so tests can assert on failures too.</returns>
+    internal static async Task<HttpResponseMessage> CreateKnowledgeBaseAsync(
+        this GraphPlatformApiFactory factory,
+        string accessToken,
+        string organizationId,
+        CreateKnowledgeBaseRequest request
+    )
+    {
+        using var client = factory.AuthedClient(accessToken);
+        return await client.PostAsJsonAsync(
+            $"/api/organizations/{organizationId}/knowledge-bases",
+            request,
+            Json
+        );
+    }
+
     /// <summary>Builds a valid embedding-capable model config request.</summary>
     /// <param name="id">Id to use; defaults to a fresh UUID string.</param>
     /// <returns>The request.</returns>
