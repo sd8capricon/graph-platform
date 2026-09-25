@@ -19,6 +19,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { deleteReasonFor } from '@/features/models/delete-reason'
 import { formatRelativeTime, humanizeEnum } from '@/lib/format'
 
 interface ModelsTableProps {
@@ -27,18 +28,6 @@ interface ModelsTableProps {
   activeEmbeddingModelId: string | null
   canAuthor: boolean
   onDelete: (model: ModelDto) => void
-}
-
-function deleteReasonFor(
-  model: ModelDto,
-  canAuthor: boolean,
-  activeEmbeddingModelId: string | null,
-): string | null {
-  if (!canAuthor) return 'You need the Contributor or Organization Admin role.'
-  if (model.id === activeEmbeddingModelId) {
-    return 'This is the organization’s active embedding model. Change it in Settings first.'
-  }
-  return null
 }
 
 export function ModelsTable({

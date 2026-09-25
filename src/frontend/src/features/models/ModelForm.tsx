@@ -94,6 +94,21 @@ export function ModelForm({
   const types = useWatch({ control: form.control, name: 'type' })
   const isEmbedding = types.includes(ModelType.Embedding)
 
+  // A model's capability side (embedding vs. vision/thinking) is fixed once
+  // created — switching sides would silently invalidate the fields (dimension
+  // vs. reasoning effort) tied to the other side. `model` is the original,
+  // saved record, so this reflects what the model *was* created as, not the
+  // in-progress `types` selection.
+  const editingEmbeddingModel = mode === 'edit' && model?.type.includes(ModelType.Embedding)
+  const editingChatModel = mode === 'edit' && !editingEmbeddingModel
+  const visibleCapabilities =
+    mode === 'create'
+      ? Object.values(ModelType)
+      : editingEmbeddingModel
+        ? [ModelType.Embedding]
+        : [ModelType.Vision, ModelType.Thinking]
+  const chatCapabilityCount = types.filter((entry) => entry !== ModelType.Embedding).length
+
   const submit = async (values: FormValues) => {
     setRootError(null)
 
@@ -226,13 +241,17 @@ export function ModelForm({
             <FormItem>
               <FormLabel>Capabilities</FormLabel>
               <div className="flex flex-wrap gap-4">
-                {Object.values(ModelType).map((capability) => {
+                {visibleCapabilities.map((capability) => {
                   const checked = field.value.includes(capability)
+                  const disabled =
+                    editingEmbeddingModel ||
+                    (editingChatModel && checked && chatCapabilityCount <= 1)
                   return (
                     <div key={capability} className="flex items-center gap-2">
                       <Checkbox
                         id={`type-${capability}`}
                         checked={checked}
+                        disabled={disabled}
                         onCheckedChange={(next) => {
                           if (!next) {
                             field.onChange(field.value.filter((entry) => entry !== capability))
@@ -260,8 +279,11 @@ export function ModelForm({
                 })}
               </div>
               <FormDescription>
-                Select at least one. Choosing embedding clears vision/thinking, and choosing
-                vision or thinking clears embedding.
+                {editingEmbeddingModel
+                  ? 'An embedding model cannot be switched to vision/thinking. Create a new model instead.'
+                  : editingChatModel
+                    ? 'A vision/thinking model cannot be switched to embedding. Toggle vision and thinking freely, but at least one must stay enabled.'
+                    : 'Select at least one. Choosing embedding clears vision/thinking, and choosing vision or thinking clears embedding.'}
               </FormDescription>
               <FormMessage />
             </FormItem>

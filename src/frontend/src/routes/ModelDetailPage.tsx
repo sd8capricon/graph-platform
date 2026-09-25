@@ -1,9 +1,12 @@
-import { ArrowLeft, SlidersHorizontal } from 'lucide-react'
-import { Link, useParams } from 'react-router'
+import * as React from 'react'
+import { ArrowLeft, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 
 import { isApiError } from '@/api/errors'
-import { AuthMode, type UpdateModelRequest } from '@/api/types'
+import { AuthMode, ModelType, type UpdateModelRequest } from '@/api/types'
+import { ActionTooltip } from '@/components/data/ActionTooltip'
+import { ConfirmDialog } from '@/components/feedback/ConfirmDialog'
 import { EmptyState } from '@/components/feedback/EmptyState'
 import { ErrorState } from '@/components/feedback/ErrorState'
 import { PageHeader } from '@/components/feedback/PageHeader'
@@ -17,19 +20,26 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { deleteReasonFor } from '@/features/models/delete-reason'
 import { ModelForm } from '@/features/models/ModelForm'
 import { useDocumentTitle } from '@/hooks/use-document-title'
 import { formatDateTime, humanizeEnum } from '@/lib/format'
 import { useCurrentOrg } from '@/org/use-current-org'
-import { useModelQuery, useUpdateModel } from '@/queries/use-models'
+import { useDeleteModel, useModelQuery, useUpdateModel } from '@/queries/use-models'
+import { useOrganizationQuery } from '@/queries/use-organizations'
 
 export function ModelDetailPage() {
   const { modelId = '' } = useParams<{ modelId: string }>()
   const { organizationId, canAuthor } = useCurrentOrg()
+  const navigate = useNavigate()
 
   const modelQuery = useModelQuery(organizationId, modelId)
+  const organizationQuery = useOrganizationQuery(organizationId)
   const updateModel = useUpdateModel(organizationId, modelId)
+  const deleteModel = useDeleteModel(organizationId)
   const model = modelQuery.data
+
+  const [deleteOpen, setDeleteOpen] = React.useState(false)
 
   useDocumentTitle(model?.displayName ?? 'Model')
 
@@ -66,6 +76,13 @@ export function ModelDetailPage() {
 
   if (!model) return null
 
+  const isEmbedding = model.type.includes(ModelType.Embedding)
+  const deleteReason = deleteReasonFor(
+    model,
+    canAuthor,
+    organizationQuery.data?.activeEmbeddingModelId ?? null,
+  )
+
   return (
     <>
       <PageHeader
@@ -83,16 +100,30 @@ export function ModelDetailPage() {
           </span>
         }
         actions={
-          <Button asChild variant="outline">
-            <Link to={`/orgs/${organizationId}/models`}>
-              <ArrowLeft aria-hidden="true" />
-              All models
-            </Link>
-          </Button>
+          <>
+            <Button asChild variant="outline">
+              <Link to={`/orgs/${organizationId}/models`}>
+                <ArrowLeft aria-hidden="true" />
+                All models
+              </Link>
+            </Button>
+            <ActionTooltip reason={deleteReason}>
+              <Button
+                variant="outline"
+                className="text-destructive hover:text-destructive"
+                disabled={!!deleteReason}
+                aria-disabled={!!deleteReason}
+                onClick={() => setDeleteOpen(true)}
+              >
+                <Trash2 aria-hidden="true" />
+                Delete
+              </Button>
+            </ActionTooltip>
+          </>
         }
       />
 
-      <Card>
+      <Card className="max-w-2xl">
         <CardHeader>
           <CardTitle>Summary</CardTitle>
         </CardHeader>
@@ -108,10 +139,17 @@ export function ModelDetailPage() {
                   : 'Managed identity'}
               </dd>
             </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">Embedding dimension</dt>
-              <dd className="text-sm">{model.embeddingDimension ?? '—'}</dd>
-            </div>
+            {isEmbedding ? (
+              <div>
+                <dt className="text-xs text-muted-foreground">Embedding dimension</dt>
+                <dd className="text-sm">{model.embeddingDimension ?? '—'}</dd>
+              </div>
+            ) : (
+              <div>
+                <dt className="text-xs text-muted-foreground">Reasoning effort</dt>
+                <dd className="text-sm">{model.reasoningEffort ?? '—'}</dd>
+              </div>
+            )}
             <div>
               <dt className="text-xs text-muted-foreground">Updated</dt>
               <dd className="text-sm">{formatDateTime(model.updatedAtUtc)}</dd>
@@ -147,6 +185,34 @@ export function ModelDetailPage() {
           Editing a model configuration needs the Contributor or Organization Admin role.
         </p>
       )}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={`Delete ${model.displayName}?`}
+        description="Anything configured to use it will stop working. This cannot be undone."
+        confirmLabel="Delete"
+        destructive
+        pending={deleteModel.isPending}
+        onConfirm={() => {
+          const name = model.displayName
+          deleteModel.mutate(model.id, {
+            onSuccess: () => {
+              toast.success(`Deleted ${name}`)
+              setDeleteOpen(false)
+              navigate(`/orgs/${organizationId}/models`)
+            },
+            onError: (mutationError) => {
+              toast.error(
+                isApiError(mutationError)
+                  ? (mutationError.detail ?? mutationError.title)
+                  : 'Could not delete the model.',
+              )
+              setDeleteOpen(false)
+            },
+          })
+        }}
+      />
     </>
   )
 }
