@@ -49,6 +49,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
     /// <summary>Knowledge Bases and their graph JSON, owned by one organization each.</summary>
     public DbSet<KnowledgeBase> KnowledgeBases => Set<KnowledgeBase>();
 
+    /// <summary>Files uploaded to Knowledge Bases; the content itself lives in object storage.</summary>
+    public DbSet<KnowledgeBaseFile> KnowledgeBaseFiles => Set<KnowledgeBaseFile>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -195,6 +198,49 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
                 .HasOne(entity => entity.Organization)
                 .WithMany(organization => organization.KnowledgeBases)
                 .HasForeignKey(entity => entity.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<KnowledgeBaseFile>(file =>
+        {
+            file.ToTable("knowledge_base_file");
+            file.HasKey(entity => entity.Id);
+            file.Property(entity => entity.Id).HasMaxLength(KnowledgeBaseFile.IdMaxLength);
+            file.Property(entity => entity.KnowledgeBaseId)
+                .HasMaxLength(KnowledgeBase.IdMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.OrganizationId)
+                .HasMaxLength(Organization.IdMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.FileName)
+                .HasMaxLength(KnowledgeBaseFile.FileNameMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.ContentType)
+                .HasMaxLength(KnowledgeBaseFile.ContentTypeMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.Size).IsRequired();
+            file.Property(entity => entity.StorageKey)
+                .HasMaxLength(KnowledgeBaseFile.StorageKeyMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.Status)
+                .HasMaxLength(Converters.EnumMaxLength)
+                .HasConversion(Converters.SnakeCaseEnum<KnowledgeBaseFileStatus>())
+                .IsRequired();
+            file.Property(entity => entity.CreatedAtUtc).IsRequired();
+            file.Property(entity => entity.UpdatedAtUtc).IsRequired();
+            file.HasIndex(entity => entity.KnowledgeBaseId);
+            file.HasIndex(entity => entity.OrganizationId);
+
+            // One object per row: two rows sharing a key would mean deleting one deletes the other's
+            // content.
+            file.HasIndex(entity => entity.StorageKey).IsUnique();
+
+            // The cascade removes rows only. Stored objects are deleted by the API before it deletes
+            // the Knowledge Base (see KnowledgeBasesController.DeleteKnowledgeBase), since the
+            // database cannot reach object storage.
+            file.HasOne(entity => entity.KnowledgeBase)
+                .WithMany(knowledgeBase => knowledgeBase.Files)
+                .HasForeignKey(entity => entity.KnowledgeBaseId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }

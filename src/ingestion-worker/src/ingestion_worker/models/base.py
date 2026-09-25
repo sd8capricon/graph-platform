@@ -20,8 +20,8 @@ def create_job_tables(bind, *, include_knowledge_base: bool = False) -> None:
 
     Test/dev helper only. In production the API's EF migration owns these tables,
     so no service entrypoint should call this. Pass
-    `include_knowledge_base=True` when a test also needs a stand-in for the
-    API-owned `knowledge_base` table. For an async engine, call it via
+    `include_knowledge_base=True` when a test also needs stand-ins for the
+    API-owned `knowledge_base` and `knowledge_base_file` tables. For an async engine, call it via
     `await conn.run_sync(lambda c: create_job_tables(c, ...))`.
     """
     from ingestion_worker.models.index_file import IndexFile  # noqa: F401
@@ -30,8 +30,11 @@ def create_job_tables(bind, *, include_knowledge_base: bool = False) -> None:
     IndexJobBase.metadata.create_all(bind)
     if include_knowledge_base:
         from common.models.knowledge_base import KnowledgeBase
+        from common.models.knowledge_base_file import KnowledgeBaseFile
 
-        KnowledgeBase.metadata.create_all(bind, tables=[KnowledgeBase.__table__])
+        KnowledgeBase.metadata.create_all(
+            bind, tables=[KnowledgeBase.__table__, KnowledgeBaseFile.__table__]
+        )
 
 
 __all__ = ["IndexJobBase", "create_job_tables"]

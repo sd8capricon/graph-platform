@@ -85,6 +85,15 @@ builder.Services.AddScoped<OrganizationAccessService>();
 builder.Services.AddStorage(builder.Configuration);
 
 builder
+    .Services.AddOptions<KnowledgeBaseFileOptions>()
+    .Bind(builder.Configuration.GetSection(KnowledgeBaseFileOptions.SectionName))
+    .Validate(
+        options => options.MaxFileSizeBytes > 0,
+        $"{KnowledgeBaseFileOptions.SectionName}:MaxFileSizeBytes must be positive."
+    )
+    .ValidateOnStart();
+
+builder
     .Services.AddControllers()
     .AddJsonOptions(options =>
     {

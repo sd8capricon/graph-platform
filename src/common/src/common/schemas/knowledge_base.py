@@ -5,12 +5,15 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from common.schemas.knowledge_base_file import KnowledgeBaseFileDTO
+
 
 class KnowledgeBaseRecordDTO(BaseModel):
     """DTO for the API-owned `common.models.knowledge_base.KnowledgeBase` row.
 
     This resource record is distinct from the graph-payload `KnowledgeBase`
-    defined below. `data` carries the serialized graph payload read by ingestion.
+    defined below. `data` carries the serialized graph payload read by ingestion;
+    `files` lists the files uploaded to the knowledge base, oldest first.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -22,6 +25,7 @@ class KnowledgeBaseRecordDTO(BaseModel):
     state: str
     created_at_utc: datetime
     updated_at_utc: datetime
+    files: list[KnowledgeBaseFileDTO] = Field(default_factory=list)
 
 
 class KnowledgeNode(BaseModel):

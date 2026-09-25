@@ -4,6 +4,7 @@ using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 using GraphPlatform.Api.Services;
+using GraphPlatform.Api.Services.Storage;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -13,11 +14,16 @@ namespace GraphPlatform.Api.Controllers;
 /// <remarks>
 /// Any organization member may read Knowledge Bases. Contributors and Organization Admins may author
 /// them. A published request moves a draft to <see cref="KnowledgeBaseState.Indexing"/>; worker
-/// dispatch and completion are not wired yet.
+/// dispatch and completion are not wired yet. Files are managed by
+/// <see cref="KnowledgeBaseFilesController"/>; deleting a Knowledge Base deletes its files' stored
+/// content as well as their rows.
 /// </remarks>
 [Route("api/organizations/{organizationId}/knowledge-bases")]
-public class KnowledgeBasesController(AppDbContext db, OrganizationAccessService access)
-    : ApiControllerBase
+public class KnowledgeBasesController(
+    AppDbContext db,
+    OrganizationAccessService access,
+    IStorageService storage
+) : ApiControllerBase
 {
     /// <summary>Lists Knowledge Bases belonging to the organization.</summary>
     [HttpGet]
@@ -34,7 +40,8 @@ public class KnowledgeBasesController(AppDbContext db, OrganizationAccessService
         }
 
         var knowledgeBases = await db
-            .KnowledgeBases.Where(knowledgeBase => knowledgeBase.OrganizationId == organizationId)
+            .KnowledgeBases.Include(knowledgeBase => knowledgeBase.Files)
+            .Where(knowledgeBase => knowledgeBase.OrganizationId == organizationId)
             .OrderBy(knowledgeBase => knowledgeBase.Name)
             .ToListAsync(cancellationToken);
 
@@ -214,6 +221,14 @@ public class KnowledgeBasesController(AppDbContext db, OrganizationAccessService
             return DraftOnlyConflict();
         }
 
+        // Stored objects first, then the rows (the FK cascade removes the file rows). The database
+        // cannot delete objects, and a failure part-way leaves the Knowledge Base in place so the
+        // delete can be retried; storage deletes are idempotent.
+        foreach (var file in knowledgeBase.Files)
+        {
+            await storage.DeleteAsync(file.StorageKey, cancellationToken);
+        }
+
         db.KnowledgeBases.Remove(knowledgeBase);
         await db.SaveChangesAsync(cancellationToken);
 
@@ -276,12 +291,14 @@ public class KnowledgeBasesController(AppDbContext db, OrganizationAccessService
         string knowledgeBaseId,
         CancellationToken cancellationToken
     ) =>
-        db.KnowledgeBases.FirstOrDefaultAsync(
-            knowledgeBase =>
-                knowledgeBase.Id == knowledgeBaseId
-                && knowledgeBase.OrganizationId == organizationId,
-            cancellationToken
-        );
+        db
+            .KnowledgeBases.Include(knowledgeBase => knowledgeBase.Files)
+            .FirstOrDefaultAsync(
+                knowledgeBase =>
+                    knowledgeBase.Id == knowledgeBaseId
+                    && knowledgeBase.OrganizationId == organizationId,
+                cancellationToken
+            );
 
     private static string NormalizeData(JsonElement data, string id, string name)
     {

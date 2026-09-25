@@ -739,6 +739,11 @@ These genuinely cannot be answered from the repository:
 1. **Files model.** How are files represented in a Knowledge Base — additional fields in the
    `knowledge_base.Data` jsonb, a new `knowledge_base_file` table, or an object-store reference?
    This determines `index_file.file_id` and the entity fan-out unit.
+   *Update:* the storage side is now in place. The API owns a `knowledge_base_file` table (EF
+   migration `AddKnowledgeBaseFiles`, mapped in Python as `common.models.knowledge_base_file`).
+   Each row holds file metadata and an ADR-0006 object key, and the content is written through the
+   configured storage provider. Still open: whether `index_file.file_id` should reference
+   `knowledge_base_file.Id`, and how the worker reads that content.
 2. **Ontology/entity extraction contract.** Which chat model(s), what prompts, and what the extracted
    ontology/entity schema looks like. The pipeline shape is decided here, but the domain contract is
    not derivable from the code.

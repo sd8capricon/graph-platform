@@ -24,6 +24,9 @@ public class KnowledgeBase
     /// <summary>Graph JSON, stored as jsonb and passed to the ingestion worker.</summary>
     public string Data { get; set; } = "{}";
 
+    /// <summary>Files uploaded to this knowledge base.</summary>
+    public ICollection<KnowledgeBaseFile> Files { get; set; } = [];
+
     /// <summary>Current lifecycle state.</summary>
     public KnowledgeBaseState State { get; set; } = KnowledgeBaseState.Draft;
 

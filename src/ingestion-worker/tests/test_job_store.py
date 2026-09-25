@@ -7,7 +7,9 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from common.models.knowledge_base import KnowledgeBase
+from common.models.knowledge_base_file import KnowledgeBaseFile
 from common.schemas.knowledge_base import KnowledgeBaseRecordDTO
+from common.schemas.knowledge_base_file import KnowledgeBaseFileStatus
 
 from ingestion_worker.job_store import (
     JOB_COMPLETED,
@@ -18,6 +20,7 @@ from ingestion_worker.models.base import create_job_tables
 from ingestion_worker.models.index_job import IndexJob
 
 knowledge_base = KnowledgeBase.__table__
+knowledge_base_file = KnowledgeBaseFile.__table__
 
 
 async def _store_engine(**kwargs):
@@ -127,6 +130,50 @@ async def test_read_and_set_knowledge_base_state():
         await store.set_knowledge_base_state("kb-1", "published")
         kb = await store.read_knowledge_base("kb-1")
         assert kb.state == "published"
+
+    await engine.dispose()
+
+
+async def test_read_knowledge_base_includes_its_files_oldest_first():
+    engine = await _store_engine()
+    earlier = datetime(2026, 9, 25, 8, tzinfo=UTC)
+    later = datetime(2026, 9, 25, 9, tzinfo=UTC)
+    async with AsyncSession(engine) as session:
+        await session.execute(
+            knowledge_base.insert().values(
+                Id="kb-1",
+                OrganizationId="org-1",
+                Name="F1",
+                Data='{"nodes": []}',
+                State="indexing",
+                CreatedAtUtc=earlier,
+                UpdatedAtUtc=earlier,
+            )
+        )
+        for file_id, created_at in (("file-2", later), ("file-1", earlier)):
+            await session.execute(
+                knowledge_base_file.insert().values(
+                    Id=file_id,
+                    KnowledgeBaseId="kb-1",
+                    OrganizationId="org-1",
+                    FileName=f"{file_id}.pdf",
+                    ContentType="application/pdf",
+                    Size=10,
+                    StorageKey=f"organizations/org-1/knowledge-bases/kb-1/files/{file_id}/content",
+                    Status="uploaded",
+                    CreatedAtUtc=created_at,
+                    UpdatedAtUtc=created_at,
+                )
+            )
+        await session.commit()
+
+    async with AsyncSession(engine) as session:
+        kb = await IndexJobStore(session).read_knowledge_base("kb-1")
+
+    assert kb is not None
+    assert [file.id for file in kb.files] == ["file-1", "file-2"]
+    assert kb.files[0].storage_key.endswith("/files/file-1/content")
+    assert kb.files[0].status is KnowledgeBaseFileStatus.UPLOADED
 
     await engine.dispose()
 

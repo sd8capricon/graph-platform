@@ -81,7 +81,9 @@ public static class DtoMappings
         };
 
     /// <summary>Projects a Knowledge Base, parsing the persisted JSON payload.</summary>
-    /// <param name="knowledgeBase">The Knowledge Base to project.</param>
+    /// <param name="knowledgeBase">
+    /// The Knowledge Base to project. Its <c>Files</c> navigation must be loaded, or the DTO lists none.
+    /// </param>
     /// <returns>The Knowledge Base DTO.</returns>
     public static KnowledgeBaseDto ToDto(this KnowledgeBase knowledgeBase) =>
         new()
@@ -90,8 +92,29 @@ public static class DtoMappings
             OrganizationId = knowledgeBase.OrganizationId,
             Name = knowledgeBase.Name,
             Data = System.Text.Json.JsonDocument.Parse(knowledgeBase.Data).RootElement.Clone(),
+            Files = knowledgeBase
+                .Files.OrderBy(file => file.CreatedAtUtc)
+                .ThenBy(file => file.Id, StringComparer.Ordinal)
+                .Select(file => file.ToDto())
+                .ToList(),
             State = knowledgeBase.State,
             CreatedAtUtc = knowledgeBase.CreatedAtUtc,
             UpdatedAtUtc = knowledgeBase.UpdatedAtUtc,
+        };
+
+    /// <summary>Projects a Knowledge Base file. The storage key is not exposed.</summary>
+    /// <param name="file">The file to project.</param>
+    /// <returns>The file DTO.</returns>
+    public static KnowledgeBaseFileDto ToDto(this KnowledgeBaseFile file) =>
+        new()
+        {
+            Id = file.Id,
+            KnowledgeBaseId = file.KnowledgeBaseId,
+            FileName = file.FileName,
+            ContentType = file.ContentType,
+            Size = file.Size,
+            Status = file.Status,
+            CreatedAtUtc = file.CreatedAtUtc,
+            UpdatedAtUtc = file.UpdatedAtUtc,
         };
 }
