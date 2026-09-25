@@ -1,0 +1,59 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Frontend: dev server",
+            "type": "shell",
+            "command": "npm run dev",
+            "options": {
+                "cwd": "${workspaceFolder}/src/frontend"
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "API: dotnet run",
+            "type": "shell",
+            "command": "dotnet run --project src/api/GraphPlatform.Api/GraphPlatform.Api.csproj",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Ingestion Worker: celery worker",
+            "type": "shell",
+            "command": "uv run --project src/ingestion-worker celery -A ingestion_worker.celery_app worker --loglevel=info",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Start All",
+            "dependsOn": [
+                "Frontend: dev server",
+                "API: dotnet run",
+                "Ingestion Worker: celery worker"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
