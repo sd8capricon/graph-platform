@@ -49,7 +49,6 @@ def test_knowledge_base_record_dto_reads_the_orm_model():
         id="kb-1",
         organization_id="org-1",
         name="F1",
-        data='{"nodes": []}',
         state="published",
         created_at_utc=now,
         updated_at_utc=now,
@@ -58,7 +57,6 @@ def test_knowledge_base_record_dto_reads_the_orm_model():
     dto = KnowledgeBaseRecordDTO.model_validate(row)
 
     assert dto.id == "kb-1"
-    assert dto.data == '{"nodes": []}'
     assert dto.state == "published"
 
 

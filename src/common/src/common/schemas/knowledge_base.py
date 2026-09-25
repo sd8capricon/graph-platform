@@ -12,8 +12,8 @@ class KnowledgeBaseRecordDTO(BaseModel):
     """DTO for the API-owned `common.models.knowledge_base.KnowledgeBase` row.
 
     This resource record is distinct from the graph-payload `KnowledgeBase`
-    defined below. `data` carries the serialized graph payload read by ingestion;
-    `files` lists the files uploaded to the knowledge base, oldest first.
+    defined below. A knowledge base's content is the files uploaded to it, listed
+    in `files`, oldest first.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -21,7 +21,6 @@ class KnowledgeBaseRecordDTO(BaseModel):
     id: str
     organization_id: str
     name: str
-    data: str
     state: str
     created_at_utc: datetime
     updated_at_utc: datetime

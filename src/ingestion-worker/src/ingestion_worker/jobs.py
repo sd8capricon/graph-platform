@@ -9,21 +9,14 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from common.models.node_embedding import NodeEmbedding
-from common.models.schema_embedding import SchemaEmbedding
 from common.repositories.age_graph_repository import AgeGraphRepository
-from common.schemas.knowledge_base import KnowledgeBase
-from common.services.knowledge_base_service import KnowledgeBaseService
 
-from ingestion_worker.config import embedding_model_for_job
 from ingestion_worker.errors import NonRetryableIngestionError, classify_exception
 from ingestion_worker.job_store import IndexJobStore
-from ingestion_worker.pipeline import ingest_knowledge_base
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "partially_failed"})
-_PUBLISHED = "published"
 
 
 async def ingest_job(
@@ -33,11 +26,14 @@ async def ingest_job(
     *,
     store: IndexJobStore | None = None,
 ) -> None:
-    """Run one indexing job to completion, or raise a classified error.
+    """Run one indexing job, or raise a classified error.
 
-    Idempotent: a job already in a terminal state is skipped, and every write on
-    the path (graph `MERGE`, side-table upserts, file-row reuse) is safe to
-    repeat after an at-least-once redelivery.
+    Idempotent: a job already in a terminal state is skipped.
+
+    The graph-payload ingestion this used to perform read the knowledge base's
+    inline `Data` JSON, which the management API no longer stores. Until
+    file-based ingestion (ADR-0005 Phase 2) exists, a claimed job fails with a
+    non-retryable error naming that reason.
     """
     store = store or IndexJobStore(session)
     job = await store.get_job(job_id)
@@ -55,38 +51,14 @@ async def ingest_job(
                 f"knowledge_base {job.knowledge_base_id} not found for job {job_id}"
             )
 
-        knowledge_base = KnowledgeBase.model_validate_json(kb_row.data)
-        # The API overlays the outer resource id onto the payload root, so these
-        # agree; pinning it keeps the job/file identity consistent either way.
-        knowledge_base.id = job.knowledge_base_id
-
-        await KnowledgeBaseService(repository).create_graph(job.graph_name)
-
-        model = embedding_model_for_job(job.embedding_model_id)
-        if model is not None:
-            await NodeEmbedding.ensure_embedding_index(session, model)
-            await SchemaEmbedding.ensure_embedding_index(session, model)
-
-        await ingest_knowledge_base(
-            session,
-            repository,
-            knowledge_base,
-            job.graph_name,
-            job.organization_id,
-            model,
+        # The knowledge base's inline graph JSON was removed from the API: a
+        # knowledge base's content is now the files uploaded to it, and
+        # ingesting those is ADR-0005 Phase 2, which is not implemented. Fail
+        # explicitly rather than retrying work that cannot succeed.
+        raise NonRetryableIngestionError(
+            f"knowledge_base {job.knowledge_base_id} has no inline graph payload: "
+            "file-based ingestion is not implemented yet"
         )
-
-        # Phase 1 treats the whole knowledge base as one file. Reuse the file row
-        # on redelivery rather than inserting a second one and inflating totals.
-        file_row_id = await store.find_file(job_id, job.knowledge_base_id)
-        if file_row_id is None:
-            file_row_id = await store.create_file(job_id, job.knowledge_base_id)
-        await store.mark_file_extracted(file_row_id)
-
-        await session.commit()
-        await store.mark_job_completed(job_id)
-        await store.set_knowledge_base_state(job.knowledge_base_id, _PUBLISHED)
-        await session.commit()
     except Exception as exc:
         await session.rollback()
         raise classify_exception(exc) from exc

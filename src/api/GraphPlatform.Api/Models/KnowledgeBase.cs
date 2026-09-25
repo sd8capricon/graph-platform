@@ -21,9 +21,6 @@ public class KnowledgeBase
     /// <summary>Human-readable name of the knowledge base.</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Graph JSON, stored as jsonb and passed to the ingestion worker.</summary>
-    public string Data { get; set; } = "{}";
-
     /// <summary>
     /// Files uploaded to this knowledge base, linked through <see cref="KnowledgeBaseFile"/>.
     /// </summary>

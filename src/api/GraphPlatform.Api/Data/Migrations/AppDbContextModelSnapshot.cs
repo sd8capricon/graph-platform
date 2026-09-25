@@ -151,10 +151,6 @@ namespace GraphPlatform.Api.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Data")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)

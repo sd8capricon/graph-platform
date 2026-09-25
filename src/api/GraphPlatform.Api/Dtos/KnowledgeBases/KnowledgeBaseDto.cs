@@ -1,4 +1,3 @@
-using System.Text.Json;
 using GraphPlatform.Api.Models;
 
 namespace GraphPlatform.Api.Dtos;
@@ -14,9 +13,6 @@ public sealed class KnowledgeBaseDto
 
     /// <summary>Human-readable name.</summary>
     public string Name { get; init; } = string.Empty;
-
-    /// <summary>Graph JSON used by ingestion.</summary>
-    public JsonElement Data { get; init; }
 
     /// <summary>Files uploaded to the Knowledge Base, oldest first.</summary>
     public IReadOnlyList<FileDto> Files { get; init; } = [];

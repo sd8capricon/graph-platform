@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# The repository root ignores .env for the Python services' secrets. The frontend's
+# .env holds no secrets — only VITE_APP_NAME and the API base URL — and it must be
+# committed, because Vite only substitutes %VITE_*% in index.html for variables that
+# are actually defined. Real overrides go in .env.local, which stays ignored.
+!.env
+.env.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -188,7 +188,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
                 .Property(entity => entity.Name)
                 .HasMaxLength(KnowledgeBase.NameMaxLength)
                 .IsRequired();
-            knowledgeBase.Property(entity => entity.Data).HasColumnType("jsonb").IsRequired();
             knowledgeBase
                 .Property(entity => entity.State)
                 .HasMaxLength(Converters.EnumMaxLength)

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from common.models.base import ApiOwnedBase
@@ -32,7 +32,6 @@ class KnowledgeBase(ApiOwnedBase):
         "OrganizationId", String(255), nullable=False
     )
     name: Mapped[str] = mapped_column("Name", String(255), nullable=False)
-    data: Mapped[str] = mapped_column("Data", Text, nullable=False)
     state: Mapped[str] = mapped_column("State", String(32), nullable=False)
     created_at_utc: Mapped[datetime] = mapped_column(
         "CreatedAtUtc", DateTime(timezone=True), nullable=False

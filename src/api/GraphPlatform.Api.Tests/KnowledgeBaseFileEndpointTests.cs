@@ -326,7 +326,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         using var created = await factory.CreateKnowledgeBaseAsync(
             admin.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "F1", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "F1" }
         );
         created.EnsureSuccessStatusCode();
         var knowledgeBase = (await created.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
@@ -405,14 +405,6 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return await db.KnowledgeBaseFiles.AnyAsync(link => link.FileId == fileId);
-    }
-
-    private static JsonElement GraphData()
-    {
-        using var data = JsonDocument.Parse(
-            """{"nodes":[{"id":"node-1","label":"Driver","properties":{"name":"Max Verstappen"}}],"relationships":[]}"""
-        );
-        return data.RootElement.Clone();
     }
 
     /// <summary>Delegates to a real provider but fails every delete, like an unreachable blob service.</summary>

@@ -89,7 +89,6 @@ async def _seed_job(session, *, knowledge_base_id="kb-1", job_id="job-1"):
             Id=knowledge_base_id,
             OrganizationId="org-1",
             Name="demo",
-            Data=_demo_knowledge_base(knowledge_base_id).model_dump_json(),
             State="indexing",
             CreatedAtUtc=now,
             UpdatedAtUtc=now,
@@ -112,61 +111,47 @@ async def _seed_job(session, *, knowledge_base_id="kb-1", job_id="job-1"):
     await session.commit()
 
 
-async def test_ingest_job_completes_and_publishes_the_knowledge_base():
+async def test_ingest_job_fails_non_retryably_without_an_inline_graph_payload():
+    # The API no longer stores a knowledge base's graph JSON, and file-based
+    # ingestion (ADR-0005 Phase 2) is not implemented, so a claimed job must fail
+    # with a reason rather than retry forever or raise AttributeError.
     engine = await _engine()
     repository = _RecordingRepository()
     async with AsyncSession(engine) as session:
         await _seed_job(session)
 
-        await ingest_job("job-1", session, repository)
+        with pytest.raises(NonRetryableIngestionError, match="file-based ingestion"):
+            await ingest_job("job-1", session, repository)
 
-        store = IndexJobStore(session)
-        job = await store.get_job("job-1")
+        # Nothing was written: no graph queries, no side-table rows, no file rows.
+        assert repository.queries == []
+        assert (await session.execute(select(IndexFile))).scalars().all() == []
+        assert (await session.execute(select(GraphSchemaRegistry))).scalars().all() == []
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+
+        # The job is left for the caller's failure handling, not marked completed.
+        job = await IndexJobStore(session).get_job("job-1")
         assert job is not None
-        assert job.status == "completed"
-        assert job.processed_files == 1
-
-        kb = await store.read_knowledge_base("kb-1")
-        assert kb is not None
-        assert kb.state == "published"
-
-        file_rows = (await session.execute(select(IndexFile))).scalars().all()
-        assert len(file_rows) == 1
-        assert file_rows[0].status == "extracted"
-
-        assert len((await session.execute(select(GraphSchemaRegistry))).scalars().all()) == 1
-        assert len((await session.execute(select(NodeEmbedding))).scalars().all()) == 1
+        assert job.status == "queued"
 
     await engine.dispose()
 
 
-async def test_ingest_job_reuses_file_row_and_skips_when_completed():
+async def test_ingest_job_skips_a_job_already_in_a_terminal_state():
     engine = await _engine()
     repository = _RecordingRepository()
     async with AsyncSession(engine) as session:
         await _seed_job(session)
+        await session.execute(
+            IndexJob.__table__.update()
+            .where(IndexJob.id == "job-1")
+            .values(status="completed")
+        )
+        await session.commit()
+
+        # No raise: a terminal job is a no-op, which keeps redelivery safe.
         await ingest_job("job-1", session, repository)
-        commits_after_first = repository.commits
-
-        # A redelivered task must be a no-op, not a second ingestion.
-        await ingest_job("job-1", session, repository)
-
-        assert repository.commits == commits_after_first
-        file_rows = (await session.execute(select(IndexFile))).scalars().all()
-        assert len(file_rows) == 1
-
-    await engine.dispose()
-
-
-async def test_ingest_job_creates_the_graph_when_missing():
-    engine = await _engine()
-    repository = _RecordingRepository(graph_exists=False)
-    async with AsyncSession(engine) as session:
-        await _seed_job(session)
-
-        await ingest_job("job-1", session, repository)
-
-        assert "create_graph:demo_graph" in repository.queries
+        assert repository.queries == []
 
     await engine.dispose()
 

@@ -316,7 +316,7 @@ the worker (ADR-0005).
 ### Data Flow
 
 ```
-JSON File / API knowledge_base.Data → (worker) ingest_knowledge_base(
+JSON File → (worker) ingest_knowledge_base(
     session, repository, kb, graph_name, organization_id, model) → 3 writes in one call:
   1. nodes/relationships → ingestion_worker.ingestion.graph.merge_knowledge_base() →
      AgeGraphRepository.merge_node()/merge_relationship() (idempotent MERGE) → Apache Age graph
@@ -471,10 +471,14 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   `IndexJobBase` (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` —
   so `create_all` never touches the API's tables. `IndexJob` and `IndexFile` live under
   `ingestion_worker/models/`, one class per model. The shared API-owned `knowledge_base` table mapping lives at
-  `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads its
-  `Data` graph JSON as `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same
-  mapped model. That DTO also carries the knowledge base's uploaded files (`files`, with each
-  file's `storage_key`), but Phase 1 still ingests only `Data`; per-file processing is Phase 2.
+  `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads it as
+  `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same mapped model. That DTO
+  carries the knowledge base's uploaded files (`files`, with each file's `storage_key`).
+  **The inline `Data` graph-JSON column was removed** from the API, the DTO and the database (EF
+  migration `RemoveKnowledgeBaseData`): a knowledge base's content is now only its uploaded files.
+  Phase 1 ingestion read that column, so `jobs.ingest_job()` now raises a
+  `NonRetryableIngestionError` naming the reason instead, and stays that way until file-based
+  ingestion (Phase 2) is built.
   `create_job_tables(include_knowledge_base=True)` creates `knowledge_base`, `file` and
   `knowledge_base_file` stand-ins for tests
 - Ingestion extraction returns `GraphSchemaRegistryDTO` / `NodeEmbeddingDTO` rather than transient
@@ -1170,11 +1174,12 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   `Program.cs`. A plain `HasConversion<string>()` would silently persist `ApiKey`.
 - `ModelConfig.Type` is a `jsonb` column holding a JSON array, via a string value converter; Npgsql
   documents a `string` property with `HasColumnType("jsonb")` as a supported mapping.
-- `KnowledgeBase` (`Models/KnowledgeBase.cs`) stores the outer resource `Id`/`Name` and the graph
-  payload as `Data` (`jsonb`), plus its organization, UTC timestamps and `KnowledgeBaseState`. The API
-  overlays outer `id`/`name` onto the payload root so ingestion sees the same stable identity and
-  name. `KnowledgeBaseWriteRequest` mirrors `common.schemas.knowledge_base.KnowledgeBase`'s graph
-  structure while retaining arbitrary JSON property values. Member reads are organization-scoped;
+- `KnowledgeBase` (`Models/KnowledgeBase.cs`) stores the resource `Id`/`Name`, its organization, UTC
+  timestamps and `KnowledgeBaseState`. It carries **no graph payload**: the former `Data` (`jsonb`)
+  column, the `id`/`name` overlay onto that payload, and the node/relationship shape validation in
+  `KnowledgeBaseWriteRequest` were all removed, so a write request is just a `Name` (plus an optional
+  caller-assigned `Id` on create). Content comes from the files uploaded through
+  `KnowledgeBaseFilesController`. Member reads are organization-scoped;
   Contributor/Admin mutations create drafts, and update/delete are draft-only. Publish changes a
   draft to `indexing`; the ingestion worker and dispatch/completion bridge are not wired to this API,
   so completion to `published` remains future integration work.
@@ -1315,6 +1320,19 @@ list, read or download them, and upload/delete need Contributor or Admin and a d
   `FileSystemStorageTests` and `StorageOptionsTests`, which cover DI, fail-fast startup and secret
   redaction. `GraphPlatformApiFactory` points `Storage:FileSystem:Root` at a per-factory temp directory
 
+### CORS
+
+The SPA in `src/frontend` runs on a different origin, so `Program.cs` registers a named policy
+(`Program.SpaCorsPolicy`, `"spa"`) and calls `app.UseCors(...)` **after** `UseHttpsRedirection()` and
+**before** `UseAuthentication()` — authorization runs on the principal authentication puts in place,
+and a rejected preflight must still carry the CORS headers.
+
+- Origins come from `Cors:AllowedOrigins` (a string array), falling back to `http://localhost:5173`
+  and `http://localhost:4173` (Vite dev and preview) when the section is empty. They are enumerated
+  rather than wildcarded because `AllowCredentials()` forbids `AllowAnyOrigin()`.
+- `WithExposedHeaders("Content-Disposition")` is required: without it the browser hides that header
+  from `fetch`, and the file-download path cannot read the server's filename.
+
 ### Testing, and the `dotnet test` gotcha
 - `dotnet test src/api/GraphPlatform.slnx` runs the integration tests through `WebApplicationFactory`
   with the DbContext swapped for in-memory SQLite (`EnsureCreated`, since the Npgsql migration cannot
@@ -1328,3 +1346,109 @@ list, read or download them, and upload/delete need Contributor or Admin and a d
 - SQLite covers model/DTO/validation/authorization behaviour. Not executed: applying the migration to
   a live PostgreSQL (no local server was available), so the Npgsql `jsonb` round-trip rests on
   Npgsql's documented mapping rather than a runtime check.
+
+## Frontend (`src/frontend`, React)
+
+**GraphForge** is the Vite + React 19 + TypeScript SPA that drives the management API. It is not a
+uv project and imports nothing from `common`; its only contract with the rest of the repo is the
+HTTP surface of `src/api`.
+
+### Stack and build
+
+Vite 8, React 19.2 with the **React Compiler** (via `@rolldown/plugin-babel` + `reactCompilerPreset()`),
+TypeScript 6, ESLint 10 flat config, Tailwind v4, shadcn/ui (`radix-nova` style), React Router 7,
+TanStack Query 5, React Hook Form + Zod 4, and Lucide icons. npm is the package manager.
+
+```bash
+cd src/frontend
+npm run dev      # Vite dev server on :5173
+npm run lint     # ESLint, including the React Compiler rules
+npx tsc -b       # type-check
+npm run build    # tsc -b && vite build
+```
+
+- **The `@/*` alias is declared in three places** and all three must agree: the reference-only root
+  `tsconfig.json` (the shadcn CLI reads it and aborts without it), `tsconfig.app.json` (what the
+  editor and `tsc -b` honour), and `resolve.alias` in `vite.config.ts` via
+  `fileURLToPath(new URL('./src', import.meta.url))`, since `"type": "module"` means no `__dirname`.
+  Do **not** add `baseUrl` — TypeScript 6 errors on it as deprecated; bare `paths` is enough.
+- Tailwind v4 is CSS-configured. There is no `tailwind.config.js`, and `components.json` carries
+  `"tailwind": { "config": "" }`. Design tokens live at the top of `src/index.css`.
+- `tsconfig.app.json` sets `erasableSyntaxOnly`, so **no TypeScript `enum`** and no constructor
+  parameter properties. API enums are modelled as a const object plus a derived union in
+  `src/api/types.ts`; `ApiError`'s fields are assigned longhand.
+- `verbatimModuleSyntax` makes a value-style import of a type a build error (TS1484), which the
+  shadcn registry emits routinely. `@typescript-eslint/consistent-type-imports` is enabled, so run
+  `npx eslint src --fix && npx tsc -b` after every `shadcn add`.
+- `src/components/ui/**` is generated: it has its own ESLint override disabling
+  `react-refresh/only-export-components`, and must not be hand-edited (`--overwrite` would undo it).
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VITE_APP_NAME` | `GraphForge` | Brand text and `<title>` (substituted into `index.html` as `%VITE_APP_NAME%`) |
+| `VITE_API_BASE_URL` | `http://localhost:5087` | Absolute API origin |
+| `VITE_MAX_UPLOAD_BYTES` | `104857600` | Client-side upload guard; mirrors `FileUploads:MaxFileSizeBytes` |
+
+Committed defaults live in `.env` (not only `.env.example`): Vite substitutes `%VITE_*%` in HTML
+**only** for variables that are actually defined, so a missing `VITE_APP_NAME` renders the literal
+token. Local overrides go in `.env.local`, which is gitignored. `src/app/env.ts` reads and
+normalises all three once.
+
+### Structure
+
+`src/app` (providers, router, query client, env) · `src/api` (typed client: `http.ts`, `errors.ts`,
+`token-store.ts`, `types.ts`, `endpoints/`) · `src/auth` · `src/org` · `src/queries` (one hook
+module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
+(`ui/` generated, plus `layout/`, `feedback/`, `data/`, `form/`) · `src/features` · `src/routes`.
+
+### Patterns worth knowing
+
+- **The API's failure shapes are not uniform, and `errors.ts` must not assume JSON.** `Forbid()` and
+  the JWT middleware return **403/401 with an empty body**; explicit failures return `ProblemDetails`;
+  model validation returns `ValidationProblemDetails`, identified by its `errors` key. A `fetch`
+  rejection maps to `status: 0`, which the UI renders as "cannot reach the server" rather than as a
+  server error.
+- **Validation keys are mixed-case.** `IValidatableObject` results use `nameof(ApiKey)` (PascalCase),
+  model-bound failures are camelCase, body-parse failures key on `"$"`, and upload failures on
+  `"file"`. `getFieldErrors()` emits each key verbatim *and* camelCased, collecting anything
+  unattributable under `ROOT_ERROR_KEY`.
+- **Uploads use `XMLHttpRequest`, not `fetch`** — only XHR reports upload progress, and files run to
+  100 MiB. The multipart field name must be exactly `file`, and `Content-Type` is never set manually
+  so the browser can generate the boundary.
+- **Downloads need the bearer header**, so a plain `<a href>` cannot work: content is fetched as a
+  blob and saved via an object URL, revoked in a `setTimeout(…, 0)` because revoking synchronously
+  cancels the download in Safari.
+- **There is no refresh token and the access token lasts 60 minutes.** `AuthProvider` arms a warning
+  toast at T−5 min and a hard logout at T−30 s, re-arming both on `visibilitychange`; a 401 from any
+  request triggers one logout via a re-entrancy-guarded handler. Login and signup pass
+  `skipAuthRedirect`, because a 401 there is a bad password, not an expired session.
+- **The organization lives in the URL** (`/orgs/:organizationId/...`), never in global state, so a
+  query key can never disagree with what is rendered. The sidebar switcher navigates; `lastOrgId` in
+  `localStorage` is only a redirect hint for `/`.
+- **Roles come from `GET /api/auth/me`**, not from the JWT — the API resolves them per request, so
+  token-derived roles would go stale. `src/org/permissions.ts` mirrors `OrganizationAccessService`
+  (`canAuthor`, `canGovern`) by name so drift is visible in review.
+- **Gating is disabled-with-a-reason, not hidden**, except for whole sections a role can never use
+  (Settings, Members). Three server 409s are mirrored client-side: draft-only knowledge bases, the
+  last remaining admin, and deleting the active embedding model. Because a natively `disabled`
+  button fires no pointer events (so a tooltip on it never opens), `ActionTooltip` wraps such
+  controls in a focusable span.
+- **Editing a model replaces it wholesale, so an omitted `apiKey` clears the stored key.** The edit
+  form therefore requires re-entering it, shows a warning, and never renders a fake `••••` value.
+  Model **creation** requires a caller-assigned UUID, which the API never generates.
+- **No list endpoint supports search, filtering or pagination**, so `useClientCollection` does all of
+  it over the fetched array. That is a deliberate stopgap: lists in the thousands are the point at
+  which this needs to become a server-side capability.
+- **Polling is self-terminating**: `refetchInterval` is the function form, returning 5 s only while a
+  knowledge base is `indexing` or a file is `uploaded`/`processing`, and `false` otherwise.
+- **React Compiler forbids synchronous `setState` in an effect.** Dialogs therefore rely on Radix
+  unmounting their content on close to reset form state (the body is a child component) rather than a
+  reset-on-close effect, `useIsMobile` uses `useSyncExternalStore`, and `ModelForm` uses `useWatch`
+  rather than `form.watch()`, which returns an unmemoizable function and makes the compiler skip the
+  whole component.
+- Accessibility: a skip link, `<main tabIndex={-1}>` focused on every route change (React Router does
+  not move focus by itself), one `Toaster` plus a separate `aria-live` announcer for filter counts and
+  upload/indexing transitions, `DialogTitle` on every dialog, and `AlertDialog` for destructive
+  confirmations. Status is never conveyed by colour alone.

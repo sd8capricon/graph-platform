@@ -113,7 +113,6 @@ async def test_read_and_set_knowledge_base_state():
                 Id="kb-1",
                 OrganizationId="org-1",
                 Name="F1",
-                Data='{"nodes": []}',
                 State="indexing",
                 CreatedAtUtc=now,
                 UpdatedAtUtc=now,
@@ -127,7 +126,6 @@ async def test_read_and_set_knowledge_base_state():
         assert isinstance(kb, KnowledgeBaseRecordDTO)
         assert kb.name == "F1"
         assert kb.organization_id == "org-1"
-        assert kb.data == '{"nodes": []}'
 
         await store.set_knowledge_base_state("kb-1", "published")
         kb = await store.read_knowledge_base("kb-1")
@@ -146,7 +144,6 @@ async def test_read_knowledge_base_includes_its_files_oldest_first():
                 Id="kb-1",
                 OrganizationId="org-1",
                 Name="F1",
-                Data='{"nodes": []}',
                 State="indexing",
                 CreatedAtUtc=earlier,
                 UpdatedAtUtc=earlier,

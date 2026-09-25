@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
@@ -73,7 +71,7 @@ public class KnowledgeBasesController(
 
     /// <summary>Creates a draft Knowledge Base.</summary>
     /// <param name="organizationId">Owning organization.</param>
-    /// <param name="request">Resource metadata and graph JSON.</param>
+    /// <param name="request">Resource metadata.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>201 with the created Knowledge Base, or 409 when its id is already in use.</returns>
     [HttpPost]
@@ -116,7 +114,6 @@ public class KnowledgeBasesController(
             Id = id,
             OrganizationId = organizationId,
             Name = request.Name.Trim(),
-            Data = NormalizeData(request.Data, id, request.Name.Trim()),
             State = KnowledgeBaseState.Draft,
             CreatedAtUtc = now,
             UpdatedAtUtc = now,
@@ -132,7 +129,7 @@ public class KnowledgeBasesController(
         );
     }
 
-    /// <summary>Replaces a draft Knowledge Base's name and graph JSON.</summary>
+    /// <summary>Replaces a draft Knowledge Base's name.</summary>
     [HttpPut("{knowledgeBaseId}")]
     [ProducesResponseType<KnowledgeBaseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -174,7 +171,6 @@ public class KnowledgeBasesController(
 
         var name = request.Name.Trim();
         knowledgeBase.Name = name;
-        knowledgeBase.Data = NormalizeData(request.Data, knowledgeBase.Id, name);
         knowledgeBase.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);
@@ -293,14 +289,6 @@ public class KnowledgeBasesController(
                     && knowledgeBase.OrganizationId == organizationId,
                 cancellationToken
             );
-
-    private static string NormalizeData(JsonElement data, string id, string name)
-    {
-        var graph = JsonNode.Parse(data.GetRawText())!.AsObject();
-        graph["id"] = id;
-        graph["name"] = name;
-        return graph.ToJsonString();
-    }
 
     private ObjectResult DraftOnlyConflict() =>
         Conflict(

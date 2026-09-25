@@ -94,6 +94,27 @@ builder
     .ValidateOnStart();
 builder.Services.AddScoped<FileService>();
 
+// The SPA is served from a different origin in development, so it needs an explicit CORS policy.
+// Origins are enumerated rather than wildcarded because AllowCredentials() forbids AllowAnyOrigin().
+var corsOrigins =
+    builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() is { Length: > 0 } configured
+        ? configured
+        : ["http://localhost:5173", "http://localhost:4173"];
+
+builder.Services.AddCors(options =>
+    options.AddPolicy(
+        SpaCorsPolicy,
+        policy =>
+            policy
+                .WithOrigins(corsOrigins)
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials()
+                // The file-download endpoint's filename is only readable cross-origin when exposed.
+                .WithExposedHeaders("Content-Disposition")
+    )
+);
+
 builder
     .Services.AddControllers()
     .AddJsonOptions(options =>
@@ -125,6 +146,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// CORS must run before authentication so a rejected preflight still carries the CORS headers.
+app.UseCors(SpaCorsPolicy);
+
 // UseAuthentication must precede UseAuthorization: authorization reads the principal that
 // authentication puts on HttpContext.User.
 app.UseAuthentication();
@@ -138,4 +162,8 @@ app.Run();
 /// Entry point marker so the integration tests' <c>WebApplicationFactory&lt;Program&gt;</c> can boot
 /// this host. Top-level statements otherwise produce an internal, unnamed entry point type.
 /// </summary>
-public partial class Program;
+public partial class Program
+{
+    /// <summary>Name of the CORS policy applied to the single-page application's origins.</summary>
+    public const string SpaCorsPolicy = "spa";
+}

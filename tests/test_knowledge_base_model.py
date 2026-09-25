@@ -11,7 +11,6 @@ def test_knowledge_base_mapping_matches_api_columns_without_joining_common_metad
         "Id",
         "OrganizationId",
         "Name",
-        "Data",
         "State",
         "CreatedAtUtc",
         "UpdatedAtUtc",
@@ -21,5 +20,8 @@ def test_knowledge_base_mapping_matches_api_columns_without_joining_common_metad
 
 
 def test_knowledge_base_record_dto_is_separate_from_the_graph_payload_schema():
-    assert "data" in KnowledgeBaseRecordDTO.model_fields
+    # The resource row carries metadata and files; the graph payload schema of the
+    # same name carries nodes/relationships. Neither borrows the other's fields.
+    assert "files" in KnowledgeBaseRecordDTO.model_fields
+    assert "data" not in KnowledgeBaseRecordDTO.model_fields
     assert "nodes" not in KnowledgeBaseRecordDTO.model_fields

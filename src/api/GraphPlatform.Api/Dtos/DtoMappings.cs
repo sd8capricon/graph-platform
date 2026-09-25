@@ -81,7 +81,7 @@ public static class DtoMappings
             UpdatedAtUtc = model.UpdatedAtUtc,
         };
 
-    /// <summary>Projects a Knowledge Base, parsing the persisted JSON payload.</summary>
+    /// <summary>Projects a Knowledge Base.</summary>
     /// <param name="knowledgeBase">
     /// The Knowledge Base to project. Its <c>Files</c> navigation must be loaded, or the DTO lists none.
     /// </param>
@@ -92,7 +92,6 @@ public static class DtoMappings
             Id = knowledgeBase.Id,
             OrganizationId = knowledgeBase.OrganizationId,
             Name = knowledgeBase.Name,
-            Data = System.Text.Json.JsonDocument.Parse(knowledgeBase.Data).RootElement.Clone(),
             Files = knowledgeBase
                 .Files.OrderBy(file => file.CreatedAtUtc)
                 .ThenBy(file => file.Id, StringComparer.Ordinal)

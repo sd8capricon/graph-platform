@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Text.Json;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 
@@ -11,14 +10,14 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
     : IClassFixture<GraphPlatformApiFactory>
 {
     [Fact]
-    public async Task Create_generates_an_id_and_uses_outer_id_and_name_in_graph_data()
+    public async Task Create_generates_an_id_and_returns_the_draft()
     {
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var response = await factory.CreateKnowledgeBaseAsync(
             admin.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "Outer name", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "Outer name" }
         );
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
@@ -27,21 +26,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         Assert.Equal(organization.Id, created.OrganizationId);
         Assert.Equal("Outer name", created.Name);
         Assert.Equal(KnowledgeBaseState.Draft, created.State);
-        Assert.Equal(created.Id, created.Data.GetProperty("id").GetString());
-        Assert.Equal("Outer name", created.Data.GetProperty("name").GetString());
-        Assert.Equal("Driver", created.Data.GetProperty("nodes")[0].GetProperty("label").GetString());
-        Assert.Equal(
-            "Max Verstappen",
-            created
-                .Data.GetProperty("nodes")[0]
-                .GetProperty("properties")
-                .GetProperty("name")
-                .GetString()
-        );
-        Assert.Equal(
-            "RACED_FOR",
-            created.Data.GetProperty("relationships")[0].GetProperty("label").GetString()
-        );
+        Assert.Empty(created.Files);
 
         using var client = factory.AuthedClient(admin.AccessToken);
         var listed = (await client.GetFromJsonAsync<List<KnowledgeBaseDto>>(
@@ -61,7 +46,6 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         {
             Id = id,
             Name = "F1",
-            Data = GraphData(),
         };
 
         using var first = await factory.CreateKnowledgeBaseAsync(
@@ -79,26 +63,6 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
             request
         );
         Assert.Equal(HttpStatusCode.Conflict, duplicate.StatusCode);
-    }
-
-    [Fact]
-    public async Task Create_rejects_graph_data_without_node_labels()
-    {
-        var admin = await factory.SignupAsync();
-        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
-        using var invalidData = JsonDocument.Parse("""{"nodes":[{"properties":{}}]}""");
-
-        using var response = await factory.CreateKnowledgeBaseAsync(
-            admin.AccessToken,
-            organization.Id,
-            new CreateKnowledgeBaseRequest
-            {
-                Name = "Invalid graph",
-                Data = invalidData.RootElement.Clone(),
-            }
-        );
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
@@ -127,7 +91,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var created = await factory.CreateKnowledgeBaseAsync(
             admin.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "Shared graph", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "Shared graph" }
         );
         created.EnsureSuccessStatusCode();
         var knowledgeBase = (await created.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
@@ -135,7 +99,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var contributorCreate = await factory.CreateKnowledgeBaseAsync(
             contributor.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "Contributor graph", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "Contributor graph" }
         );
         Assert.Equal(HttpStatusCode.Created, contributorCreate.StatusCode);
 
@@ -145,7 +109,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         );
         var create = await userClient.PostAsJsonAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases",
-            new CreateKnowledgeBaseRequest { Name = "Forbidden", Data = GraphData() },
+            new CreateKnowledgeBaseRequest { Name = "Forbidden" },
             Api.Json
         );
 
@@ -163,7 +127,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var create = await factory.CreateKnowledgeBaseAsync(
             owner.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "Private graph", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "Private graph" }
         );
         create.EnsureSuccessStatusCode();
         var knowledgeBase = (await create.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
@@ -184,7 +148,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var create = await factory.CreateKnowledgeBaseAsync(
             admin.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "F1", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "F1" }
         );
         create.EnsureSuccessStatusCode();
         var knowledgeBase = (await create.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
@@ -201,7 +165,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
 
         var update = await client.PutAsJsonAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
-            new UpdateKnowledgeBaseRequest { Name = "Updated", Data = GraphData() },
+            new UpdateKnowledgeBaseRequest { Name = "Updated" },
             Api.Json
         );
         var delete = await client.DeleteAsync(
@@ -225,7 +189,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var create = await factory.CreateKnowledgeBaseAsync(
             admin.AccessToken,
             organization.Id,
-            new CreateKnowledgeBaseRequest { Name = "Original", Data = GraphData() }
+            new CreateKnowledgeBaseRequest { Name = "Original" }
         );
         create.EnsureSuccessStatusCode();
         var knowledgeBase = (await create.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
@@ -233,26 +197,16 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         using var client = factory.AuthedClient(admin.AccessToken);
         var update = await client.PutAsJsonAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
-            new UpdateKnowledgeBaseRequest { Name = "Updated", Data = GraphData() },
+            new UpdateKnowledgeBaseRequest { Name = "Updated" },
             Api.Json
         );
         Assert.Equal(HttpStatusCode.OK, update.StatusCode);
         var updated = (await update.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
         Assert.Equal("Updated", updated.Name);
-        Assert.Equal(knowledgeBase.Id, updated.Data.GetProperty("id").GetString());
-        Assert.Equal("Updated", updated.Data.GetProperty("name").GetString());
 
         var delete = await client.DeleteAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}"
         );
         Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
-    }
-
-    private static JsonElement GraphData()
-    {
-        using var data = JsonDocument.Parse(
-            """{"id":"payload-id","name":"Payload name","nodes":[{"id":"node-1","label":"Driver","properties":{"name":"Max Verstappen"}}],"relationships":[{"source_id":"node-1","target_id":"team-1","properties":{"season":2025},"label":"RACED_FOR"}]}"""
-        );
-        return data.RootElement.Clone();
     }
 }
