@@ -19,7 +19,7 @@ services do not import each other.
 
 | Project | Import package | Owns |
 |---|---|---|
-| `src/common` | `common` | Configuration, domain schemas, shared ORM models, repositories, `EmbeddingService`, index DDL, and the `api/` placeholder |
+| `src/common` | `common` | Configuration, domain schemas, shared ORM models, repositories, `EmbeddingService`, index DDL, the object storage abstraction (`storage/`), and the `api/` placeholder |
 | `src/agent-runtime` | `agent_runtime` | Agent tools, prompt, `AgentContext`, serializers, and the deep/react agent assembly |
 | `src/ingestion-worker` | `ingestion_worker` | The ingestion write path (idempotent graph `MERGE` + schema-registry/node-embedding upserts), the Celery app/tasks, the job dispatcher, and the legacy one-shot demo |
 
@@ -286,6 +286,12 @@ the worker (ADR-0005).
      nothing about `NodeEmbedding`/`SchemaEmbedding`; both classes expose thin classmethods that
      pass their own `__tablename__` through. See "Vector Embedding & Search Pattern" below
 
+7. **Storage** (`src/common/src/common/storage/`)
+   - `base.py`: `StorageService` ABC, `ObjectMetadata`, the `StorageError` hierarchy and key/prefix/
+     metadata validation. `filesystem.py` (`FileSystemStorage`) and `azure_blob.py`
+     (`AzureBlobStorage`) are the providers, and `factory.py`'s `create_storage_service(settings)`
+     picks one from `settings.storage` (`schemas/storage.py`). See "Object Storage Pattern" below
+
 ### Data Flow
 
 ```
@@ -532,7 +538,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   - `config.load_config(path=DEFAULT_CONFIG_PATH)` updates the `settings` singleton's fields **in place** (it does not rebind the module-level name) so modules that already did `from common.config import settings` see the loaded values — rebinding would leave them holding a stale object. Each service entrypoint's `main()` is a call site (`agent_runtime/__init__.py`, `ingestion_worker/__init__.py`)
   - There is **no** `load_config()`-before-import ordering constraint any more. There used to be: the pgvector column width was fixed at class-definition time from `settings.embedding_dimension`, so importing a model module before `load_config()` silently baked in the default. Dimensionless columns (ADR-0003) removed the only thing read at class-definition time. The model imports in `ingestion_worker/__init__.py`'s `run()` still have to precede `create_all`, but only so the tables register on `Base.metadata` — not for ordering against config
   - The committed `configs/local.yaml` ships `models: []` with a filled-in template in comments. Placeholder/blank entries are deliberately NOT skipped — `auth_mode: ""` fails validation loudly, as does an `api_key_env` naming an unset variable, so misconfiguration surfaces at startup instead of silently yielding a keyless model
-  - Import-cycle history: `models/graph_schema_registry.py` imports `services.embedding_service` and `services/knowledge_base_service.py` imports `schemas.knowledge_base`, but `schemas/knowledge_base.py` no longer imports back into `models.*` (its extraction methods moved to the worker), so the old cycle is gone. The empty-`__init__.py` discipline is still kept: `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` are **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `api/`, and `database/` have no `__init__.py` at all, for the same reason — and the service packages (`agent_runtime/`, `ingestion_worker/`) are outside `common` entirely, so their `__init__.py` files are entrypoints, not part of this cycle. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
+  - Import-cycle history: `models/graph_schema_registry.py` imports `services.embedding_service` and `services/knowledge_base_service.py` imports `schemas.knowledge_base`, but `schemas/knowledge_base.py` no longer imports back into `models.*` (its extraction methods moved to the worker), so the old cycle is gone. The empty-`__init__.py` discipline is still kept: `models/__init__.py`, `services/__init__.py`, and `repositories/__init__.py` are **intentionally empty** (docstring only, no re-exports), so importing one leaf module never runs its siblings as a side effect of `services/__init__.py` (or `models/__init__.py`) executing first. `schemas/`, `api/`, `database/`, and `storage/` have no `__init__.py` at all, for the same reason — and the service packages (`agent_runtime/`, `ingestion_worker/`) are outside `common` entirely, so their `__init__.py` files are entrypoints, not part of this cycle. Always import leaf modules directly (`from common.services.embedding_service import EmbeddingService`, never `from common.services import EmbeddingService`) and never add a re-export to one of these three `__init__.py` files — that's exactly what closes the loop again. `models/schema_embedding.py` is a true leaf: it imports only `models.base.Base`/`database.indexes`/`schemas.model`/sqlalchemy/pgvector, never `GraphSchemaRegistry` — the parent imports the child (`graph_schema_registry.py` imports `SchemaEmbedding`), and the child's back-reference (`Mapped["GraphSchemaRegistry"]`) uses the string form, resolved from the declarative registry rather than by evaluating the annotation, so importing it in the other direction is never needed. `database/indexes.py` is a leaf below both of them (`psycopg.sql`/`sqlalchemy.text`/`schemas.model` only), which is why both embedding models can import it. If you add a new cross-package module-level import, sanity-check it with `python -c "from common.<new_entry_point> import ..."` in a fresh interpreter — pytest's own import order can mask a real cycle
 - Embeddings are computed by `EmbeddingService.compute_embeddings(model, texts)` (`services/embedding_service.py`) via `litellm.aembedding()` — both ORM models import `EmbeddingService` from there instead of defining their own copies
   - Takes an explicit `model: Model | None` (see `schemas/model.py`) describing the provider — builds the litellm model string as `model.identifier` (a `Model` property, `f"{provider}/{name}"`; also used by `agent_runtime/chat_model.py`'s `build_chat_model()`, so both read the same litellm model string the same way), passes `connection_string` as `api_base`, `api_key.get_secret_value()` as `api_key` when `auth_mode` is `api_key`, and `embedding_dimension` as `dimensions`. `model.identifier` is not used as embedding provenance — that is `model.id`, stamped by both worker upserts onto `embedding_model_id` (see above)
   - If `model` is `None` (or `texts` is empty), embedding is skipped entirely (returns `None`) so callers without a configured provider are unaffected — there is no global env var fallback
@@ -671,6 +677,84 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   litellm* forgoes prompt caching
 - See: `src/agent-runtime/src/agent_runtime/deep_agent.py`, `agent_runtime/chat_model.py`, `agent_runtime/prompts.py`,
   `agent_runtime/tools.py` (`GRAPH_TOOLS`), and `src/agent-runtime/tests/test_deep_agent.py` / `src/agent-runtime/tests/test_chat_model.py`
+
+### Object Storage Pattern (ADR-0006)
+- The design, the cross-stack contract (key rules, metadata rules, filesystem layout, sidecar
+  schema) and its open questions are recorded in `docs/adr/0006-provider-agnostic-object-storage.md`.
+  A change to any part of that contract must land in **both** stacks in the same change
+- Business code depends only on `common.storage.base.StorageService`, never on the Azure SDK or on
+  filesystem APIs. It receives the service through its constructor, the way `KnowledgeBaseService`
+  receives its repository, and the entrypoint builds it once with
+  `common.storage.factory.create_storage_service(settings.storage)`. The factory imports the providers
+  lazily, so a filesystem deployment never loads the Azure SDK. Close the service with `aclose()` (or
+  `async with`)
+- **Object keys are the canonical reference.** Persist keys such as
+  `documents/{documentId}/{fileId}/content.pdf`, never a filesystem path or blob URL.
+  `ObjectMetadata` (`key`/`size`/`content_type`/`etag`/`last_modified`/`metadata`) never carries
+  either. `validate_key()` runs before any provider sees a key and rejects: empty keys, keys over 1024
+  characters, a leading or trailing `/`, `\`, control characters/NUL, `.`/`..` or empty segments, and
+  drive prefixes. A list prefix follows the same rules but may end in `/`, and matches as a plain
+  string prefix (`documents/do` matches `documents/doc-1/...`). User metadata must use ASCII-identifier
+  names and ASCII values (Azure's rule, enforced for both providers), and names differing only by case
+  are rejected
+- API: `upload(key, bytes | AsyncIterable[bytes], *, content_type, metadata)`,
+  `download(key, *, chunk_size)` (an async iterator of chunks), `read_bytes()`, `delete()` (idempotent,
+  returns `False` when absent), `exists()`, `list(prefix)` (lexicographic), `get_metadata()`
+- Errors: `download`/`read_bytes`/`get_metadata` on a missing key raise `StorageObjectNotFoundError`.
+  Bad input raises `InvalidStorageKeyError`, which is both a `StorageError` and a `ValueError` (the
+  codebase's bad-input convention). Azure SDK failures are wrapped in `StorageError` with
+  `status_code` kept, so the worker's `classify_exception()` still sees 429/5xx. Wrapped messages hold
+  only the operation, status and service error code, never request details
+- `FileSystemStorage(root)` lays out `root/objects/<key>` (content), `root/meta/<key>` (a JSON sidecar
+  with `content_type`, `metadata`, `etag`, `size`, `mtime_ns`) and `root/tmp/` (staging). The sidecar
+  lives at `meta/<key>` with no `.json` suffix on purpose: a suffix would let keys `a` and `a.json/b`
+  collide in the meta tree only.
+  - **Writes:** stream to `tmp/` (all blocking I/O goes through `asyncio.to_thread`), `fsync`, then
+    `os.replace` over the object, then write the sidecar the same way. Readers therefore never see a
+    partial file, and a failed upload leaves the previous version. The rename is only atomic within
+    one filesystem, so a Docker volume must be mounted at `root`, not `root/objects`.
+  - **Reads:** a sidecar whose `size`/`mtime_ns` no longer match the file (a crash between the two
+    replaces) is ignored, and metadata falls back to `stat`. `mtime_ns` is compared at 100 ns
+    resolution because the .NET API's `FileSystemStorage` writes the same layout independently, using
+    100 ns file-time ticks.
+  - **Traversal defence:** besides key validation, any existing symlink component under `objects/` or
+    `meta/` is rejected, as is a path that resolves outside the tree.
+  - **Limitation:** a filesystem cannot hold both a file `a` and a directory `a`, so a key that is a
+    `/`-prefix of another (`a` vs `a/b`) raises `StorageError`. Azure has no such restriction
+- `AzureBlobStorage(settings)` uses `azure.storage.blob.aio`, with `aiohttp` as the async transport.
+  - **Auth modes:** `auth_mode: connection_string` (development and Azurite) or `managed_identity`,
+    which uses `azure.identity.aio.DefaultAzureCredential` with an optional
+    `managed_identity_client_id` and needs `account_url`.
+  - **Uploads:** `bytes` go through `upload_blob`. An async stream is buffered to `max_block_size` and
+    written with `stage_block` + one `commit_block_list`, so memory stays bounded and a failed upload
+    never becomes visible.
+  - **Setup:** `create_container: true` creates the container lazily on first upload
+- Config lives in the `storage:` section of `configs/local.yaml`, in `StorageSettings`
+  (`schemas/storage.py`). The secret is never inlined: `connection_string_env` names an env var, and a
+  `before` validator reads it into `connection_string: SecretStr`, mirroring
+  `Model.resolve_api_key_env`. The env vars `STORAGE_PROVIDER` / `STORAGE_FILESYSTEM_ROOT` override
+  the YAML, so containers can point at a volume. `azure_blob` credentials are checked (via
+  `AzureBlobStorageSettings.ensure_credentials()`) only when it is the selected provider, so an
+  Azure block can sit in the YAML with its env var unset. Both settings models set
+  `hide_input_in_errors=True`, because pydantic otherwise echoes the raw input, including the resolved
+  connection string, into `ValidationError` messages
+- `common/storage/` has **no `__init__.py`** (same discipline as `schemas/`): import leaf modules
+  (`from common.storage.base import StorageService`)
+- Tests: `tests/test_storage_contract.py` is the provider contract. A parametrized fixture runs every
+  case against `filesystem` (`tmp_path`) and `azure_blob`; `azure_blob` skips unless
+  `AZURITE_CONNECTION_STRING` is set, and each test gets its own container. The contract covers:
+  round trip, streams, overwrite, metadata, exists, delete, list, missing objects, invalid/traversal
+  keys, and a 20 MiB streamed file with small blocks. `tests/test_filesystem_storage.py` covers the
+  on-disk layout, symlink escape, failed-write atomicity, stale sidecars and pruning.
+  `tests/test_storage_config.py` covers YAML/env resolution, secret redaction and the factory. To run
+  the Azure cases, start Azurite (`docker run -p 10000:10000 mcr.microsoft.com/azure-storage/azurite
+  azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck`, or `npx azurite-blob
+  --skipApiVersionCheck`) and export `AZURITE_CONNECTION_STRING` as Azurite's documented default
+  development-account connection string with `BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;`
+- Nothing consumes storage yet. Wiring it into the ingestion worker (the files model, ADR-0005 Open
+  Question 1) is follow-up work
+- See: `src/common/src/common/storage/`, `src/common/src/common/schemas/storage.py`, and the three
+  test modules above
 
 ### Validation & Constraints
 - Type constraint in GraphSchemaRegistry: `type IN ('node', 'relationship')` via CheckConstraint
@@ -830,6 +914,9 @@ shared library resolve through a path dependency (`common` in `[project.dependen
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
+- `tests/test_storage_contract.py` / `tests/test_filesystem_storage.py` / `tests/test_storage_config.py`
+  - the storage provider contract (filesystem always, Azure on Azurite), filesystem-only behavior, and
+  storage configuration/factory. See "Object Storage Pattern"
 - `src/agent-runtime/tests/test_tools.py` - test suite for `agent_runtime/tools.py`'s `@tool`-decorated functions, run inside the `agent-runtime` project (`uv run --project src/agent-runtime pytest src/agent-runtime/tests`)
 - `src/agent-runtime/tests/test_serializers.py` - test suite for `agent_runtime/serializers.py`'s dict-conversion helpers
 - `src/agent-runtime/tests/test_deep_agent.py` - test suite for `agent_runtime/deep_agent.py`'s `build_deep_agent()` factory
@@ -870,6 +957,9 @@ discover a config file upward from `tests/`.
 - **pgvector** (>=0.5.0): `Vector` column type for embedding storage/cosine search
 - **litellm** (>=1.99.0): Provider-agnostic embedding calls (`litellm.aembedding`); called only when a `Model` is passed to `EmbeddingService.compute_embeddings()`
 - **pyyaml** (>=6.0.3): `AppSettings` config-file reading
+- **azure-storage-blob** / **azure-identity** / **aiohttp**: `AzureBlobStorage`, i.e. the async blob
+  client, `DefaultAzureCredential`, and the async HTTP transport both need. Imported lazily by
+  `create_storage_service()`
 - **fastapi[standard]** (>=0.141.1): reserved for the `common/api/` placeholder (the API service of
   ADR-0004 has no project of its own yet)
 - Dev-only: **aiosqlite**, **pytest**, **pytest-asyncio** for the root-level `common` suite
@@ -1098,8 +1188,44 @@ removed (409), and the active embedding model cannot be deleted (409). Knowledge
 available to any member; create/update/delete/publish require Contributor or Admin, with update and
 delete additionally restricted to drafts.
 
+### Storage (ADR-0006)
+- `Services/Storage/` holds `IStorageService` (the API's first interface), `FileSystemStorage`,
+  `AzureBlobStorage`, `StorageKey` (key/prefix/metadata validation), `StorageObjectMetadata` /
+  `StorageUploadOptions` / `StorageDownload`, the exception types (`StorageException` with
+  `StatusCode`, `StorageObjectNotFoundException`, and `InvalidStorageKeyException : ArgumentException`)
+  and `StorageOptions`. It is implemented independently of Python's `common.storage`, with no shared
+  code, but follows the same documented contract (key rules, metadata rules, and the
+  `objects/`/`meta/`/`tmp/` on-disk layout with snake-case sidecars), so both stacks could share a
+  volume
+- `Extensions/StorageServiceCollectionExtensions.cs`'s `AddStorage(configuration)`, called from
+  `Program.cs`, uses the options pipeline (`AddOptions().Bind().PostConfigure().ValidateOnStart()`
+  plus `StorageOptionsValidator`). This deliberately departs from `JwtOptions`' eager `Get<T>()`: the
+  lazy bind lets `GraphPlatformApiFactory` override `Storage:*` through `AddInMemoryCollection`
+  without the env-var workaround JWT needs. The selected provider is a singleton `IStorageService`. A
+  relative `Storage:FileSystem:Root` resolves against the content root. The default is
+  `App_Data/storage`, not `data/storage`, because on macOS's case-insensitive filesystem `data/` *is*
+  the EF `Data/` folder (and `.gitignore` anchors `/data/` for the same reason under
+  `core.ignorecase`)
+- `STORAGE_PROVIDER` (`filesystem`/`azure_blob`) and `STORAGE_FILESYSTEM_ROOT` are honoured through a
+  `PostConfigure`, the same variables Python reads. `Storage__*` works too. The connection string is
+  a secret: its `appsettings.json` stub is empty, validation messages name the key without echoing
+  the value, and `AzureBlobStorageOptions.ToString()` omits it
+- Uploads take a `Stream` and never buffer it whole. `FileSystemStorage` streams to `tmp/` with an
+  incremental MD5 hash, calls `Flush(true)`, then `File.Move(overwrite: true)`. Capture `FileInfo`
+  attributes before the move, because `FileInfo` loads them lazily from the path. `AzureBlobStorage`
+  uses `BlobClient.UploadAsync` with `StorageTransferOptions` (block staging). `GetBlobsAsync` in
+  `Azure.Storage.Blobs` 12.29 requires `states:` explicitly when you pass `traits:`/`prefix:` by name.
+  C# forbids `yield` inside a `try` that has a `catch`, which is why `ListAsync` guards only
+  `MoveNextAsync`
+- Tests (`GraphPlatform.Api.Tests/Storage/`): `StorageContractTests` is an abstract base with
+  `[SkippableFact]`/`[SkippableTheory]` from `Xunit.SkippableFact`, needed because xunit 2.x has no
+  runtime skip. `FileSystemStorageContractTests` and `AzureBlobStorageContractTests` derive from it;
+  the Azure variant skips unless `AZURITE_CONNECTION_STRING` is set. The folder also holds
+  `FileSystemStorageTests` and `StorageOptionsTests`, which cover DI, fail-fast startup and secret
+  redaction. `GraphPlatformApiFactory` points `Storage:FileSystem:Root` at a per-factory temp directory
+
 ### Testing, and the `dotnet test` gotcha
-- `dotnet test src/api/GraphPlatform.slnx` runs 39 integration tests through `WebApplicationFactory`
+- `dotnet test src/api/GraphPlatform.slnx` runs the integration tests through `WebApplicationFactory`
   with the DbContext swapped for in-memory SQLite (`EnsureCreated`, since the Npgsql migration cannot
   run there) — no PostgreSQL or network needed.
 - Use **xunit 2.x + `Microsoft.NET.Test.Sdk` + `xunit.runner.visualstudio`**. xunit.v3 4.x is

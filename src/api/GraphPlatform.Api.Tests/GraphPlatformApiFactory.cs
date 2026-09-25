@@ -40,6 +40,13 @@ public class GraphPlatformApiFactory : WebApplicationFactory<Program>
 
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
 
+    /// <summary>
+    /// Per-factory filesystem storage root, so tests never write into the project's
+    /// <c>App_Data/storage</c>. Deleted on dispose.
+    /// </summary>
+    public string StorageRoot { get; } =
+        Path.Join(Path.GetTempPath(), $"graph-platform-api-tests-{Guid.NewGuid():N}");
+
     /// <summary>Creates the factory and opens the shared in-memory database connection.</summary>
     public GraphPlatformApiFactory()
     {
@@ -69,6 +76,8 @@ public class GraphPlatformApiFactory : WebApplicationFactory<Program>
                         ["Jwt:SigningKey"] = TestSigningKey,
                         ["Jwt:Issuer"] = "graph-platform-api-tests",
                         ["Jwt:Audience"] = "graph-platform-api-tests",
+                        ["Storage:Provider"] = "FileSystem",
+                        ["Storage:FileSystem:Root"] = StorageRoot,
                     }
                 )
         );
@@ -104,6 +113,10 @@ public class GraphPlatformApiFactory : WebApplicationFactory<Program>
         if (disposing)
         {
             _connection.Dispose();
+            if (Directory.Exists(StorageRoot))
+            {
+                Directory.Delete(StorageRoot, recursive: true);
+            }
         }
     }
 }

@@ -28,3 +28,26 @@
 #     api_key_env: OPENAI_API_KEY
 #     embedding_dimension: 1536
 models: []
+
+# Object storage (`common/storage/`). Business code refers to objects by provider-independent
+# keys like `documents/{documentId}/{fileId}/content.pdf` - never by filesystem path or blob URL.
+# `provider` and `filesystem.root` can be overridden by the STORAGE_PROVIDER /
+# STORAGE_FILESYSTEM_ROOT environment variables, so a container can point `root` at a
+# mounted volume (e.g. /data/storage). Mount the volume at `root` itself: writes stage in
+# `root/tmp/` and rename into `root/objects/`, which is only atomic on one filesystem.
+# `azure_blob` is only validated when it is the selected provider.
+# storage:
+#   provider: filesystem                  # filesystem | azure_blob
+#   filesystem:
+#     root: data/storage                  # relative paths resolve against the working directory
+#   azure_blob:
+#     auth_mode: managed_identity         # managed_identity (DefaultAzureCredential) | connection_string
+#     account_url: https://<account>.blob.core.windows.net   # required for managed_identity
+#     managed_identity_client_id: null    # user-assigned identity; omit for system-assigned
+#     connection_string_env: AZURE_STORAGE_CONNECTION_STRING # required for connection_string;
+#                                         # names an env var - never inline the secret
+#     container: graph-platform
+#     create_container: false             # true is convenient for development/Azurite
+#     max_block_size: 4194304             # bytes per staged block for streamed uploads
+#     max_single_put_size: 8388608        # larger `bytes` payloads are split into blocks
+#     max_concurrency: 4

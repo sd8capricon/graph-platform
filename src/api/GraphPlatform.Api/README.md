@@ -120,6 +120,46 @@ Validation is enforced at startup (`JwtOptions.Validate`):
 - `SigningKey` must be non-empty and at least 32 UTF-8 bytes.
 - `ExpiryMinutes` must be greater than zero.
 
+### Storage
+
+Bound to `StorageOptions` in `Services/Storage/StorageOptions.cs` by `AddStorage`
+(`Extensions/StorageServiceCollectionExtensions.cs`), which registers the selected provider as the
+singleton `IStorageService`. Business code depends on `IStorageService` only and stores
+**object keys** such as `documents/{documentId}/{fileId}/content.pdf`, never a filesystem path or
+blob URL.
+
+| Key | Value | Notes |
+|---|---|---|
+| `Storage:Provider` | `FileSystem` | `FileSystem` or `AzureBlob` (case-insensitive). |
+| `Storage:FileSystem:Root` | `App_Data/storage` | Relative paths resolve against the content root. In a container, mount a persistent volume here (e.g. `/data/storage`). Not `data/`: on a case-insensitive filesystem that is the EF `Data/` folder. |
+| `Storage:AzureBlob:AuthMode` | `ManagedIdentity` | `ManagedIdentity` (`DefaultAzureCredential`, no secret) or `ConnectionString` (development / Azurite). |
+| `Storage:AzureBlob:AccountUrl` | *(empty)* | `https://<account>.blob.core.windows.net`; required for `ManagedIdentity`. |
+| `Storage:AzureBlob:ManagedIdentityClientId` | *(empty)* | Client id of a user-assigned identity; leave empty for system-assigned. |
+| `Storage:AzureBlob:Container` | `graph-platform` | Container holding every object. |
+| `Storage:AzureBlob:ConnectionString` | *(empty in `appsettings.json`)* | **Secret.** Required for `ConnectionString`. Set it in the gitignored `appsettings.Development.json` or via `Storage__AzureBlob__ConnectionString`; never commit it. |
+| `Storage:AzureBlob:CreateContainer` | `false` | Create the container on first use. Handy for Azurite; leave off in production. |
+| `Storage:AzureBlob:MaximumTransferSizeBytes` / `InitialTransferSizeBytes` / `MaximumConcurrency` | `4 MiB` / `8 MiB` / `4` | Block size, single-request threshold and parallelism for uploads. |
+
+`STORAGE_PROVIDER` (`filesystem` / `azure_blob`) and `STORAGE_FILESYSTEM_ROOT` override the section,
+the same variables the Python services read. The standard `Storage__*` keys work too.
+
+Validation runs at startup (`ValidateOnStart`), and only for the selected provider. Error messages
+name the offending key and never echo the connection string; `AzureBlobStorageOptions.ToString()`
+omits it as well.
+
+**Docker volume.** Mount the volume at the root itself (for example `-v graph-storage:/data/storage`
+together with `STORAGE_FILESYSTEM_ROOT=/data/storage`). Uploads stage in `<root>/tmp/` and are moved
+into `<root>/objects/`, and that move is only atomic within one filesystem. `<root>/meta/` holds the
+JSON sidecars (content type, metadata, etag). The Python `common` package writes the same layout, so
+both can share a volume.
+
+**Azure tests (Azurite).** The `AzureBlobStorageContractTests` are skipped unless
+`AZURITE_CONNECTION_STRING` is set. To run them, start Azurite (`docker run -p 10000:10000
+mcr.microsoft.com/azure-storage/azurite azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck`, or
+`npx azurite-blob --skipApiVersionCheck`), set the variable to Azurite's documented default
+development-account connection string with `BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;`,
+and run `dotnet test`.
+
 ## Layering
 
 Configuration resolves in the standard ASP.NET Core order — later wins:

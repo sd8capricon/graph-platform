@@ -20,3 +20,16 @@ models:
     type: [embedding]
     api_key_env: GEMINI_API_KEY
     embedding_dimension: 768
+
+# Object storage (common.storage). Deployment-shaped values can be overridden by env:
+# STORAGE_PROVIDER, STORAGE_FILESYSTEM_ROOT (e.g. /data/storage on a mounted volume).
+storage:
+  provider: filesystem
+  filesystem:
+    root: data/storage
+  # azure_blob:
+  #   auth_mode: connection_string        # or managed_identity (needs account_url)
+  #   connection_string_env: AZURE_STORAGE_CONNECTION_STRING
+  #   account_url: https://<account>.blob.core.windows.net
+  #   container: graph-platform
+  #   create_container: true

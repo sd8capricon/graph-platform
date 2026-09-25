@@ -79,6 +79,11 @@ builder.Services.AddAuthorization();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<OrganizationAccessService>();
 
+// Object storage behind IStorageService (filesystem or Azure Blob, per the Storage section). Bound
+// through the options pipeline rather than read eagerly like JwtOptions, so test hosts can override it;
+// ValidateOnStart still fails startup on a bad section.
+builder.Services.AddStorage(builder.Configuration);
+
 builder
     .Services.AddControllers()
     .AddJsonOptions(options =>

@@ -23,3 +23,8 @@ TestResults/
 
 # macOS
 .DS_Store
+
+# Local object storage (FileSystemStorage default roots). Anchored: with core.ignorecase,
+# a bare `data/` would also ignore the API's EF `Data/` folder.
+/data/
+src/api/GraphPlatform.Api/App_Data/
