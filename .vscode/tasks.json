@@ -21,7 +21,10 @@
             "type": "shell",
             "command": "dotnet run --project src/api/GraphPlatform.Api/GraphPlatform.Api.csproj",
             "options": {
-                "cwd": "${workspaceFolder}"
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "ASPNETCORE_ENVIRONMENT": "Development"
+                }
             },
             "isBackground": true,
             "problemMatcher": [],
