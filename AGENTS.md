@@ -1195,8 +1195,11 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   draft to `indexing`; the ingestion worker and dispatch/completion bridge are not wired to this API,
   so completion to `published` remains future integration work.
 - ADR-0002 roles are **per organization**, so they live in `user_organization.Role`, not in ASP.NET
-  Identity roles: the global role entities are removed with explicit `Ignore<IdentityRole>()` /
-  `Ignore<IdentityUserRole<string>>()` / `Ignore<IdentityRoleClaim<string>>()`, which is safe because
+  Identity roles: `AppDbContext` derives from `IdentityUserContext<AppUser>`, not
+  `IdentityDbContext<AppUser>`, so `IdentityRole`/`IdentityUserRole`/`IdentityRoleClaim` are never
+  mapped in the first place — the earlier `IdentityDbContext` base plus `builder.Ignore<IdentityRole>()`
+  etc. logged "first mapped explicitly and then ignored" warnings, since the base class's own
+  `OnModelCreating` maps them before an `Ignore` call can remove them. This is safe because
   `AddIdentityCore` without `AddRoles` registers no role store. The JWT carries identity only (`sub`,
   `email`, `jti`, `iat`, `exp`); the role is re-read from the membership table per request, so a role
   change takes effect immediately instead of when the token expires.

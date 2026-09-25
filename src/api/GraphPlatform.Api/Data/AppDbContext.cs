@@ -21,11 +21,17 @@ namespace GraphPlatform.Api.Data;
 /// <para>
 /// Identity's own tables keep their default <c>AspNet*</c> names. In particular there is no
 /// <c>AspNetRoles</c> usage: ADR-0002's roles are per organization, which Identity's global role
-/// model cannot express — see <see cref="OrganizationRole"/>.
+/// model cannot express — see <see cref="OrganizationRole"/>. The context therefore derives from
+/// <see cref="IdentityUserContext{TUser}"/> rather than <see cref="IdentityDbContext{TUser}"/>:
+/// the latter maps <c>IdentityRole</c>/<c>IdentityUserRole</c>/<c>IdentityRoleClaim</c> in its own
+/// <c>OnModelCreating</c> before anything here can ignore them, which is why an earlier revision's
+/// <c>builder.Ignore&lt;...&gt;()</c> calls logged "first mapped explicitly and then ignored"
+/// warnings. <c>IdentityUserContext</c> never maps them in the first place, matching
+/// <c>AddIdentityCore</c> without <c>AddRoles</c> leaving <c>IdentityBuilder.RoleType</c> null.
 /// </para>
 /// </remarks>
 /// <param name="options">Context options supplied by dependency injection.</param>
-public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbContext<AppUser>(options)
+public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityUserContext<AppUser>(options)
 {
     /// <summary>
     /// Name of the configuration entry holding the Npgsql connection string, under the standard
@@ -60,15 +66,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityDbCo
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
-
-        // Identity's global role model is deliberately unused (see the remarks on this class and on
-        // OrganizationRole), so its tables are kept out of the schema entirely rather than created
-        // empty in a database shared with the Python services. Nothing resolves a role store, because
-        // AddIdentityCore without AddRoles leaves IdentityBuilder.RoleType null. Adding Identity roles
-        // later means deleting these three ignores and adding a migration that creates the tables back.
-        builder.Ignore<IdentityRole>();
-        builder.Ignore<IdentityUserRole<string>>();
-        builder.Ignore<IdentityRoleClaim<string>>();
 
         builder.Entity<Organization>(organization =>
         {
