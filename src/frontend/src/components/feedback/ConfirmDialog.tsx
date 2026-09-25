@@ -13,8 +13,6 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { buttonVariants } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
 
 interface ConfirmDialogProps {
   open: boolean
@@ -88,7 +86,7 @@ function ConfirmDialogBody({
         <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
         <AlertDialogAction
           disabled={pending || blocked}
-          className={cn(destructive && buttonVariants({ variant: 'destructive' }))}
+          variant={destructive ? 'destructive' : 'default'}
           onClick={(event) => {
             // Keep the dialog open while the request is in flight.
             event.preventDefault()
