@@ -19,7 +19,7 @@ public sealed class KnowledgeBaseDto
     public JsonElement Data { get; init; }
 
     /// <summary>Files uploaded to the Knowledge Base, oldest first.</summary>
-    public IReadOnlyList<KnowledgeBaseFileDto> Files { get; init; } = [];
+    public IReadOnlyList<FileDto> Files { get; init; } = [];
 
     /// <summary>Lifecycle state.</summary>
     public KnowledgeBaseState State { get; init; }

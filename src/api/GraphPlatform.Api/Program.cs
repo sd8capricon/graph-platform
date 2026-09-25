@@ -85,13 +85,14 @@ builder.Services.AddScoped<OrganizationAccessService>();
 builder.Services.AddStorage(builder.Configuration);
 
 builder
-    .Services.AddOptions<KnowledgeBaseFileOptions>()
-    .Bind(builder.Configuration.GetSection(KnowledgeBaseFileOptions.SectionName))
+    .Services.AddOptions<FileUploadOptions>()
+    .Bind(builder.Configuration.GetSection(FileUploadOptions.SectionName))
     .Validate(
         options => options.MaxFileSizeBytes > 0,
-        $"{KnowledgeBaseFileOptions.SectionName}:MaxFileSizeBytes must be positive."
+        $"{FileUploadOptions.SectionName}:MaxFileSizeBytes must be positive."
     )
     .ValidateOnStart();
+builder.Services.AddScoped<FileService>();
 
 builder
     .Services.AddControllers()

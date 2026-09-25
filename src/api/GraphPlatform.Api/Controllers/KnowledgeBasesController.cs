@@ -4,7 +4,6 @@ using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 using GraphPlatform.Api.Services;
-using GraphPlatform.Api.Services.Storage;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,7 +21,7 @@ namespace GraphPlatform.Api.Controllers;
 public class KnowledgeBasesController(
     AppDbContext db,
     OrganizationAccessService access,
-    IStorageService storage
+    FileService files
 ) : ApiControllerBase
 {
     /// <summary>Lists Knowledge Bases belonging to the organization.</summary>
@@ -221,14 +220,9 @@ public class KnowledgeBasesController(
             return DraftOnlyConflict();
         }
 
-        // Stored objects first, then the rows (the FK cascade removes the file rows). The database
-        // cannot delete objects, and a failure part-way leaves the Knowledge Base in place so the
-        // delete can be retried; storage deletes are idempotent.
-        foreach (var file in knowledgeBase.Files)
-        {
-            await storage.DeleteAsync(file.StorageKey, cancellationToken);
-        }
-
+        // The link rows cascade, but File rows and their stored content do not: FileService deletes
+        // the content first, so a failure part-way leaves the Knowledge Base in place to retry.
+        await files.RemoveAsync(knowledgeBase.Files, cancellationToken);
         db.KnowledgeBases.Remove(knowledgeBase);
         await db.SaveChangesAsync(cancellationToken);
 

@@ -1,4 +1,5 @@
 using GraphPlatform.Api.Models;
+using File = GraphPlatform.Api.Models.File;
 
 namespace GraphPlatform.Api.Dtos;
 
@@ -102,14 +103,13 @@ public static class DtoMappings
             UpdatedAtUtc = knowledgeBase.UpdatedAtUtc,
         };
 
-    /// <summary>Projects a Knowledge Base file. The storage key is not exposed.</summary>
+    /// <summary>Projects a stored file. The storage key is not exposed.</summary>
     /// <param name="file">The file to project.</param>
     /// <returns>The file DTO.</returns>
-    public static KnowledgeBaseFileDto ToDto(this KnowledgeBaseFile file) =>
+    public static FileDto ToDto(this File file) =>
         new()
         {
             Id = file.Id,
-            KnowledgeBaseId = file.KnowledgeBaseId,
             FileName = file.FileName,
             ContentType = file.ContentType,
             Size = file.Size,

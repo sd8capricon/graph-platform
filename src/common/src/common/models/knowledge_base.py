@@ -6,6 +6,7 @@ from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from common.models.base import ApiOwnedBase
+from common.models.file import File
 from common.models.knowledge_base_file import KnowledgeBaseFile
 
 
@@ -18,9 +19,10 @@ class KnowledgeBase(ApiOwnedBase):
     uses this mapping for persistence and transfers resource data as
     `KnowledgeBaseRecordDTO`.
 
-    `files` loads eagerly (`selectin`) so converting a row to
-    `KnowledgeBaseRecordDTO` under an `AsyncSession` never triggers a lazy load,
-    which would raise `MissingGreenlet`.
+    `files` goes through the `knowledge_base_file` link table and loads
+    eagerly (`selectin`), so converting a row to `KnowledgeBaseRecordDTO` under
+    an `AsyncSession` never triggers a lazy load, which would raise
+    `MissingGreenlet`.
     """
 
     __tablename__ = "knowledge_base"
@@ -39,9 +41,10 @@ class KnowledgeBase(ApiOwnedBase):
         "UpdatedAtUtc", DateTime(timezone=True), nullable=False
     )
 
-    files: Mapped[list[KnowledgeBaseFile]] = relationship(
+    files: Mapped[list[File]] = relationship(
+        secondary=KnowledgeBaseFile.__table__,
         lazy="selectin",
-        order_by=(KnowledgeBaseFile.created_at_utc, KnowledgeBaseFile.id),
+        order_by=(File.created_at_utc, File.id),
     )
 
 

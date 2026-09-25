@@ -6,22 +6,17 @@ using GraphPlatform.Api.Services.Storage;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using File = GraphPlatform.Api.Models.File;
 
 namespace GraphPlatform.Api.Controllers;
 
 /// <summary>Upload, read and delete the files attached to a Knowledge Base.</summary>
 /// <remarks>
 /// <para>
-/// Content goes through <see cref="IStorageService"/>, never a specific provider. Each row stores the
-/// object key built by <see cref="KnowledgeBaseFile.BuildStorageKey"/>; the uploader's file name is
-/// kept only as metadata, so it cannot affect where content is stored.
-/// </para>
-/// <para>
-/// Storage and the database share no transaction, so the order of the two writes decides what a
-/// failure leaves behind. Uploads write the object first and delete it again if the row cannot be
-/// saved. Deletes remove the object first and the row second: a failure after the object is gone
-/// leaves a row the caller can delete again (storage deletes are idempotent), whereas the reverse
-/// order would strand an object no API call can reach.
+/// Files are generic <see cref="File"/> rows linked to the Knowledge Base through
+/// <see cref="KnowledgeBaseFile"/>. Storing and deleting content, and keeping it consistent with
+/// the rows, is <see cref="FileService"/>'s job; this controller adds the Knowledge Base's access
+/// rules and upload validation.
 /// </para>
 /// <para>
 /// Reads are open to any organization member. Uploads and deletes need Contributor or Organization
@@ -32,18 +27,17 @@ namespace GraphPlatform.Api.Controllers;
 public class KnowledgeBaseFilesController(
     AppDbContext db,
     OrganizationAccessService access,
+    FileService files,
     IStorageService storage,
-    IOptions<KnowledgeBaseFileOptions> options,
+    IOptions<FileUploadOptions> options,
     ILogger<KnowledgeBaseFilesController> logger
 ) : ApiControllerBase
 {
-    private const string DefaultContentType = "application/octet-stream";
-
     /// <summary>Lists a Knowledge Base's files, oldest first.</summary>
     [HttpGet]
-    [ProducesResponseType<List<KnowledgeBaseFileDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<List<FileDto>>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<List<KnowledgeBaseFileDto>>> GetFiles(
+    public async Task<ActionResult<List<FileDto>>> GetFiles(
         string organizationId,
         string knowledgeBaseId,
         CancellationToken cancellationToken
@@ -69,9 +63,9 @@ public class KnowledgeBaseFilesController(
 
     /// <summary>Returns one file's metadata.</summary>
     [HttpGet("{fileId}")]
-    [ProducesResponseType<KnowledgeBaseFileDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<FileDto>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<KnowledgeBaseFileDto>> GetFile(
+    public async Task<ActionResult<FileDto>> GetFile(
         string organizationId,
         string knowledgeBaseId,
         string fileId,
@@ -83,8 +77,8 @@ public class KnowledgeBaseFilesController(
             return NotFound();
         }
 
-        var file = await FindFileAsync(organizationId, knowledgeBaseId, fileId, cancellationToken);
-        return file is null ? NotFound() : Ok(file.ToDto());
+        var link = await FindLinkAsync(organizationId, knowledgeBaseId, fileId, cancellationToken);
+        return link is null ? NotFound() : Ok(link.File.ToDto());
     }
 
     /// <summary>Streams one file's content.</summary>
@@ -103,12 +97,13 @@ public class KnowledgeBaseFilesController(
             return NotFound();
         }
 
-        var file = await FindFileAsync(organizationId, knowledgeBaseId, fileId, cancellationToken);
-        if (file is null)
+        var link = await FindLinkAsync(organizationId, knowledgeBaseId, fileId, cancellationToken);
+        if (link is null)
         {
             return NotFound();
         }
 
+        var file = link.File;
         StorageDownload download;
         try
         {
@@ -116,10 +111,7 @@ public class KnowledgeBaseFilesController(
         }
         catch (StorageObjectNotFoundException)
         {
-            logger.LogWarning(
-                "Knowledge Base file {FileId} has no stored content at its storage key.",
-                file.Id
-            );
+            logger.LogWarning("File {FileId} has no stored content at its storage key.", file.Id);
             return NotFound(
                 CreateProblem(
                     StatusCodes.Status404NotFound,
@@ -140,14 +132,14 @@ public class KnowledgeBaseFilesController(
     /// <returns>201 with the file's metadata.</returns>
     [HttpPost]
     [Consumes("multipart/form-data")]
-    [TypeFilter<KnowledgeBaseFileUploadLimitsFilter>]
-    [ProducesResponseType<KnowledgeBaseFileDto>(StatusCodes.Status201Created)]
+    [TypeFilter<FileUploadLimitsFilter>]
+    [ProducesResponseType<FileDto>(StatusCodes.Status201Created)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status413PayloadTooLarge)]
-    public async Task<ActionResult<KnowledgeBaseFileDto>> UploadFile(
+    public async Task<ActionResult<FileDto>> UploadFile(
         string organizationId,
         string knowledgeBaseId,
         IFormFile file,
@@ -198,98 +190,44 @@ public class KnowledgeBaseFilesController(
             );
         }
 
-        var fileName = SanitizeFileName(file.FileName);
+        var fileName = FileService.SanitizeFileName(file.FileName);
         if (fileName.Length == 0)
         {
             return ValidationError(nameof(file), "The file must have a name.");
         }
 
-        if (fileName.Length > KnowledgeBaseFile.FileNameMaxLength)
+        if (fileName.Length > Models.File.FileNameMaxLength)
         {
             return ValidationError(
                 nameof(file),
-                $"The file name may be at most {KnowledgeBaseFile.FileNameMaxLength} characters."
+                $"The file name may be at most {Models.File.FileNameMaxLength} characters."
             );
         }
 
-        var contentType = string.IsNullOrWhiteSpace(file.ContentType)
-            ? DefaultContentType
-            : file.ContentType.Trim();
-        if (contentType.Length > KnowledgeBaseFile.ContentTypeMaxLength)
+        var contentType = FileService.NormalizeContentType(file.ContentType);
+        if (contentType.Length > Models.File.ContentTypeMaxLength)
         {
             return ValidationError(
                 nameof(file),
-                $"The content type may be at most {KnowledgeBaseFile.ContentTypeMaxLength} characters."
+                $"The content type may be at most {Models.File.ContentTypeMaxLength} characters."
             );
         }
 
-        var fileId = Guid.NewGuid().ToString();
-        var storageKey = KnowledgeBaseFile.BuildStorageKey(
-            organizationId,
-            knowledgeBase.Id,
-            fileId
-        );
-        try
-        {
-            StorageKey.Validate(storageKey);
-        }
-        catch (InvalidStorageKeyException)
-        {
-            // Knowledge Base ids are caller-assigned and only length-checked, so one containing "/",
-            // "\" or a "." segment cannot be turned into a storage key.
-            return Conflict(
-                CreateProblem(
-                    StatusCodes.Status409Conflict,
-                    "Files cannot be stored for this Knowledge Base.",
-                    "Its id cannot be used in a storage key."
-                )
-            );
-        }
-
-        StorageObjectMetadata stored;
+        File created;
         await using (var content = file.OpenReadStream())
         {
-            stored = await storage.UploadAsync(
-                storageKey,
+            created = await files.CreateAsync(
+                organizationId,
+                fileName,
+                contentType,
                 content,
-                new StorageUploadOptions
+                stored =>
                 {
-                    ContentType = contentType,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        ["knowledge_base_id"] = knowledgeBase.Id,
-                        ["file_id"] = fileId,
-                    },
+                    knowledgeBase.Files.Add(stored);
+                    knowledgeBase.UpdatedAtUtc = stored.CreatedAtUtc;
                 },
                 cancellationToken
             );
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        var entity = new KnowledgeBaseFile
-        {
-            Id = fileId,
-            KnowledgeBaseId = knowledgeBase.Id,
-            OrganizationId = organizationId,
-            FileName = fileName,
-            ContentType = contentType,
-            Size = stored.Size,
-            StorageKey = storageKey,
-            Status = KnowledgeBaseFileStatus.Uploaded,
-            CreatedAtUtc = now,
-            UpdatedAtUtc = now,
-        };
-        db.KnowledgeBaseFiles.Add(entity);
-        knowledgeBase.UpdatedAtUtc = now;
-
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch
-        {
-            await DeleteOrphanAsync(storageKey);
-            throw;
         }
 
         return CreatedAtAction(
@@ -298,9 +236,9 @@ public class KnowledgeBaseFilesController(
             {
                 organizationId,
                 knowledgeBaseId = knowledgeBase.Id,
-                fileId,
+                fileId = created.Id,
             },
-            entity.ToDto()
+            created.ToDto()
         );
     }
 
@@ -328,30 +266,19 @@ public class KnowledgeBaseFilesController(
             return Forbid();
         }
 
-        var file = await db
-            .KnowledgeBaseFiles.Include(candidate => candidate.KnowledgeBase)
-            .FirstOrDefaultAsync(
-                candidate =>
-                    candidate.Id == fileId
-                    && candidate.KnowledgeBaseId == knowledgeBaseId
-                    && candidate.OrganizationId == organizationId,
-                cancellationToken
-            );
-        if (file is null)
+        var link = await FindLinkAsync(organizationId, knowledgeBaseId, fileId, cancellationToken);
+        if (link is null)
         {
             return NotFound();
         }
 
-        if (file.KnowledgeBase.State != KnowledgeBaseState.Draft)
+        if (link.KnowledgeBase.State != KnowledgeBaseState.Draft)
         {
             return DraftOnlyConflict();
         }
 
-        // Object first, row second — see the class remarks.
-        await storage.DeleteAsync(file.StorageKey, cancellationToken);
-
-        db.KnowledgeBaseFiles.Remove(file);
-        file.KnowledgeBase.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        await files.RemoveAsync([link.File], cancellationToken);
+        link.KnowledgeBase.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
 
         return NoContent();
@@ -371,53 +298,26 @@ public class KnowledgeBaseFilesController(
                 cancellationToken
             );
 
-    private Task<KnowledgeBaseFile?> FindFileAsync(
+    /// <summary>
+    /// Finds the file through its link, so a file id is only reachable under the Knowledge Base (and
+    /// organization) that owns it.
+    /// </summary>
+    private Task<KnowledgeBaseFile?> FindLinkAsync(
         string organizationId,
         string knowledgeBaseId,
         string fileId,
         CancellationToken cancellationToken
     ) =>
-        db.KnowledgeBaseFiles.FirstOrDefaultAsync(
-            file =>
-                file.Id == fileId
-                && file.KnowledgeBaseId == knowledgeBaseId
-                && file.OrganizationId == organizationId,
-            cancellationToken
-        );
-
-    /// <summary>
-    /// Best-effort removal of an object whose row could not be saved. Never throws, so the original
-    /// failure is what the caller sees.
-    /// </summary>
-    private async Task DeleteOrphanAsync(string storageKey)
-    {
-        try
-        {
-            // Not the request token: a cancelled request is one of the failures being cleaned up.
-            await storage.DeleteAsync(storageKey, CancellationToken.None);
-        }
-        catch (Exception exception)
-        {
-            logger.LogError(
-                exception,
-                "Failed to delete orphaned storage object {StorageKey} after its row could not be saved.",
-                storageKey
+        db
+            .KnowledgeBaseFiles.Include(link => link.File)
+            .Include(link => link.KnowledgeBase)
+            .FirstOrDefaultAsync(
+                link =>
+                    link.FileId == fileId
+                    && link.KnowledgeBaseId == knowledgeBaseId
+                    && link.KnowledgeBase.OrganizationId == organizationId,
+                cancellationToken
             );
-        }
-    }
-
-    /// <summary>Keeps only the last path segment of an uploaded name, whichever separator it uses.</summary>
-    private static string SanitizeFileName(string? fileName)
-    {
-        if (string.IsNullOrWhiteSpace(fileName))
-        {
-            return string.Empty;
-        }
-
-        var lastSeparator = fileName.LastIndexOfAny(['/', '\\']);
-        var name = fileName[(lastSeparator + 1)..].Trim();
-        return name.Any(char.IsControl) ? string.Empty : name;
-    }
 
     private ActionResult ValidationError(string key, string message)
     {

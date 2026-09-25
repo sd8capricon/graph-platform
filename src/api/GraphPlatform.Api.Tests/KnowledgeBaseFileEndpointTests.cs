@@ -14,6 +14,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using File = GraphPlatform.Api.Models.File;
 
 namespace GraphPlatform.Api.Tests;
 
@@ -35,13 +36,12 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         using var response = await UploadAsync(client, organization.Id, knowledgeBase.Id);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var file = (await response.Content.ReadFromJsonAsync<KnowledgeBaseFileDto>(Api.Json))!;
+        var file = (await response.Content.ReadFromJsonAsync<FileDto>(Api.Json))!;
         Assert.True(Guid.TryParse(file.Id, out _));
-        Assert.Equal(knowledgeBase.Id, file.KnowledgeBaseId);
         Assert.Equal("notes.txt", file.FileName);
         Assert.Equal("text/plain", file.ContentType);
         Assert.Equal(Content.Length, file.Size);
-        Assert.Equal(KnowledgeBaseFileStatus.Uploaded, file.Status);
+        Assert.Equal(FileStatus.Uploaded, file.Status);
         Assert.Equal(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}/files/{file.Id}",
             response.Headers.Location?.AbsolutePath
@@ -51,10 +51,11 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         Assert.NotNull(row);
         Assert.Equal(organization.Id, row.OrganizationId);
         Assert.Equal(
-            KnowledgeBaseFile.BuildStorageKey(organization.Id, knowledgeBase.Id, file.Id),
+            File.BuildStorageKey(organization.Id, file.Id),
             row.StorageKey
         );
         Assert.Equal(Content, await ReadStoredAsync(row.StorageKey));
+        Assert.True(await LinkExistsAsync(file.Id));
 
         var reloaded = (await client.GetFromJsonAsync<KnowledgeBaseDto>(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
@@ -62,7 +63,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         ))!;
         Assert.Equal(file.Id, Assert.Single(reloaded.Files).Id);
 
-        var listed = (await client.GetFromJsonAsync<List<KnowledgeBaseFileDto>>(
+        var listed = (await client.GetFromJsonAsync<List<FileDto>>(
             FilesUrl(organization.Id, knowledgeBase.Id),
             Api.Json
         ))!;
@@ -83,7 +84,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         );
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var file = (await response.Content.ReadFromJsonAsync<KnowledgeBaseFileDto>(Api.Json))!;
+        var file = (await response.Content.ReadFromJsonAsync<FileDto>(Api.Json))!;
         Assert.Equal("passwd", file.FileName);
     }
 
@@ -109,7 +110,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         var (admin, organization, knowledgeBase) = await CreateDraftAsync();
         using var client = factory.AuthedClient(admin.AccessToken);
         var file = await UploadCreatedAsync(client, organization.Id, knowledgeBase.Id);
-        var key = KnowledgeBaseFile.BuildStorageKey(organization.Id, knowledgeBase.Id, file.Id);
+        var key = File.BuildStorageKey(organization.Id, file.Id);
 
         using var response = await client.DeleteAsync(
             $"{FilesUrl(organization.Id, knowledgeBase.Id)}/{file.Id}"
@@ -117,6 +118,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         Assert.Null(await FindRowAsync(file.Id));
+        Assert.False(await LinkExistsAsync(file.Id));
         Assert.False(await Storage().ExistsAsync(key));
 
         using var missing = await client.GetAsync(
@@ -144,10 +146,24 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
             Assert.False(
                 await Storage()
                     .ExistsAsync(
-                        KnowledgeBaseFile.BuildStorageKey(organization.Id, knowledgeBase.Id, file.Id)
+                        File.BuildStorageKey(organization.Id, file.Id)
                     )
             );
         }
+    }
+
+    [Fact]
+    public async Task Deleting_the_organization_removes_its_stored_files()
+    {
+        var (admin, organization, knowledgeBase) = await CreateDraftAsync();
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var file = await UploadCreatedAsync(client, organization.Id, knowledgeBase.Id);
+
+        using var response = await client.DeleteAsync($"/api/organizations/{organization.Id}");
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Null(await FindRowAsync(file.Id));
+        Assert.False(await Storage().ExistsAsync(File.BuildStorageKey(organization.Id, file.Id)));
     }
 
     [Fact]
@@ -229,7 +245,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         );
         Assert.Equal(HttpStatusCode.NotFound, crossRoute.StatusCode);
 
-        var ownFiles = await outsiderClient.GetFromJsonAsync<List<KnowledgeBaseFileDto>>(
+        var ownFiles = await outsiderClient.GetFromJsonAsync<List<FileDto>>(
             FilesUrl(otherOrganization.Id, otherKnowledgeBase.Id),
             Api.Json
         );
@@ -258,7 +274,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
             builder.ConfigureAppConfiguration(
                 (_, configuration) =>
                     configuration.AddInMemoryCollection(
-                        new Dictionary<string, string?> { ["KnowledgeBaseFiles:MaxFileSizeBytes"] = "8" }
+                        new Dictionary<string, string?> { ["FileUploads:MaxFileSizeBytes"] = "8" }
                     )
             )
         );
@@ -334,7 +350,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         return client.PostAsync(FilesUrl(organizationId, knowledgeBaseId), form);
     }
 
-    private static async Task<KnowledgeBaseFileDto> UploadCreatedAsync(
+    private static async Task<FileDto> UploadCreatedAsync(
         HttpClient client,
         string organizationId,
         string knowledgeBaseId
@@ -342,7 +358,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
     {
         using var response = await UploadAsync(client, organizationId, knowledgeBaseId);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        return (await response.Content.ReadFromJsonAsync<KnowledgeBaseFileDto>(Api.Json))!;
+        return (await response.Content.ReadFromJsonAsync<FileDto>(Api.Json))!;
     }
 
     private static HttpClient AuthedClient(WebApplicationFactory<Program> host, string accessToken)
@@ -367,11 +383,11 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         return buffer.ToArray();
     }
 
-    private async Task<KnowledgeBaseFile?> FindRowAsync(string fileId)
+    private async Task<File?> FindRowAsync(string fileId)
     {
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        return await db.KnowledgeBaseFiles.AsNoTracking().FirstOrDefaultAsync(file => file.Id == fileId);
+        return await db.Files.AsNoTracking().FirstOrDefaultAsync(file => file.Id == fileId);
     }
 
     private async Task<List<KnowledgeBaseFile>> RowsForAsync(string knowledgeBaseId)
@@ -380,8 +396,15 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         return await db
             .KnowledgeBaseFiles.AsNoTracking()
-            .Where(file => file.KnowledgeBaseId == knowledgeBaseId)
+            .Where(link => link.KnowledgeBaseId == knowledgeBaseId)
             .ToListAsync();
+    }
+
+    private async Task<bool> LinkExistsAsync(string fileId)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await db.KnowledgeBaseFiles.AnyAsync(link => link.FileId == fileId);
     }
 
     private static JsonElement GraphData()

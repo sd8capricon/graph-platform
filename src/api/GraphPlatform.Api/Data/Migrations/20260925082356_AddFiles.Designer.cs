@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace GraphPlatform.Api.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260925081337_AddKnowledgeBaseFiles")]
-    partial class AddKnowledgeBaseFiles
+    [Migration("20260925082356_AddFiles")]
+    partial class AddFiles
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -95,6 +95,56 @@ namespace GraphPlatform.Api.Data.Migrations
                     b.ToTable("AspNetUsers", (string)null);
                 });
 
+            modelBuilder.Entity("GraphPlatform.Api.Models.File", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<string>("OrganizationId")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId");
+
+                    b.HasIndex("StorageKey")
+                        .IsUnique();
+
+                    b.ToTable("file", (string)null);
+                });
+
             modelBuilder.Entity("GraphPlatform.Api.Models.KnowledgeBase", b =>
                 {
                     b.Property<string>("Id")
@@ -135,20 +185,7 @@ namespace GraphPlatform.Api.Data.Migrations
 
             modelBuilder.Entity("GraphPlatform.Api.Models.KnowledgeBaseFile", b =>
                 {
-                    b.Property<string>("Id")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<string>("ContentType")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("FileName")
-                        .IsRequired()
+                    b.Property<string>("FileId")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
@@ -157,35 +194,9 @@ namespace GraphPlatform.Api.Data.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
-                    b.Property<string>("OrganizationId")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<long>("Size")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<string>("StorageKey")
-                        .IsRequired()
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
+                    b.HasKey("FileId");
 
                     b.HasIndex("KnowledgeBaseId");
-
-                    b.HasIndex("OrganizationId");
-
-                    b.HasIndex("StorageKey")
-                        .IsUnique();
 
                     b.ToTable("knowledge_base_file", (string)null);
                 });
@@ -368,6 +379,15 @@ namespace GraphPlatform.Api.Data.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
+            modelBuilder.Entity("GraphPlatform.Api.Models.File", b =>
+                {
+                    b.HasOne("GraphPlatform.Api.Models.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("GraphPlatform.Api.Models.KnowledgeBase", b =>
                 {
                     b.HasOne("GraphPlatform.Api.Models.Organization", "Organization")
@@ -381,11 +401,19 @@ namespace GraphPlatform.Api.Data.Migrations
 
             modelBuilder.Entity("GraphPlatform.Api.Models.KnowledgeBaseFile", b =>
                 {
+                    b.HasOne("GraphPlatform.Api.Models.File", "File")
+                        .WithMany()
+                        .HasForeignKey("FileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("GraphPlatform.Api.Models.KnowledgeBase", "KnowledgeBase")
-                        .WithMany("Files")
+                        .WithMany()
                         .HasForeignKey("KnowledgeBaseId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("File");
 
                     b.Navigation("KnowledgeBase");
                 });
@@ -458,11 +486,6 @@ namespace GraphPlatform.Api.Data.Migrations
             modelBuilder.Entity("GraphPlatform.Api.Models.AppUser", b =>
                 {
                     b.Navigation("Organizations");
-                });
-
-            modelBuilder.Entity("GraphPlatform.Api.Models.KnowledgeBase", b =>
-                {
-                    b.Navigation("Files");
                 });
 
             modelBuilder.Entity("GraphPlatform.Api.Models.Organization", b =>

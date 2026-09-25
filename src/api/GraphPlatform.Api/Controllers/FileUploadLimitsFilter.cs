@@ -6,8 +6,8 @@ using Microsoft.Extensions.Options;
 namespace GraphPlatform.Api.Controllers;
 
 /// <summary>
-/// Applies <see cref="KnowledgeBaseFileOptions.MaxFileSizeBytes"/> to the request body and multipart
-/// limits of the upload endpoint.
+/// Applies <see cref="FileUploadOptions.MaxFileSizeBytes"/> to an upload endpoint's request-body
+/// and multipart limits. Apply it with <c>[TypeFilter&lt;FileUploadLimitsFilter&gt;]</c>.
 /// </summary>
 /// <remarks>
 /// A resource filter because it must run before model binding: binding an <c>IFormFile</c> reads the
@@ -15,8 +15,7 @@ namespace GraphPlatform.Api.Controllers;
 /// <c>[RequestSizeLimit]</c>/<c>[RequestFormLimits]</c> attributes would run early enough but need
 /// compile-time constants, and this limit comes from configuration.
 /// </remarks>
-internal sealed class KnowledgeBaseFileUploadLimitsFilter(IOptions<KnowledgeBaseFileOptions> options)
-    : IResourceFilter
+internal sealed class FileUploadLimitsFilter(IOptions<FileUploadOptions> options) : IResourceFilter
 {
     /// <summary>Allowance for multipart boundaries and part headers on top of the file itself.</summary>
     internal const long MultipartOverheadBytes = 64 * 1024;

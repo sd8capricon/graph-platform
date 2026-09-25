@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from common.schemas.knowledge_base_file import KnowledgeBaseFileDTO
+from common.schemas.file import FileDTO
 
 
 class KnowledgeBaseRecordDTO(BaseModel):
@@ -25,7 +25,7 @@ class KnowledgeBaseRecordDTO(BaseModel):
     state: str
     created_at_utc: datetime
     updated_at_utc: datetime
-    files: list[KnowledgeBaseFileDTO] = Field(default_factory=list)
+    files: list[FileDTO] = Field(default_factory=list)
 
 
 class KnowledgeNode(BaseModel):

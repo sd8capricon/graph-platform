@@ -2,18 +2,16 @@ using GraphPlatform.Api.Models;
 
 namespace GraphPlatform.Api.Dtos;
 
-/// <summary>Knowledge Base file metadata returned by the management API.</summary>
+/// <summary>Stored-file metadata returned by the management API.</summary>
 /// <remarks>
-/// The storage key is deliberately absent: clients download content through the API, and the key is
-/// an internal reference that must stay free to change with the storage layout.
+/// Owner-agnostic, like <see cref="Models.File"/>: the owning resource is implied by the route it was
+/// read from. The storage key is deliberately absent, because clients download content through the API
+/// and the key is an internal reference that must stay free to change with the storage layout.
 /// </remarks>
-public sealed class KnowledgeBaseFileDto
+public sealed class FileDto
 {
     /// <summary>Stable resource id.</summary>
     public string Id { get; init; } = string.Empty;
-
-    /// <summary>Owning Knowledge Base id.</summary>
-    public string KnowledgeBaseId { get; init; } = string.Empty;
 
     /// <summary>Original file name.</summary>
     public string FileName { get; init; } = string.Empty;
@@ -25,7 +23,7 @@ public sealed class KnowledgeBaseFileDto
     public long Size { get; init; }
 
     /// <summary>Processing status.</summary>
-    public KnowledgeBaseFileStatus Status { get; init; }
+    public FileStatus Status { get; init; }
 
     /// <summary>Upload time in UTC.</summary>
     public DateTimeOffset CreatedAtUtc { get; init; }

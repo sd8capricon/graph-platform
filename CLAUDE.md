@@ -48,11 +48,11 @@ the worker (ADR-0005).
    - `KnowledgeRelationship`: Graph edge connecting nodes with label and properties
    - Graph-payload schemas are input DTOs for ingestion; they are not ORM mappings. ORM-facing
      schemas are explicit Pydantic DTOs with `from_attributes=True`, kept in one schema module per
-     model: `KnowledgeBaseRecordDTO`, `KnowledgeBaseFileDTO`, `GraphSchemaRegistryDTO`,
+     model: `KnowledgeBaseRecordDTO`, `FileDTO`, `GraphSchemaRegistryDTO`,
      `NodeEmbeddingDTO`, and `SchemaEmbeddingDTO`. Persistence queries return DTOs, and ingestion extraction returns DTOs
      that the worker writer maps into ORM rows. `KnowledgeBaseRecordDTO` represents the API-owned
      resource row (`id`, organization/name/state/timestamps, serialized `data`, and `files: list[
-     KnowledgeBaseFileDTO]`, oldest first) and is distinct
+     FileDTO]`, oldest first) and is distinct
      from the graph-payload `KnowledgeBase` above. `schemas/model.py`'s `Model` is provider config,
      not an ORM DTO; Python has no ModelConfig ORM mapping.
    - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (id, display_name,
@@ -87,20 +87,27 @@ the worker (ADR-0005).
       because EF owns the table's DDL and Python `create_all()` must not create it. Its PascalCase
       column names mirror the API migration; `job_store.py` uses this mapping for persistence and
       transfers the resource row as `KnowledgeBaseRecordDTO`. This is separate from
-      `schemas.knowledge_base.KnowledgeBase`, the graph payload model. Its `files` relationship is
-      one-directional and `lazy="selectin"`, so `KnowledgeBaseRecordDTO.model_validate(row)` under an
-      `AsyncSession` never lazy-loads (`MissingGreenlet`)
-   - `KnowledgeBaseFile` (`models/knowledge_base_file.py`): shared ORM mapping of the API-owned
-     `knowledge_base_file` table, also on `ApiOwnedBase` with PascalCase columns (`Id`,
-     `KnowledgeBaseId` FK -> `knowledge_base.Id` ON DELETE CASCADE, `OrganizationId`, `FileName`,
+      `schemas.knowledge_base.KnowledgeBase`, the graph payload model. Its `files` relationship
+      goes through the `knowledge_base_file` link table (`secondary=`), is one-directional, and uses
+      `lazy="selectin"`, so `KnowledgeBaseRecordDTO.model_validate(row)` under an `AsyncSession`
+      never lazy-loads (`MissingGreenlet`)
+   - `File` (`models/file.py`): shared ORM mapping of the API-owned, **owner-agnostic** `file`
+     table, also on `ApiOwnedBase` with PascalCase columns (`Id`, `OrganizationId`, `FileName`,
      `ContentType`, `Size`, `StorageKey` unique, `Status`, `CreatedAtUtc`, `UpdatedAtUtc`). One row
-     per uploaded file; the content lives in object storage under `storage_key`, an ADR-0006 object
-     key (never a path or URL). Transferred as `KnowledgeBaseFileDTO`
-     (`schemas/knowledge_base_file.py`, next to `KnowledgeBaseFileStatus`: `uploaded` /
-     `processing` / `processed` / `failed`, the API enum's snake_case values). The API is its only
-     writer today. It deliberately has **no** back-reference to `KnowledgeBase`: a string-form
-     `relationship("KnowledgeBase")` fails `configure_mappers()` whenever this module is imported
-     without `models/knowledge_base.py`, which a true leaf must survive
+     per stored file; the content lives in object storage under `storage_key`, an ADR-0006 object
+     key (never a path or URL). A file belongs to an organization, not to any particular resource:
+     each owner links to its files through its own table, so a new owner (another model that needs
+     files) adds a link table and never a column on `file`. Transferred as `FileDTO`
+     (`schemas/file.py`, next to `FileStatus`: `uploaded` / `processing` / `processed` / `failed`,
+     the API enum's snake_case values). The API is its only writer today. It is a true leaf with
+     **no** relationships: a string-form back-reference fails `configure_mappers()` whenever the
+     module is imported without its target, which `tests/test_file_model.py` checks in a fresh
+     interpreter
+   - `KnowledgeBaseFile` (`models/knowledge_base_file.py`): the Knowledge Base -> `File` link
+     (`knowledge_base_file` table), a declarative class on `ApiOwnedBase` like every other model
+     (`file_id` -> `FileId`, the primary key, so a file belongs to at most one knowledge base;
+     `knowledge_base_id` -> `KnowledgeBaseId`; both FKs cascade). `KnowledgeBase.files` uses its
+     `__table__` as `secondary`. It has no relationships of its own, so it stays a leaf
    - `GraphSchemaRegistry`: SQLAlchemy ORM model tracking node/relationship type definitions;
      `vector_search()` returns `GraphSchemaRegistryDTO`. `SchemaType` lives with that DTO in
      `schemas/graph_schema_registry.py` (the model module keeps a re-export for compatibility)
@@ -468,7 +475,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   `Data` graph JSON as `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same
   mapped model. That DTO also carries the knowledge base's uploaded files (`files`, with each
   file's `storage_key`), but Phase 1 still ingests only `Data`; per-file processing is Phase 2.
-  `create_job_tables(include_knowledge_base=True)` creates both `knowledge_base` and
+  `create_job_tables(include_knowledge_base=True)` creates `knowledge_base`, `file` and
   `knowledge_base_file` stand-ins for tests
 - Ingestion extraction returns `GraphSchemaRegistryDTO` / `NodeEmbeddingDTO` rather than transient
   ORM instances. `ingestion_worker.ingestion.writer` maps those DTOs into ORM rows for upsert and
@@ -769,7 +776,7 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
   --skipApiVersionCheck`) and export `AZURITE_CONNECTION_STRING` as Azurite's documented default
   development-account connection string with `BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;`
 - On the Python side nothing consumes storage yet. The API writes Knowledge Base file content
-  through it (see "Knowledge Base files" under the API section), and the worker can read each file's
+  through it (see "Files" under the API section), and the worker can read each file's
   `storage_key` off `KnowledgeBaseRecordDTO.files`. Reading that content during ingestion
   (ADR-0005 Phase 2) is follow-up work
 - See: `src/common/src/common/storage/`, `src/common/src/common/schemas/storage.py`, and the three
@@ -930,9 +937,10 @@ shared library resolve through a path dependency (`common` in `[project.dependen
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_knowledge_base_model.py` - verifies the shared API-owned `KnowledgeBase` mapping and
   that it stays outside `Base.metadata`
-- `tests/test_knowledge_base_file_model.py` - verifies the `KnowledgeBaseFile` mapping (column
-  names, FK, `ApiOwnedBase` ownership), `KnowledgeBaseFileDTO`, and that `KnowledgeBaseRecordDTO`
-  carries a knowledge base's files
+- `tests/test_file_model.py` - verifies the owner-agnostic `File` mapping (column names, no FKs,
+  `ApiOwnedBase` ownership), the `KnowledgeBaseFile` link mapping, that the `File` and `KnowledgeBaseFile`
+  modules configure on their own in a fresh interpreter, `FileDTO`, and that `KnowledgeBaseRecordDTO` carries a
+  knowledge base's files
 - `tests/test_embedding_index.py` - test suite for `database/indexes.py`'s per-model partial HNSW index DDL
 - `tests/test_node_embedding_model.py` - test suite for `NodeEmbedding` and node vector search
 - `tests/test_embedding_service.py` - test suite for the shared `EmbeddingService`
@@ -1149,7 +1157,7 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
 ### Shared-database contract with the Python services
 - One PostgreSQL database, two owners: Python's `Base.metadata.create_all` creates
   `graph_registry`/`node_embedding`/`schema_embedding`; EF creates `organization`, `user_organization`,
-  `model_config`, `knowledge_base`, `knowledge_base_file` and Identity's `AspNet*` tables. `AppDbContext` deliberately knows nothing about the
+  `model_config`, `knowledge_base`, `file`, `knowledge_base_file` and Identity's `AspNet*` tables. `AppDbContext` deliberately knows nothing about the
   Python tables, and the migration only ever creates tables.
 - **`organization_id` is a string (`varchar(255)`), never a `Guid`.** Python stores it as
   `String(255)` and the shipped entrypoints hardcode `DEMO_ORGANIZATION_ID = "demo-org"`, so a `uuid`
@@ -1211,45 +1219,62 @@ available to any member; create/update/delete/publish require Contributor or Adm
 delete additionally restricted to drafts. Knowledge Base files follow the same rules: any member may
 list, read or download them, and upload/delete need Contributor or Admin and a draft Knowledge Base.
 
-### Knowledge Base files
+### Files
+- `Models/File.cs` (`file` table) is **owner-agnostic**: metadata (`FileName`, `ContentType`, `Size`,
+  `Status`, timestamps), `OrganizationId` (FK -> `organization`, cascade) and the `StorageKey`, with
+  no owner column.
+  - Owners link to files through their own table. Today that is only `Models/KnowledgeBaseFile.cs`
+    (`knowledge_base_file`: `FileId` PK, `KnowledgeBaseId`, both FKs cascade), mapped as the join
+    entity of the unidirectional many-to-many `KnowledgeBase.Files` (`HasMany().WithMany()
+    .UsingEntity<KnowledgeBaseFile>`).
+  - To give another model files, add a link entity and table the same way and reuse
+    `FileService`. Do not add an owner column to `file`.
+  - The migration is `AddFiles`.
+- **The name collides with `System.IO.File`**, which implicit usings import everywhere. Files that
+  need the entity declare `using File = GraphPlatform.Api.Models.File;`.
+  - Never make that alias global: the storage providers and their tests call `System.IO.File`.
+  - Inside a controller, `File(...)` still binds to `ControllerBase.File` (class members beat
+    aliases), but so does `File.Member`, so write `Models.File.FileNameMaxLength` there.
+- `Services/FileService.cs` (scoped) owns storage/row consistency, since storage and the database
+  share no transaction:
+  - `CreateAsync(organizationId, fileName, contentType, stream, attach, ct)` uploads the object
+    first, adds the `File` row plus whatever `attach` links to the owner, and saves once. If the
+    save fails, it makes a best-effort delete of the object (with `CancellationToken.None`) and
+    rethrows.
+  - `RemoveAsync(files, ct)` deletes the objects **first**, then marks the rows removed. The
+    caller saves, so it can batch the removal with the owner's own changes. A storage failure
+    leaves every row in place for a retry (storage deletes are idempotent); the reverse order would
+    strand objects no row refers to.
+  - Every path that deletes an owner calls it, because database cascades cannot reach storage:
+    `KnowledgeBasesController.DeleteKnowledgeBase` and `OrganizationsController.DeleteOrganization`.
+  - `SanitizeFileName` keeps only the last `/`- or `\`-separated segment and rejects control
+    characters. `NormalizeContentType` falls back to `application/octet-stream`.
+- Storage key: `File.BuildStorageKey()` builds `organizations/{orgId}/files/{fileId}/content`.
+  - Neither the owner nor the uploader's file name is part of it, so a key never depends on a
+    caller-assigned id or name.
+  - `StorageKey` is not on `FileDto`, since clients download through the API.
 - `Controllers/KnowledgeBaseFilesController.cs`, at
   `api/organizations/{organizationId}/knowledge-bases/{knowledgeBaseId}/files`:
-  - `POST`: multipart, `file` part, returns 201 with `KnowledgeBaseFileDto`.
+  - `POST`: multipart, `file` part, returns 201 with `FileDto`.
   - `GET` lists the files; `GET {fileId}` returns one file's metadata.
-  - `GET {fileId}/content` streams the content from `IStorageService`.
+  - `GET {fileId}/content` streams the content.
   - `DELETE {fileId}` returns 204.
-  - `KnowledgeBaseDto.Files` lists the same DTOs, oldest first. The entity is
-    `Models/KnowledgeBaseFile.cs`, and the migration is `AddKnowledgeBaseFiles`
-- Storage key: `KnowledgeBaseFile.BuildStorageKey()` builds
-  `organizations/{orgId}/knowledge-bases/{kbId}/files/{fileId}/content`.
-  - The uploader's file name is never part of it. The name is stored only in `FileName`, cut to
-    its last `/`- or `\`-separated segment, so the name cannot choose or collide with a storage
-    location.
-  - A caller-assigned Knowledge Base id that cannot form a valid key (e.g. containing `/` or `..`)
-    gets 409 on upload.
-  - `StorageKey` is not on the DTO, since clients download through the API.
-- Storage and the database share no transaction, so write order is the consistency mechanism:
-  - **Upload** writes the object first, then the row. If `SaveChangesAsync` fails, it makes a
-    best-effort delete of the object (with `CancellationToken.None`), then rethrows.
-  - **File delete** removes the object first, then the row. A storage failure leaves everything in
-    place (500), and a database failure after it leaves a row that can be deleted again, because
-    storage deletes are idempotent. The reverse order would strand an object no endpoint can reach.
-  - **Knowledge Base delete** (`KnowledgeBasesController`) deletes every file's object, then the
-    Knowledge Base; the FK cascade removes the file rows. The cascade alone would orphan the
-    objects.
-- Size limit: `KnowledgeBaseFiles:MaxFileSizeBytes` (`Services/KnowledgeBaseFileOptions.cs`),
-  default 100 MiB, validated on start. An oversized file gets 413, and an empty file or a missing
-  `file` part gets 400.
-  - `KnowledgeBaseFileUploadLimitsFilter` (a resource filter, applied with `[TypeFilter]`) raises
-    Kestrel's body limit and the multipart limit to match, before model binding reads the form.
+  - Files are looked up through the link row, so a file id is only reachable under its own
+    Knowledge Base and organization.
+  - `KnowledgeBaseDto.Files` lists the same DTOs, oldest first.
+- Size limit: `FileUploads:MaxFileSizeBytes` (`Services/FileUploadOptions.cs`), default 100 MiB,
+  validated on start. An oversized file gets 413, and an empty file or a missing `file` part gets
+  400.
+  - Upload endpoints apply `[TypeFilter<FileUploadLimitsFilter>]`, a resource filter that raises
+    Kestrel's body limit and the multipart limit before model binding reads the form.
   - `[RequestSizeLimit]`/`[RequestFormLimits]` cannot do this, because they need compile-time
     constants.
-  - There is no content-type allow-list: the sent type is stored, with `application/octet-stream`
-    as the fallback.
+  - There is no content-type allow-list.
 - Tests: `GraphPlatform.Api.Tests/KnowledgeBaseFileEndpointTests.cs` covers:
-  - storage and row consistency, download and file-name sanitising;
-  - Knowledge Base delete cleanup, the draft-only and role rules, and cross-organization 404s;
-  - the size limit, using `WithWebHostBuilder` configuration;
+  - storage, row and link consistency, download and file-name sanitising;
+  - Knowledge Base and organization delete cleanup;
+  - the draft-only and role rules, and cross-organization 404s;
+  - the size limit (`WithWebHostBuilder` configuration);
   - a storage outage during delete, using a `ConfigureTestServices` decorator whose `DeleteAsync`
     throws, which must leave the row for a retry.
   - Not covered: the orphan cleanup when `SaveChangesAsync` fails after an upload

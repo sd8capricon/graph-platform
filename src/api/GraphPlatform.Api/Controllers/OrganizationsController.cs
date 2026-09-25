@@ -29,7 +29,8 @@ namespace GraphPlatform.Api.Controllers;
 public class OrganizationsController(
     AppDbContext db,
     OrganizationAccessService access,
-    UserManager<AppUser> userManager
+    UserManager<AppUser> userManager,
+    FileService files
 ) : ApiControllerBase
 {
     /// <summary>
@@ -181,7 +182,8 @@ public class OrganizationsController(
     /// <remarks>
     /// Deleting the organization is what removes its model configs and memberships: both foreign keys
     /// cascade (see <c>AppDbContext.OnModelCreating</c>), so there is no partial cleanup to get wrong
-    /// here. This does <em>not</em> touch the organization's Apache Age graphs or the Python-owned
+    /// here. The one exception is stored files: the database cannot reach object storage, so the
+    /// organization's file content is deleted through <see cref="FileService"/> first. This does <em>not</em> touch the organization's Apache Age graphs or the Python-owned
     /// embedding tables — the management API has no knowledge-base lifecycle endpoints yet (ADR-0004).
     /// </remarks>
     [HttpDelete("{organizationId}")]
@@ -209,6 +211,11 @@ public class OrganizationsController(
         {
             return NotFound();
         }
+
+        var organizationFiles = await db
+            .Files.Where(file => file.OrganizationId == organizationId)
+            .ToListAsync(cancellationToken);
+        await files.RemoveAsync(organizationFiles, cancellationToken);
 
         db.Organizations.Remove(organization);
         await db.SaveChangesAsync(cancellationToken);
