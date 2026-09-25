@@ -1,7 +1,6 @@
 import { z } from 'zod'
 
 import { AuthMode, ModelType } from '@/api/types'
-import { isUuid } from '@/lib/uuid'
 
 const authModeSchema = z.enum([AuthMode.ApiKey, AuthMode.ManagedIdentity])
 const modelTypeSchema = z.enum([
@@ -81,23 +80,10 @@ function addCrossFieldRules(value: ModelShape, ctx: z.RefinementCtx, requireApiK
   }
 }
 
-export const modelCreateSchema = z
-  .object({
-    ...baseShape,
-    id: z
-      .string()
-      .trim()
-      .min(1, 'Enter an id.')
-      .refine(isUuid, 'The id must be a valid UUID.'),
-  })
-  .superRefine((value, ctx) => addCrossFieldRules(value, ctx, true))
-
-export type ModelCreateValues = z.input<typeof modelCreateSchema>
-export type ModelCreateParsed = z.output<typeof modelCreateSchema>
-
 /**
- * Editing uses the same rules. `apiKey` stays required for an `api_key` model
- * because the API replaces the record wholesale — see `ApiKeyField`.
+ * Shared by create and edit — the API generates the id, so neither form
+ * collects one. `apiKey` stays required for an `api_key` model because the
+ * API replaces the record wholesale — see `ApiKeyField`.
  */
 export const modelEditSchema = z
   .object(baseShape)

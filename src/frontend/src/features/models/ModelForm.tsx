@@ -1,6 +1,5 @@
 import * as React from 'react'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { RefreshCw } from 'lucide-react'
 import { useForm, useWatch } from 'react-hook-form'
 
 import { getFieldErrors, isApiError, ROOT_ERROR_KEY } from '@/api/errors'
@@ -35,15 +34,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { modelCreateSchema, REASONING_EFFORTS } from '@/schemas/model.schema'
-import { newUuid } from '@/lib/uuid'
+import { modelEditSchema, REASONING_EFFORTS } from '@/schemas/model.schema'
 
-/**
- * Create and edit share one form. The create variant also carries the
- * caller-assigned `id` the API requires and never generates.
- */
+/** Create and edit share one form; the API generates the model's id. */
 type FormValues = {
-  id: string
   displayName: string
   name: string
   provider: string
@@ -79,14 +73,10 @@ export function ModelForm({
   onCancel,
 }: ModelFormProps) {
   const [rootError, setRootError] = React.useState<string | null>(null)
-  const [customId, setCustomId] = React.useState(false)
 
   const form = useForm<FormValues>({
-    // The create schema is a superset; on edit the `id` field is not rendered
-    // and is pre-filled from the model, so the same resolver validates both.
-    resolver: zodResolver(modelCreateSchema) as never,
+    resolver: zodResolver(modelEditSchema) as never,
     defaultValues: {
-      id: model?.id ?? newUuid(),
       displayName: model?.displayName ?? '',
       name: model?.name ?? '',
       provider: model?.provider ?? '',
@@ -110,7 +100,6 @@ export function ModelForm({
     setRootError(null)
 
     const payload: CreateModelRequest = {
-      id: values.id,
       displayName: values.displayName,
       name: values.name,
       provider: values.provider,
@@ -132,18 +121,13 @@ export function ModelForm({
       }
 
       if (error.status === 409) {
-        if (mode === 'create') {
-          form.setError('id', { message: error.title })
-        } else {
-          setRootError(error.detail ?? error.title)
-        }
+        setRootError(error.detail ?? error.title)
         return
       }
 
       const fields = getFieldErrors(error)
       let attached = false
       for (const key of [
-        'id',
         'displayName',
         'name',
         'provider',
@@ -171,45 +155,6 @@ export function ModelForm({
     <Form {...form}>
       <form onSubmit={form.handleSubmit(submit)} className="space-y-6" noValidate>
         <FormRootError message={rootError ?? undefined} />
-
-        {mode === 'create' ? (
-          <FormField
-            control={form.control}
-            name="id"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Identifier</FormLabel>
-                <FormControl>
-                  <Input {...field} readOnly={!customId} spellCheck={false} />
-                </FormControl>
-                <FormDescription className="flex flex-wrap items-center gap-2">
-                  <span>
-                    A UUID you assign. It is stamped onto every embedding as
-                    provenance, so it must stay stable.
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => form.setValue('id', newUuid())}
-                  >
-                    <RefreshCw aria-hidden="true" />
-                    Regenerate
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setCustomId((value) => !value)}
-                  >
-                    {customId ? 'Lock' : 'Use a custom id'}
-                  </Button>
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        ) : null}
 
         <div className="grid gap-6 sm:grid-cols-2">
           <FormField

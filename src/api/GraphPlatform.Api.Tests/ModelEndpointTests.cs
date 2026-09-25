@@ -107,6 +107,44 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
+    public async Task Create_generates_an_id_when_omitted()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+
+        var request = Api.EmbeddingModel();
+        request.Id = null;
+
+        using var response = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            request
+        );
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = (await response.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
+        Assert.True(Guid.TryParse(created.Id, out _));
+    }
+
+    [Fact]
+    public async Task Create_rejects_a_blank_id()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+
+        var request = Api.EmbeddingModel();
+        request.Id = "   ";
+
+        using var response = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            request
+        );
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Create_rejects_an_id_that_already_exists()
     {
         var admin = await factory.SignupAsync();

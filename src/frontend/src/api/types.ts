@@ -153,8 +153,8 @@ export interface ModelWriteRequest {
 }
 
 export interface CreateModelRequest extends ModelWriteRequest {
-  /** Caller-assigned and required: the API never generates one. Must be a UUID. */
-  id: string
+  /** Omit to let the API generate a UUID. */
+  id?: string | null
 }
 
 export type UpdateModelRequest = ModelWriteRequest

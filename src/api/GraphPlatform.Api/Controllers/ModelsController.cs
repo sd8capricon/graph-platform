@@ -84,7 +84,7 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
     /// Creates a model config. Organization Admin or Contributor.
     /// </summary>
     /// <param name="organizationId">Owning organization.</param>
-    /// <param name="request">The model config, including its caller-assigned UUID id.</param>
+    /// <param name="request">The model config; the id is generated when omitted.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>201 with the created model config; 409 if the id is already used.</returns>
     [HttpPost]
@@ -110,16 +110,18 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
             return Forbid();
         }
 
+        var id = request.Id?.Trim() ?? Guid.NewGuid().ToString();
+
         // Ids are global primary keys, so a collision is checked deployment-wide rather than per
         // organization: two organizations holding the same model config id would break the
         // embedding-provenance column both stacks key off.
-        if (await db.ModelConfigs.AnyAsync(model => model.Id == request.Id, cancellationToken))
+        if (await db.ModelConfigs.AnyAsync(model => model.Id == id, cancellationToken))
         {
             return Conflict(
                 CreateProblem(
                     StatusCodes.Status409Conflict,
                     "A model config with that id already exists.",
-                    "Ids are caller-assigned and stable, because they are stamped as embedding provenance."
+                    "Ids are stable once assigned, because they are stamped as embedding provenance."
                 )
             );
         }
@@ -127,7 +129,7 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
         var now = DateTimeOffset.UtcNow;
         var model = new ModelConfig
         {
-            Id = request.Id,
+            Id = id,
             OrganizationId = organizationId,
             DisplayName = request.DisplayName.Trim(),
             Name = request.Name.Trim(),

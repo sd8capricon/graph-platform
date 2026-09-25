@@ -6,7 +6,6 @@ import { toast } from 'sonner'
 import { isApiError } from '@/api/errors'
 import { env } from '@/app/env'
 import { KnowledgeBaseState, type FileDto } from '@/api/types'
-import { CopyButton } from '@/components/data/CopyButton'
 import { ActionTooltip } from '@/components/data/ActionTooltip'
 import { announce } from '@/components/feedback/announcer'
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog'
@@ -271,16 +270,7 @@ export function KnowledgeBaseDetailPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <dt className="text-xs text-muted-foreground">Identifier</dt>
-              <dd className="flex items-center gap-1">
-                <code className="truncate rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {knowledgeBase.id}
-                </code>
-                <CopyButton value={knowledgeBase.id} />
-              </dd>
-            </div>
+          <dl className="grid gap-4 sm:grid-cols-2">
             <div>
               <dt className="text-xs text-muted-foreground">Created</dt>
               <dd className="text-sm">{formatDateTime(knowledgeBase.createdAtUtc)}</dd>

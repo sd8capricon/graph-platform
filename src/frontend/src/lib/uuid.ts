@@ -1,8 +1,8 @@
 /**
- * Generates the caller-assigned model config id the API requires.
+ * Generates a client-only id, e.g. a React key for tracking an in-flight upload.
  *
- * `crypto.randomUUID` needs a secure context, so the fallback keeps the create
- * form usable when the app is served over plain HTTP on a LAN address.
+ * `crypto.randomUUID` needs a secure context, so the fallback keeps this usable
+ * when the app is served over plain HTTP on a LAN address.
  */
 export function newUuid(): string {
   if (typeof crypto.randomUUID === 'function') {
@@ -20,10 +20,4 @@ export function newUuid(): string {
     hex.slice(16, 20),
     hex.slice(20),
   ].join('-')
-}
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-export function isUuid(value: string): boolean {
-  return UUID_PATTERN.test(value.trim())
 }

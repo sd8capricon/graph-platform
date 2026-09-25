@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 
 import { isApiError } from '@/api/errors'
 import { AuthMode, type UpdateModelRequest } from '@/api/types'
-import { CopyButton } from '@/components/data/CopyButton'
 import { EmptyState } from '@/components/feedback/EmptyState'
 import { ErrorState } from '@/components/feedback/ErrorState'
 import { PageHeader } from '@/components/feedback/PageHeader'
@@ -98,16 +97,7 @@ export function ModelDetailPage() {
           <CardTitle>Summary</CardTitle>
         </CardHeader>
         <CardContent>
-          <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="min-w-0">
-              <dt className="text-xs text-muted-foreground">Identifier</dt>
-              <dd className="flex items-center gap-1">
-                <code className="truncate rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {model.id}
-                </code>
-                <CopyButton value={model.id} />
-              </dd>
-            </div>
+          <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <dt className="text-xs text-muted-foreground">Authentication</dt>
               <dd className="text-sm">
