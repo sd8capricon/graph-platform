@@ -63,6 +63,7 @@ export const router = createBrowserRouter([
                   {
                     path: ':organizationId',
                     element: <OrgGuard />,
+                    handle: { crumb: 'Organization' },
                     children: [
                       {
                         index: true,
