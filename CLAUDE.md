@@ -1482,6 +1482,18 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
   reset-on-close effect, `useIsMobile` uses `useSyncExternalStore`, and `ModelForm` uses `useWatch`
   rather than `form.watch()`, which returns an unmemoizable function and makes the compiler skip the
   whole component.
+- **Theming is next-themes with `attribute="class"`.** `AppProviders` mounts `ThemeProvider`
+  (`defaultTheme="system"`, `enableSystem`, `disableTransitionOnChange`); the class attribute is what
+  `index.css`'s `@custom-variant dark (&:is(.dark *))` keys off, so the default `data-theme`
+  attribute would leave every `.dark` token unused. `next-themes` was already a dependency because
+  shadcn's `ui/sonner` calls `useTheme()` — without a provider that call silently fell back to
+  `"system"` forever. `components/layout/ThemeToggle.tsx` offers Light/Dark/System as a
+  `DropdownMenuRadioGroup` rather than a two-state toggle, since a binary toggle gives no way back to
+  `system`; its trigger icon shows `resolvedTheme`, not `theme`, so it still reflects the OS
+  preference while `system` is selected. It is mounted twice, because the two chromes have no shared
+  header: in the `AppShell` topbar left of `UserMenu`, and pinned to the corner of `AuthLayout`
+  (login/signup), where it is first in DOM order so tab order reaches it before the credential
+  fields. `NotFoundPage` renders outside both layouts and so has no toggle of its own.
 - Accessibility: a skip link, `<main tabIndex={-1}>` focused on every route change (React Router does
   not move focus by itself), one `Toaster` plus a separate `aria-live` announcer for filter counts and
   upload/indexing transitions, `DialogTitle` on every dialog, and `AlertDialog` for destructive

@@ -2,6 +2,7 @@ import * as React from 'react'
 import { Outlet, useLocation } from 'react-router'
 
 import { Breadcrumbs } from '@/components/layout/Breadcrumbs'
+import { ThemeToggle } from '@/components/layout/ThemeToggle'
 import { UserMenu } from '@/components/layout/UserMenu'
 import { AppSidebar } from '@/components/layout/AppSidebar'
 import { Separator } from '@/components/ui/separator'
@@ -37,6 +38,7 @@ export function AppShell() {
           <div className="min-w-0 flex-1">
             <Breadcrumbs />
           </div>
+          <ThemeToggle />
           <UserMenu />
         </header>
 
