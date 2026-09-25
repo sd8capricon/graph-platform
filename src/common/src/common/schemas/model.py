@@ -54,6 +54,8 @@ class Model(BaseModel):
             built-in routing for a known provider name).
         auth_mode: How to authenticate with the provider: 'api_key' or 'managed_identity'.
         type: The capabilities this model supports (e.g., embedding, vision, thinking).
+            Must be non-empty, and 'embedding' is exclusive of 'vision'/'thinking' — an
+            embedding model cannot also be a chat model.
         api_key: The API key used to authenticate, required when auth_mode is 'api_key'.
             Stored as a SecretStr so it is masked in reprs/logs.
         embedding_dimension: The output vector size, required when 'embedding' is in type.
@@ -129,6 +131,41 @@ class Model(BaseModel):
         """
         if self.auth_mode == AuthMode.API_KEY and self.api_key is None:
             raise ValueError("api_key is required when auth_mode is 'api_key'")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_type_is_not_empty(self) -> "Model":
+        """Ensure at least one capability is declared.
+
+        Returns:
+            The validated Model instance.
+
+        Raises:
+            ValueError: If type is empty.
+        """
+        if not self.type:
+            raise ValueError("type must not be empty")
+        return self
+
+    @model_validator(mode="after")
+    def ensure_embedding_is_exclusive_of_chat_capabilities(self) -> "Model":
+        """Ensure 'embedding' is never combined with 'vision' or 'thinking'.
+
+        An embedding model and a chat model are different call shapes (litellm's
+        `aembedding()` vs. a chat completion), so one configured entry cannot be both.
+
+        Returns:
+            The validated Model instance.
+
+        Raises:
+            ValueError: If type contains 'embedding' together with 'vision' or 'thinking'.
+        """
+        if ModelType.EMBEDDING in self.type and (
+            ModelType.VISION in self.type or ModelType.THINKING in self.type
+        ):
+            raise ValueError(
+                "type cannot combine 'embedding' with 'vision' or 'thinking'"
+            )
         return self
 
     @model_validator(mode="after")

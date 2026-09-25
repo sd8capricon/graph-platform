@@ -46,7 +46,11 @@ public abstract class ModelWriteRequest : IValidatableObject
     [Required]
     public AuthMode? AuthMode { get; set; }
 
-    /// <summary>The capabilities this model supports. May be empty.</summary>
+    /// <summary>
+    /// The capabilities this model supports. Required (at least one), and
+    /// <see cref="ModelType.Embedding"/> is exclusive of <see cref="ModelType.Vision"/> and
+    /// <see cref="ModelType.Thinking"/> — an embedding model cannot also be a chat model.
+    /// </summary>
     public List<ModelType> Type { get; set; } = [];
 
     /// <summary>
@@ -84,8 +88,21 @@ public abstract class ModelWriteRequest : IValidatableObject
             );
         }
 
+        if (Type.Count == 0)
+        {
+            yield return new ValidationResult("type must not be empty.", [nameof(Type)]);
+        }
+
         if (Type.Contains(ModelType.Embedding))
         {
+            if (Type.Contains(ModelType.Vision) || Type.Contains(ModelType.Thinking))
+            {
+                yield return new ValidationResult(
+                    "type cannot combine 'embedding' with 'vision' or 'thinking'.",
+                    [nameof(Type)]
+                );
+            }
+
             if (EmbeddingDimension is null)
             {
                 yield return new ValidationResult(

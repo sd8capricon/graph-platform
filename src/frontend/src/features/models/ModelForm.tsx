@@ -133,6 +133,7 @@ export function ModelForm({
         'provider',
         'connectionString',
         'authMode',
+        'type',
         'apiKey',
         'embeddingDimension',
         'reasoningEffort',
@@ -236,13 +237,24 @@ export function ModelForm({
                       <Checkbox
                         id={`type-${capability}`}
                         checked={checked}
-                        onCheckedChange={(next) =>
-                          field.onChange(
-                            next
-                              ? [...field.value, capability]
-                              : field.value.filter((entry) => entry !== capability),
-                          )
-                        }
+                        onCheckedChange={(next) => {
+                          if (!next) {
+                            field.onChange(field.value.filter((entry) => entry !== capability))
+                            return
+                          }
+                          // Embedding is a different call shape (litellm's
+                          // aembedding() vs. a chat completion), so selecting
+                          // one side of the split deselects the other instead
+                          // of allowing both at once.
+                          if (capability === ModelType.Embedding) {
+                            field.onChange([ModelType.Embedding])
+                          } else {
+                            field.onChange([
+                              ...field.value.filter((entry) => entry !== ModelType.Embedding),
+                              capability,
+                            ])
+                          }
+                        }}
                       />
                       <Label htmlFor={`type-${capability}`} className="font-normal">
                         {TYPE_LABELS[capability]}
@@ -251,13 +263,16 @@ export function ModelForm({
                   )
                 })}
               </div>
-              <FormDescription>May be left empty.</FormDescription>
+              <FormDescription>
+                Select at least one. Choosing embedding clears vision/thinking, and choosing
+                vision or thinking clears embedding.
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}
         />
 
-        {isEmbedding ? (
+        {types.length === 0 ? null : isEmbedding ? (
           <FormField
             control={form.control}
             name="embeddingDimension"

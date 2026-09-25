@@ -58,7 +58,11 @@ the worker (ADR-0005).
    - `Model` (`schemas/model.py`): Configured LLM/embedding provider connection (id, display_name,
      name, provider, connection_string, auth_mode, type capabilities, api_key, embedding_dimension,
      reasoning_effort) — validates that `api_key` is set when `auth_mode` is `api_key` and
-     `embedding_dimension` is set when `embedding` is in `type`. Passed into
+     `embedding_dimension` is set when `embedding` is in `type`. `type` must be non-empty
+     (`ensure_type_is_not_empty`) and `embedding` is exclusive of `vision`/`thinking`
+     (`ensure_embedding_is_exclusive_of_chat_capabilities`) — an embedding model is a different
+     litellm call shape (`aembedding()`) than a chat model, so one configured entry cannot be both.
+     Passed into
      `EmbeddingService.compute_embeddings()` to describe which provider/model to call. `id` is a
      required, caller-assigned UUID (validated by `ensure_id_is_uuid`, not auto-generated) — it must
      stay stable across restarts because it is stamped as embedding provenance (`embedding_model_id`,
@@ -1155,8 +1159,10 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   convention-based mapper is exactly how `ModelConfig.ApiKey` would leak onto a response. `ModelDto`
   exposes only `HasApiKey`.
 - Validation mirrors `common/schemas/model.py`: `IValidatableObject` on `ModelWriteRequest` enforces
-  `auth_mode == api_key` ⇒ `apiKey` required, and `embedding ∈ type` ⇒ `embeddingDimension` required
-  and `reasoningEffort` forbidden. `[ApiController]` turns failures into 400 `ValidationProblemDetails`.
+  `auth_mode == api_key` ⇒ `apiKey` required; `type` must be non-empty; `embedding ∈ type` is
+  exclusive of `vision`/`thinking` ∈ `type` (an embedding model cannot also be a chat model); and
+  `embedding ∈ type` ⇒ `embeddingDimension` required and `reasoningEffort` forbidden.
+  `[ApiController]` turns failures into 400 `ValidationProblemDetails`.
 
 ### Shared-database contract with the Python services
 - One PostgreSQL database, two owners: Python's `Base.metadata.create_all` creates
@@ -1446,6 +1452,14 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
   render the id either; both dropped their "Identifier" `dt`/`dd` block and `CopyButton`, which left
   each summary `dl` one column narrower. `newUuid()` survives only as a client-only React key
   generator for the upload queue in `KnowledgeBaseDetailPage` — that id is never sent to the API.
+- **A model's capabilities are validated client-side to match `ModelWriteRequest.Validate`
+  exactly**: `modelEditSchema`'s `superRefine` requires at least one `type` entry and rejects
+  `embedding` combined with `vision`/`thinking`. `ModelForm`'s capability checkboxes enforce the
+  same exclusivity proactively rather than only after submit — checking Embedding deselects
+  Vision/Thinking (and vice versa) instead of allowing both, since an embedding model is a
+  different litellm call shape than a chat model and cannot be both. Neither the embedding
+  dimension nor the reasoning effort field renders until at least one capability is checked; which
+  one appears then follows `isEmbedding`, same as before.
 - **No list endpoint supports search, filtering or pagination**, so `useClientCollection` does all of
   it over the fetched array. That is a deliberate stopgap: lists in the thousands are the point at
   which this needs to become a server-side capability.

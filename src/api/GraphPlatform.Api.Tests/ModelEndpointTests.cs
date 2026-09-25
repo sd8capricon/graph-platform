@@ -90,6 +90,62 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
+    public async Task Create_rejects_an_empty_type()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+
+        var request = Api.ChatModel();
+        request.Type = [];
+
+        using var response = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            request
+        );
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(ModelType.Vision)]
+    [InlineData(ModelType.Thinking)]
+    public async Task Create_rejects_embedding_combined_with_a_chat_capability(ModelType other)
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+
+        var request = Api.EmbeddingModel();
+        request.Type = [ModelType.Embedding, other];
+
+        using var response = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            request
+        );
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_allows_vision_and_thinking_together()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+
+        var request = Api.ChatModel();
+        request.Type = [ModelType.Vision, ModelType.Thinking];
+
+        using var response = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            request
+        );
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Create_rejects_an_id_that_is_not_a_uuid()
     {
         var admin = await factory.SignupAsync();

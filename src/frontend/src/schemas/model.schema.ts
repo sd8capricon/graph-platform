@@ -46,9 +46,9 @@ type ModelShape = {
 }
 
 /**
- * The three cross-field rules the API enforces in `ModelWriteRequest.Validate`.
- * Paths are set explicitly so React Hook Form attaches each message to the
- * input it is about.
+ * The cross-field rules the API enforces in `ModelWriteRequest.Validate`. Paths
+ * are set explicitly so React Hook Form attaches each message to the input
+ * it is about.
  *
  * `requireApiKey` is true when editing a model that already stores one: `PUT`
  * is a full replacement, so an omitted key would silently clear it.
@@ -62,7 +62,22 @@ function addCrossFieldRules(value: ModelShape, ctx: z.RefinementCtx, requireApiK
     })
   }
 
+  if (value.type.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['type'],
+      message: 'Select at least one capability.',
+    })
+  }
+
   if (value.type.includes(ModelType.Embedding)) {
+    if (value.type.includes(ModelType.Vision) || value.type.includes(ModelType.Thinking)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['type'],
+        message: 'Embedding cannot be combined with vision or thinking.',
+      })
+    }
     if (value.embeddingDimension == null) {
       ctx.addIssue({
         code: 'custom',

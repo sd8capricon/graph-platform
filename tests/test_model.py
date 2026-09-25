@@ -11,7 +11,7 @@ def _model(**overrides) -> Model:
         "provider": "openai",
         "auth_mode": AuthMode.API_KEY,
         "api_key": "test-key",
-        "type": [],
+        "type": [ModelType.THINKING],
     }
     fields.update(overrides)
     return Model.model_validate(fields)
@@ -67,3 +67,20 @@ def test_id_accepts_a_valid_uuid():
     model = _model(id="550e8400-e29b-41d4-a716-446655440000")
 
     assert model.id == "550e8400-e29b-41d4-a716-446655440000"
+
+
+def test_type_must_not_be_empty():
+    with pytest.raises(ValueError, match="type must not be empty"):
+        _model(type=[])
+
+
+@pytest.mark.parametrize("other", [ModelType.VISION, ModelType.THINKING])
+def test_embedding_cannot_be_combined_with_a_chat_capability(other):
+    with pytest.raises(ValueError, match="embedding"):
+        _model(type=[ModelType.EMBEDDING, other], embedding_dimension=1536)
+
+
+def test_vision_and_thinking_can_be_combined():
+    model = _model(type=[ModelType.VISION, ModelType.THINKING])
+
+    assert model.type == [ModelType.VISION, ModelType.THINKING]

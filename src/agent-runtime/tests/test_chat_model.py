@@ -11,7 +11,7 @@ def _chat_model_config(**overrides) -> Model:
         "connection_string": "https://api.openai.com/v1",
         "auth_mode": AuthMode.API_KEY,
         "api_key": "test-key",
-        "type": [],
+        "type": [ModelType.THINKING],
     }
     fields.update(overrides)
     return Model.model_validate(fields)

@@ -5,7 +5,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from agent_runtime import deep_agent
 from agent_runtime.context import AgentContext
 from agent_runtime.prompts import GRAPH_AGENT_SYSTEM_PROMPT
-from common.schemas.model import AuthMode, Model
+from common.schemas.model import AuthMode, Model, ModelType
 
 _GRAPH_TOOL_NAMES = [
     "search_schema_registry",
@@ -31,6 +31,7 @@ def _chat_model_config() -> Model:
             "connection_string": "https://api.openai.com/v1",
             "auth_mode": AuthMode.API_KEY,
             "api_key": "test-key",
+            "type": [ModelType.THINKING],
         }
     )
 
