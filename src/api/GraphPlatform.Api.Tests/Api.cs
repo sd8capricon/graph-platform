@@ -174,8 +174,8 @@ internal static class Api
             DisplayName = "Embedding model",
             Name = "text-embedding-3-small",
             Provider = "openai",
-            AuthMode = AuthMode.ManagedIdentity,
             Type = [ModelType.Embedding],
+            ApiKey = "sk-test-key",
             EmbeddingDimension = 1536,
         };
 
@@ -189,7 +189,6 @@ internal static class Api
             DisplayName = "Chat model",
             Name = "gpt-4o",
             Provider = "openai",
-            AuthMode = AuthMode.ApiKey,
             Type = [ModelType.Thinking],
             ApiKey = apiKey,
         };

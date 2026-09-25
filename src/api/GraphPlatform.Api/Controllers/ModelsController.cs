@@ -135,7 +135,8 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
             Name = request.Name.Trim(),
             Provider = request.Provider.Trim(),
             ConnectionString = request.ConnectionString,
-            AuthMode = request.AuthMode!.Value,
+            // The API only ever authenticates with an API key; see ModelWriteRequest's remarks.
+            AuthMode = Models.AuthMode.ApiKey,
             Type = [.. request.Type],
             ApiKey = request.ApiKey,
             EmbeddingDimension = request.EmbeddingDimension,
@@ -159,9 +160,10 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>200 with the updated model config, or 404.</returns>
     /// <remarks>
-    /// This is a full replacement, not a partial update: an omitted <c>apiKey</c> clears the stored
-    /// key. That is called out because the opposite reading (leave unspecified fields alone) would be
-    /// just as plausible and has a security consequence here.
+    /// This is a full replacement, not a partial update: <c>apiKey</c> is always required, so every
+    /// update must resupply it, even to change an unrelated field. That is called out because the
+    /// opposite reading (leave unspecified fields alone) would be just as plausible and has a
+    /// security consequence here.
     /// </remarks>
     [HttpPut("{modelId}")]
     [ProducesResponseType<ModelDto>(StatusCodes.Status200OK)]
@@ -196,7 +198,6 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
         model.Name = request.Name.Trim();
         model.Provider = request.Provider.Trim();
         model.ConnectionString = request.ConnectionString;
-        model.AuthMode = request.AuthMode!.Value;
         model.Type = [.. request.Type];
         model.ApiKey = request.ApiKey;
         model.EmbeddingDimension = request.EmbeddingDimension;

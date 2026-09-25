@@ -144,9 +144,8 @@ export interface ModelWriteRequest {
   name: string
   provider: string
   connectionString?: string | null
-  authMode: AuthMode
   type: ModelType[]
-  /** Omitting this on an update clears the stored key — the API replaces in full. */
+  /** Always required: the API only supports API-key authentication. */
   apiKey?: string | null
   embeddingDimension?: number | null
   reasoningEffort?: string | null

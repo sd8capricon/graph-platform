@@ -36,7 +36,7 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
-    public async Task Create_rejects_api_key_mode_without_a_key()
+    public async Task Create_rejects_a_missing_api_key()
     {
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
@@ -264,7 +264,7 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
-    public async Task Update_is_a_full_replacement_and_clears_an_omitted_api_key()
+    public async Task Update_is_a_full_replacement_and_rejects_an_omitted_api_key()
     {
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
@@ -272,30 +272,45 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
         using var createResponse = await factory.CreateModelAsync(
             admin.AccessToken,
             organization.Id,
-            Api.ChatModel("sk-to-be-cleared")
+            Api.ChatModel("sk-original")
         );
         createResponse.EnsureSuccessStatusCode();
         var created = (await createResponse.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
         Assert.True(created.HasApiKey);
 
         using var client = factory.AuthedClient(admin.AccessToken);
-        var update = await client.PutAsJsonAsync(
+
+        // The API only ever authenticates with an API key, so a full replacement that omits
+        // one is rejected rather than silently clearing the stored key.
+        using var omittedKey = await client.PutAsJsonAsync(
             $"/api/organizations/{organization.Id}/models/{created.Id}",
             new UpdateModelRequest
             {
                 DisplayName = "Renamed chat model",
                 Name = created.Name,
                 Provider = created.Provider,
-                AuthMode = AuthMode.ManagedIdentity,
                 Type = [ModelType.Thinking],
             },
             Api.Json
         );
+        Assert.Equal(HttpStatusCode.BadRequest, omittedKey.StatusCode);
 
-        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
-        var updated = (await update.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
+        using var withKey = await client.PutAsJsonAsync(
+            $"/api/organizations/{organization.Id}/models/{created.Id}",
+            new UpdateModelRequest
+            {
+                DisplayName = "Renamed chat model",
+                Name = created.Name,
+                Provider = created.Provider,
+                Type = [ModelType.Thinking],
+                ApiKey = "sk-replacement",
+            },
+            Api.Json
+        );
+        Assert.Equal(HttpStatusCode.OK, withKey.StatusCode);
+        var updated = (await withKey.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
         Assert.Equal("Renamed chat model", updated.DisplayName);
-        Assert.False(updated.HasApiKey);
+        Assert.True(updated.HasApiKey);
     }
 
     [Fact]
@@ -382,7 +397,7 @@ public class ModelEndpointTests(GraphPlatformApiFactory factory)
 
         // These exact strings are what the Python schemas produce and parse, so the two stacks agree
         // on both the wire and the shared database's stored values.
-        Assert.Contains("\"authMode\":\"managed_identity\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"authMode\":\"api_key\"", body, StringComparison.Ordinal);
         Assert.Contains("\"type\":[\"embedding\"]", body, StringComparison.Ordinal);
     }
 }

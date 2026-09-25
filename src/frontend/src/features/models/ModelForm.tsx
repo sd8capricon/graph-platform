@@ -4,7 +4,6 @@ import { useForm, useWatch } from 'react-hook-form'
 
 import { getFieldErrors, isApiError, ROOT_ERROR_KEY } from '@/api/errors'
 import {
-  AuthMode,
   ModelType,
   type CreateModelRequest,
   type ModelDto,
@@ -36,13 +35,15 @@ import {
 } from '@/components/ui/select'
 import { modelEditSchema, REASONING_EFFORTS } from '@/schemas/model.schema'
 
-/** Create and edit share one form; the API generates the model's id. */
+/**
+ * Create and edit share one form; the API generates the model's id and only
+ * supports API-key authentication.
+ */
 type FormValues = {
   displayName: string
   name: string
   provider: string
   connectionString?: string
-  authMode: AuthMode
   type: ModelType[]
   apiKey?: string
   embeddingDimension?: number
@@ -81,7 +82,6 @@ export function ModelForm({
       name: model?.name ?? '',
       provider: model?.provider ?? '',
       connectionString: model?.connectionString ?? '',
-      authMode: model?.authMode ?? AuthMode.ApiKey,
       type: model?.type ?? [],
       apiKey: '',
       embeddingDimension: model?.embeddingDimension ?? undefined,
@@ -91,10 +91,8 @@ export function ModelForm({
 
   // `useWatch` rather than `form.watch()`: the latter returns a fresh function
   // the React Compiler cannot memoize, so it skips optimizing this component.
-  const authMode = useWatch({ control: form.control, name: 'authMode' })
   const types = useWatch({ control: form.control, name: 'type' })
   const isEmbedding = types.includes(ModelType.Embedding)
-  const needsApiKey = authMode === AuthMode.ApiKey
 
   const submit = async (values: FormValues) => {
     setRootError(null)
@@ -104,9 +102,8 @@ export function ModelForm({
       name: values.name,
       provider: values.provider,
       connectionString: values.connectionString?.trim() ? values.connectionString : null,
-      authMode: values.authMode,
       type: values.type,
-      apiKey: needsApiKey ? (values.apiKey ?? null) : null,
+      apiKey: values.apiKey ?? null,
       embeddingDimension: isEmbedding ? (values.embeddingDimension ?? null) : null,
       reasoningEffort:
         !isEmbedding && values.reasoningEffort?.trim() ? values.reasoningEffort : null,
@@ -132,7 +129,6 @@ export function ModelForm({
         'name',
         'provider',
         'connectionString',
-        'authMode',
         'type',
         'apiKey',
         'embeddingDimension',
@@ -339,64 +335,37 @@ export function ModelForm({
           />
         )}
 
-        <FormField
-          control={form.control}
-          name="authMode"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Authentication</FormLabel>
-              <Select value={field.value} onValueChange={field.onChange}>
+        <div className="space-y-3">
+          {mode === 'edit' ? (
+            <Alert>
+              <AlertTitle>Saving replaces the stored API key</AlertTitle>
+              <AlertDescription>
+                The key is never sent back to the browser, and this endpoint replaces the
+                whole configuration. Re-enter the key to keep this model working.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          <FormField
+            control={form.control}
+            name="apiKey"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>API key</FormLabel>
                 <FormControl>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SecretInput
+                    {...field}
+                    value={field.value ?? ''}
+                    placeholder={
+                      mode === 'edit' && model?.hasApiKey ? 'Re-enter the API key' : 'sk-…'
+                    }
+                  />
                 </FormControl>
-                <SelectContent>
-                  <SelectItem value={AuthMode.ApiKey}>API key</SelectItem>
-                  <SelectItem value={AuthMode.ManagedIdentity}>Managed identity</SelectItem>
-                </SelectContent>
-              </Select>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        {needsApiKey ? (
-          <div className="space-y-3">
-            {mode === 'edit' ? (
-              <Alert>
-                <AlertTitle>Saving replaces the stored API key</AlertTitle>
-                <AlertDescription>
-                  The key is never sent back to the browser, and this endpoint replaces
-                  the whole configuration. Re-enter the key to keep this model working,
-                  or switch to managed identity to clear it deliberately.
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            <FormField
-              control={form.control}
-              name="apiKey"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>API key</FormLabel>
-                  <FormControl>
-                    <SecretInput
-                      {...field}
-                      value={field.value ?? ''}
-                      placeholder={
-                        mode === 'edit' && model?.hasApiKey
-                          ? 'Re-enter the API key'
-                          : 'sk-…'
-                      }
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
-        ) : null}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <SubmitButton pending={pending} pendingLabel="Saving…">

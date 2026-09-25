@@ -10,15 +10,11 @@ namespace GraphPlatform.Api.Dtos;
 /// <remarks>
 /// <para>
 /// These rules are enforced at the API boundary and produce a 400 <c>ValidationProblemDetails</c>,
-/// exactly like the Python pydantic validators that raise at construction time
-/// (<c>ensure_api_key_matches_auth_mode</c>, <c>ensure_embedding_dimension_matches_type</c>,
-/// <c>ensure_reasoning_effort_not_for_embedding</c>). Rejecting here rather than in the database is
-/// the same "fail at the boundary" convention the rest of the repository uses.
-/// </para>
-/// <para>
-/// <see cref="AuthMode"/> and <see cref="Role"/>-style fields are declared nullable so
-/// <see cref="RequiredAttribute"/> actually rejects a missing value: a non-nullable enum would
-/// silently default to its zero member (<c>ApiKey</c>) and pass validation.
+/// the same "fail at the boundary" convention the rest of the repository uses. Unlike the Python
+/// <c>Model</c> schema, this API only ever authenticates with an API key — there is no
+/// <c>auth_mode</c> field here, so <c>apiKey</c> is unconditionally required rather than mirroring
+/// Python's <c>ensure_api_key_matches_auth_mode</c>. <c>ensure_embedding_dimension_matches_type</c>
+/// and <c>ensure_reasoning_effort_not_for_embedding</c> are still mirrored exactly.
 /// </para>
 /// </remarks>
 public abstract class ModelWriteRequest : IValidatableObject
@@ -42,10 +38,6 @@ public abstract class ModelWriteRequest : IValidatableObject
     [MaxLength(2048)]
     public string? ConnectionString { get; set; }
 
-    /// <summary>How to authenticate with the provider.</summary>
-    [Required]
-    public AuthMode? AuthMode { get; set; }
-
     /// <summary>
     /// The capabilities this model supports. Required (at least one), and
     /// <see cref="ModelType.Embedding"/> is exclusive of <see cref="ModelType.Vision"/> and
@@ -54,12 +46,13 @@ public abstract class ModelWriteRequest : IValidatableObject
     public List<ModelType> Type { get; set; } = [];
 
     /// <summary>
-    /// API key, required when <see cref="AuthMode"/> is <see cref="Models.AuthMode.ApiKey"/>.
+    /// API key used to authenticate with the provider. Always required: the API only supports
+    /// API-key authentication.
     /// </summary>
     /// <remarks>
-    /// <c>PUT</c> is a full replacement, so a request that omits this clears the stored key. That is
-    /// stated rather than inferred because a partial-update reading of the same request would leave
-    /// the old key in place — the two behaviours differ in a security-relevant way.
+    /// <c>PUT</c> is a full replacement, so every update must resupply the key, even to change an
+    /// unrelated field — there is no partial-update reading under which an existing key survives an
+    /// omission.
     /// </remarks>
     [MaxLength(4096)]
     public string? ApiKey { get; set; }
@@ -80,12 +73,9 @@ public abstract class ModelWriteRequest : IValidatableObject
             yield return result;
         }
 
-        if (AuthMode == Models.AuthMode.ApiKey && string.IsNullOrWhiteSpace(ApiKey))
+        if (string.IsNullOrWhiteSpace(ApiKey))
         {
-            yield return new ValidationResult(
-                "apiKey is required when authMode is 'api_key'.",
-                [nameof(ApiKey)]
-            );
+            yield return new ValidationResult("apiKey is required.", [nameof(ApiKey)]);
         }
 
         if (Type.Count == 0)

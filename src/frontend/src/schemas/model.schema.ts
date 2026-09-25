@@ -1,8 +1,7 @@
 import { z } from 'zod'
 
-import { AuthMode, ModelType } from '@/api/types'
+import { ModelType } from '@/api/types'
 
-const authModeSchema = z.enum([AuthMode.ApiKey, AuthMode.ManagedIdentity])
 const modelTypeSchema = z.enum([
   ModelType.Embedding,
   ModelType.Vision,
@@ -26,7 +25,6 @@ const baseShape = {
     .min(1, 'Enter a provider.')
     .max(255, 'Use at most 255 characters.'),
   connectionString: z.string().trim().max(2048, 'Use at most 2048 characters.').optional(),
-  authMode: authModeSchema,
   type: z.array(modelTypeSchema).default([]),
   apiKey: z.string().max(4096, 'Use at most 4096 characters.').optional(),
   embeddingDimension: z
@@ -38,7 +36,6 @@ const baseShape = {
 }
 
 type ModelShape = {
-  authMode: AuthMode
   type: ModelType[]
   apiKey?: string
   embeddingDimension?: number
@@ -54,11 +51,11 @@ type ModelShape = {
  * is a full replacement, so an omitted key would silently clear it.
  */
 function addCrossFieldRules(value: ModelShape, ctx: z.RefinementCtx, requireApiKey: boolean) {
-  if (value.authMode === AuthMode.ApiKey && requireApiKey && !value.apiKey?.trim()) {
+  if (requireApiKey && !value.apiKey?.trim()) {
     ctx.addIssue({
       code: 'custom',
       path: ['apiKey'],
-      message: 'An API key is required when the auth mode is “API key”.',
+      message: 'An API key is required.',
     })
   }
 
