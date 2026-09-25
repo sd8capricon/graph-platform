@@ -13,7 +13,7 @@ interface FormRootErrorProps {
  * that disappears before a screen-reader user reaches it.
  */
 export function FormRootError({ title, message }: FormRootErrorProps) {
-  if (!message && !title) return null
+  if (!message) return null
 
   return (
     <Alert variant="destructive" role="alert">
