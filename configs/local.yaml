@@ -33,3 +33,8 @@ storage:
   #   account_url: https://<account>.blob.core.windows.net
   #   container: graph-platform
   #   create_container: true
+
+# Shared Redis cache. The complete connection string (including any credentials)
+# is secret and must only be supplied by the named environment variable.
+redis:
+  connection_string_env: REDIS_CONNECTION_STRING

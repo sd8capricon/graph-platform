@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using GraphPlatform.Api.Services.Cache;
 
 namespace GraphPlatform.Api.Tests;
 
@@ -47,6 +48,9 @@ public class GraphPlatformApiFactory : WebApplicationFactory<Program>
     public string StorageRoot { get; } =
         Path.Join(Path.GetTempPath(), $"graph-platform-api-tests-{Guid.NewGuid():N}");
 
+    /// <summary>Shared deterministic cache double used by endpoint tests.</summary>
+    public TestApiCache Cache => Services.GetRequiredService<TestApiCache>();
+
     /// <summary>Creates the factory and opens the shared in-memory database connection.</summary>
     public GraphPlatformApiFactory()
     {
@@ -78,12 +82,17 @@ public class GraphPlatformApiFactory : WebApplicationFactory<Program>
                         ["Jwt:Audience"] = "graph-platform-api-tests",
                         ["Storage:Provider"] = "FileSystem",
                         ["Storage:FileSystem:Root"] = StorageRoot,
+                        ["Redis:ConnectionString"] = "",
                     }
                 )
         );
 
         builder.ConfigureServices(services =>
         {
+            services.RemoveAll<IApiCache>();
+            services.AddSingleton<TestApiCache>();
+            services.AddSingleton<IApiCache>(provider => provider.GetRequiredService<TestApiCache>());
+
             // EF Core 9+ stores the provider configuration in IDbContextOptionsConfiguration<T>, so
             // removing only DbContextOptions<T> would leave the Npgsql provider in place.
             services.RemoveAll<IDbContextOptionsConfiguration<AppDbContext>>();

@@ -2,6 +2,7 @@ using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 using GraphPlatform.Api.Services;
+using GraphPlatform.Api.Services.Cache;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,9 +26,11 @@ namespace GraphPlatform.Api.Controllers;
 /// </para>
 /// </remarks>
 [Route("api/organizations/{organizationId}/models")]
-public class ModelsController(AppDbContext db, OrganizationAccessService access)
+public class ModelsController(AppDbContext db, OrganizationAccessService access, IApiCache cache)
     : ApiControllerBase
 {
+    private static readonly TimeSpan ReadCacheLifetime = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// Lists the organization's model configs.
     /// </summary>
@@ -47,12 +50,21 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
             return NotFound();
         }
 
+        var cacheKey = ApiCacheKeys.Models(organizationId);
+        var cached = await cache.GetAsync<List<ModelDto>>(cacheKey);
+        if (cached is not null)
+        {
+            return Ok(cached);
+        }
+
         var models = await db
             .ModelConfigs.Where(model => model.OrganizationId == organizationId)
             .OrderBy(model => model.DisplayName)
             .ToListAsync(cancellationToken);
 
-        return Ok(models.Select(model => model.ToDto()).ToList());
+        var result = models.Select(model => model.ToDto()).ToList();
+        await cache.SetAsync(cacheKey, result, ReadCacheLifetime);
+        return Ok(result);
     }
 
     /// <summary>
@@ -76,8 +88,22 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
             return NotFound();
         }
 
+        var cacheKey = ApiCacheKeys.Model(organizationId, modelId);
+        var cached = await cache.GetAsync<ModelDto>(cacheKey);
+        if (cached is not null)
+        {
+            return Ok(cached);
+        }
+
         var model = await FindModelAsync(organizationId, modelId, cancellationToken);
-        return model is null ? NotFound() : Ok(model.ToDto());
+        if (model is null)
+        {
+            return NotFound();
+        }
+
+        var result = model.ToDto();
+        await cache.SetAsync(cacheKey, result, ReadCacheLifetime);
+        return Ok(result);
     }
 
     /// <summary>
@@ -147,6 +173,7 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
 
         db.ModelConfigs.Add(model);
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateModelReadsAsync(organizationId, id);
 
         return StatusCode(StatusCodes.Status201Created, model.ToDto());
     }
@@ -205,6 +232,7 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
         model.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateModelReadsAsync(organizationId, modelId);
 
         return Ok(model.ToDto());
     }
@@ -270,6 +298,7 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
 
         db.ModelConfigs.Remove(model);
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateModelReadsAsync(organizationId, modelId);
 
         return NoContent();
     }
@@ -282,5 +311,11 @@ public class ModelsController(AppDbContext db, OrganizationAccessService access)
         db.ModelConfigs.FirstOrDefaultAsync(
             model => model.Id == modelId && model.OrganizationId == organizationId,
             cancellationToken
+        );
+
+    private Task InvalidateModelReadsAsync(string organizationId, string modelId) =>
+        cache.RemoveAsync(
+            ApiCacheKeys.Models(organizationId),
+            ApiCacheKeys.Model(organizationId, modelId)
         );
 }

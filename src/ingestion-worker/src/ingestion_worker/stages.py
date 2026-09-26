@@ -27,7 +27,7 @@ CONSTRUCT_GRAPH_TASK_NAME = "ingestion_worker.tasks.construct_graph"
 EMBED_NODES_TASK_NAME = "ingestion_worker.tasks.embed_nodes"
 
 
-async def extract_ontology(session, publish, job_id: str) -> None:
+async def extract_ontology(session, publish, job_id: str, *, cache=None) -> None:
     """Stub ontology stage: fan out one `extract_entities` per non-terminal file."""
     store = IndexJobStore(session)
     job = await store.get_job(job_id)
@@ -46,7 +46,9 @@ async def extract_ontology(session, publish, job_id: str) -> None:
         publish(EXTRACT_ENTITIES_TASK_NAME, [job_id, file_row.id])
 
 
-async def extract_entities(session, publish, job_id: str, file_row_id: str) -> None:
+async def extract_entities(
+    session, publish, job_id: str, file_row_id: str, *, cache=None
+) -> None:
     """Stub entity stage for one file: complete it, then attempt the fan-in claim.
 
     Only counts this file toward the fan-in when `complete_file` reports it
@@ -74,11 +76,16 @@ async def extract_entities(session, publish, job_id: str, file_row_id: str) -> N
     claimed = await store.claim_graph_dispatch(job_id)
     await session.commit()
 
+    if transitioned and cache is not None:
+        await cache.invalidate_job(
+            job.organization_id, job.knowledge_base_id, job.id
+        )
+
     if claimed:
         publish(CONSTRUCT_GRAPH_TASK_NAME, [job_id])
 
 
-async def construct_graph(session, publish, job_id: str) -> None:
+async def construct_graph(session, publish, job_id: str, *, cache=None) -> None:
     """Stub graph-construction stage: publish a single stub embedding batch."""
     store = IndexJobStore(session)
     job = await store.get_job(job_id)
@@ -93,7 +100,7 @@ async def construct_graph(session, publish, job_id: str) -> None:
     publish(EMBED_NODES_TASK_NAME, [job_id, "0"])
 
 
-async def embed_nodes(session, publish, job_id: str, batch_id: str) -> None:
+async def embed_nodes(session, publish, job_id: str, batch_id: str, *, cache=None) -> None:
     """Stub embedding stage: complete the job and publish the knowledge base.
 
     Guarded by `mark_job_completed`'s own `running -> completed` transition, so
@@ -113,6 +120,11 @@ async def embed_nodes(session, publish, job_id: str, batch_id: str) -> None:
     if completed:
         await store.set_knowledge_base_state(job.knowledge_base_id, KB_PUBLISHED)
     await session.commit()
+
+    if completed and cache is not None:
+        await cache.invalidate_knowledge_base(
+            job.organization_id, job.knowledge_base_id, job_id=job.id
+        )
 
 
 __all__ = [

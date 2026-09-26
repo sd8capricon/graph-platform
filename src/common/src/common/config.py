@@ -5,6 +5,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from common.schemas.model import Model
+from common.schemas.redis import RedisSettings
 from common.schemas.storage import StorageSettings
 
 DEFAULT_CONFIG_PATH = Path("configs/local.yaml")
@@ -18,18 +19,21 @@ class AppSettings(BaseModel):
         storage: Object storage configuration (provider, filesystem root, Azure
             Blob account/container). Secrets are named by environment variable,
             never inlined - see `AzureBlobStorageSettings.connection_string`.
+        redis: Optional shared-cache connection. The complete connection string
+            is named by an environment variable and never inlined in YAML.
     """
 
     models: list[Model] = Field(default_factory=list)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
 
     def __init__(self, path: str | Path | None = None, **data: Any):
         """Build AppSettings, optionally loading fields from a YAML config file.
 
         Args:
             path: Path to a YAML config file (see `configs/local.yaml`). Its
-                `models` list populates `models` and its `storage` section
-                populates `storage`. If omitted, only `**data` (and
+                `models` list populates `models`; `storage` and `redis` sections
+                populate their corresponding fields. If omitted, only `**data` (and
                 field defaults) apply, so no file is read.
             **data: Field overrides, take precedence over values loaded from `path`.
 
@@ -40,6 +44,7 @@ class AppSettings(BaseModel):
             loaded = yaml.safe_load(Path(path).read_text())
             data.setdefault("models", loaded.get("models") or [])
             data.setdefault("storage", loaded.get("storage") or {})
+            data.setdefault("redis", loaded.get("redis") or {})
         super().__init__(**data)
 
 

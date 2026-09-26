@@ -78,6 +78,7 @@ builder
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<OrganizationAccessService>();
+builder.Services.AddApiCache(builder.Configuration);
 
 // Object storage behind IStorageService (filesystem or Azure Blob, per the Storage section). Bound
 // through the options pipeline rather than read eagerly like JwtOptions, so test hosts can override it;

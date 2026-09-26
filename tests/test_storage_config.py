@@ -19,7 +19,13 @@ SECRET = "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=c2VjcmV0LWt
 
 @pytest.fixture(autouse=True)
 def _clear_storage_env(monkeypatch):
-    for name in ("STORAGE_PROVIDER", "STORAGE_FILESYSTEM_ROOT", "TEST_STORAGE_CONNECTION"):
+    for name in (
+        "STORAGE_PROVIDER",
+        "STORAGE_FILESYSTEM_ROOT",
+        "TEST_STORAGE_CONNECTION",
+        "TEST_REDIS_CONNECTION",
+        "REDIS_CONNECTION_STRING",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -58,6 +64,33 @@ def test_a_config_file_without_a_storage_section_uses_defaults(tmp_path):
     settings = AppSettings(_write_config(tmp_path, "models: []\n"))
 
     assert settings.storage == StorageSettings()
+
+
+def test_redis_connection_string_is_resolved_from_yaml_env_reference(tmp_path, monkeypatch):
+    secret = "redis://:not-for-logs@redis.internal:6379/2"
+    monkeypatch.setenv("TEST_REDIS_CONNECTION", secret)
+    path = _write_config(
+        tmp_path,
+        "redis:\n  connection_string_env: TEST_REDIS_CONNECTION\n",
+    )
+
+    settings = AppSettings(path)
+
+    assert settings.redis.is_configured
+    assert settings.redis.connection_string.get_secret_value() == secret
+    assert secret not in repr(settings.redis)
+    assert secret not in settings.redis.model_dump_json()
+
+
+def test_missing_optional_redis_secret_disables_the_cache(tmp_path):
+    settings = AppSettings(
+        _write_config(
+            tmp_path,
+            "redis:\n  connection_string_env: TEST_REDIS_CONNECTION\n",
+        )
+    )
+
+    assert not settings.redis.is_configured
 
 
 def test_environment_overrides_provider_and_filesystem_root(tmp_path, monkeypatch):

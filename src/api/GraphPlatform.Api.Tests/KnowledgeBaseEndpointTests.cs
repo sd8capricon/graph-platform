@@ -43,6 +43,34 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
+    public async Task Creating_a_knowledge_base_invalidates_the_cached_organization_list()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var first = await factory.CreateKnowledgeBaseAsync(
+            admin.AccessToken,
+            organization.Id,
+            new CreateKnowledgeBaseRequest { Name = "First" }
+        );
+        first.EnsureSuccessStatusCode();
+
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var route = $"/api/organizations/{organization.Id}/knowledge-bases";
+        var initial = await client.GetFromJsonAsync<List<KnowledgeBaseDto>>(route, Api.Json);
+        Assert.Single(initial!);
+
+        using var second = await factory.CreateKnowledgeBaseAsync(
+            admin.AccessToken,
+            organization.Id,
+            new CreateKnowledgeBaseRequest { Name = "Second" }
+        );
+        second.EnsureSuccessStatusCode();
+
+        var refreshed = await client.GetFromJsonAsync<List<KnowledgeBaseDto>>(route, Api.Json);
+        Assert.Equal(2, refreshed!.Count);
+    }
+
+    [Fact]
     public async Task Create_accepts_a_caller_id_and_duplicate_ids_conflict()
     {
         var admin = await factory.SignupAsync();
@@ -121,6 +149,43 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
 
         Assert.Equal(HttpStatusCode.OK, read.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, create.StatusCode);
+    }
+
+    [Fact]
+    public async Task Cached_knowledge_base_data_is_not_served_after_membership_is_removed()
+    {
+        var admin = await factory.SignupAsync();
+        var member = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var added = await factory.AddMemberAsync(
+            admin.AccessToken,
+            organization.Id,
+            member.User.Email!,
+            OrganizationRole.User
+        );
+        added.EnsureSuccessStatusCode();
+        using var created = await factory.CreateKnowledgeBaseAsync(
+            admin.AccessToken,
+            organization.Id,
+            new CreateKnowledgeBaseRequest { Name = "Private to members" }
+        );
+        created.EnsureSuccessStatusCode();
+        var knowledgeBase = (await created.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
+
+        using var memberClient = factory.AuthedClient(member.AccessToken);
+        var route =
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}";
+        using var firstRead = await memberClient.GetAsync(route);
+        Assert.Equal(HttpStatusCode.OK, firstRead.StatusCode);
+
+        using var adminClient = factory.AuthedClient(admin.AccessToken);
+        using var removed = await adminClient.DeleteAsync(
+            $"/api/organizations/{organization.Id}/members/{member.User.Id}"
+        );
+        Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+
+        using var secondRead = await memberClient.GetAsync(route);
+        Assert.Equal(HttpStatusCode.NotFound, secondRead.StatusCode);
     }
 
     [Fact]

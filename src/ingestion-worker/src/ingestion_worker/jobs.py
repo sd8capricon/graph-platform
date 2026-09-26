@@ -16,14 +16,20 @@ async def fail_job(job_id: str, error: str) -> None:
     Opens its own short-lived session/resources.
     """
     from ingestion_worker.db import open_job_resources
+    from ingestion_worker.cache import open_cache_invalidator
 
-    async with open_job_resources() as (session, _repository):
-        store = IndexJobStore(session)
-        job = await store.get_job(job_id)
-        await store.mark_job_failed(job_id, error)
-        if job is not None:
-            await store.set_knowledge_base_state(job.knowledge_base_id, KB_FAILED)
-        await session.commit()
+    async with open_cache_invalidator() as cache:
+        async with open_job_resources() as (session, _repository):
+            store = IndexJobStore(session)
+            job = await store.get_job(job_id)
+            await store.mark_job_failed(job_id, error)
+            if job is not None:
+                await store.set_knowledge_base_state(job.knowledge_base_id, KB_FAILED)
+            await session.commit()
+            if job is not None and cache is not None:
+                await cache.invalidate_knowledge_base(
+                    job.organization_id, job.knowledge_base_id, job_id=job.id
+                )
 
 
 async def run_stage(fn, publish, *args) -> None:
@@ -35,8 +41,11 @@ async def run_stage(fn, publish, *args) -> None:
     """
     from ingestion_worker.db import open_job_resources
 
-    async with open_job_resources() as (session, _repository):
-        await fn(session, publish, *args)
+    from ingestion_worker.cache import open_cache_invalidator
+
+    async with open_cache_invalidator() as cache:
+        async with open_job_resources() as (session, _repository):
+            await fn(session, publish, *args, cache=cache)
 
 
 __all__ = ["fail_job", "run_stage"]

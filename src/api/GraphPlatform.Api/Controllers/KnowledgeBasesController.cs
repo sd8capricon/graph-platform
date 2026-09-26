@@ -2,6 +2,7 @@ using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 using GraphPlatform.Api.Services;
+using GraphPlatform.Api.Services.Cache;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,9 +24,13 @@ namespace GraphPlatform.Api.Controllers;
 public class KnowledgeBasesController(
     AppDbContext db,
     OrganizationAccessService access,
-    FileService files
+    FileService files,
+    IApiCache cache
 ) : ApiControllerBase
 {
+    private static readonly TimeSpan ReadCacheLifetime = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan JobCacheLifetime = TimeSpan.FromSeconds(2);
+
     /// <summary>Lists Knowledge Bases belonging to the organization.</summary>
     [HttpGet]
     [ProducesResponseType<List<KnowledgeBaseDto>>(StatusCodes.Status200OK)]
@@ -40,13 +45,22 @@ public class KnowledgeBasesController(
             return NotFound();
         }
 
+        var cacheKey = ApiCacheKeys.KnowledgeBases(organizationId);
+        var cached = await cache.GetAsync<List<KnowledgeBaseDto>>(cacheKey);
+        if (cached is not null)
+        {
+            return Ok(cached);
+        }
+
         var knowledgeBases = await db
             .KnowledgeBases.Include(knowledgeBase => knowledgeBase.Files)
             .Where(knowledgeBase => knowledgeBase.OrganizationId == organizationId)
             .OrderBy(knowledgeBase => knowledgeBase.Name)
             .ToListAsync(cancellationToken);
 
-        return Ok(knowledgeBases.Select(knowledgeBase => knowledgeBase.ToDto()).ToList());
+        var result = knowledgeBases.Select(knowledgeBase => knowledgeBase.ToDto()).ToList();
+        await cache.SetAsync(cacheKey, result, ReadCacheLifetime);
+        return Ok(result);
     }
 
     /// <summary>Returns one Knowledge Base belonging to the organization.</summary>
@@ -64,13 +78,27 @@ public class KnowledgeBasesController(
             return NotFound();
         }
 
+        var cacheKey = ApiCacheKeys.KnowledgeBase(organizationId, knowledgeBaseId);
+        var cached = await cache.GetAsync<KnowledgeBaseDto>(cacheKey);
+        if (cached is not null)
+        {
+            return Ok(cached);
+        }
+
         var knowledgeBase = await FindKnowledgeBaseAsync(
             organizationId,
             knowledgeBaseId,
             cancellationToken
         );
 
-        return knowledgeBase is null ? NotFound() : Ok(knowledgeBase.ToDto());
+        if (knowledgeBase is null)
+        {
+            return NotFound();
+        }
+
+        var result = knowledgeBase.ToDto();
+        await cache.SetAsync(cacheKey, result, ReadCacheLifetime);
+        return Ok(result);
     }
 
     /// <summary>Creates a draft Knowledge Base.</summary>
@@ -125,6 +153,7 @@ public class KnowledgeBasesController(
 
         db.KnowledgeBases.Add(knowledgeBase);
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, id);
 
         return CreatedAtAction(
             nameof(GetKnowledgeBase),
@@ -178,6 +207,7 @@ public class KnowledgeBasesController(
         knowledgeBase.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
 
         return Ok(knowledgeBase.ToDto());
     }
@@ -225,6 +255,7 @@ public class KnowledgeBasesController(
         await files.RemoveAsync(knowledgeBase.Files, cancellationToken);
         db.KnowledgeBases.Remove(knowledgeBase);
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
 
         return NoContent();
     }
@@ -345,6 +376,8 @@ public class KnowledgeBasesController(
             );
         }
 
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
+
         return AcceptedAtAction(
             nameof(GetIndexJob),
             new { organizationId, knowledgeBaseId = knowledgeBase.Id, jobId = job.Id },
@@ -368,6 +401,13 @@ public class KnowledgeBasesController(
             return NotFound();
         }
 
+        var cacheKey = ApiCacheKeys.IndexJob(organizationId, knowledgeBaseId, jobId);
+        var cached = await cache.GetAsync<IndexJobDto>(cacheKey);
+        if (cached is not null)
+        {
+            return Ok(cached);
+        }
+
         var job = await db
             .IndexJobs.Include(entity => entity.Files)
             .FirstOrDefaultAsync(
@@ -378,7 +418,14 @@ public class KnowledgeBasesController(
                 cancellationToken
             );
 
-        return job is null ? NotFound() : Ok(job.ToDto());
+        if (job is null)
+        {
+            return NotFound();
+        }
+
+        var result = job.ToDto();
+        await cache.SetAsync(cacheKey, result, JobCacheLifetime);
+        return Ok(result);
     }
 
     private Task<KnowledgeBase?> FindKnowledgeBaseAsync(
@@ -402,5 +449,11 @@ public class KnowledgeBasesController(
                 "Only a draft or failed Knowledge Base can be modified or deleted.",
                 "Create a new draft to make changes after indexing has started."
             )
+        );
+
+    private Task InvalidateKnowledgeBaseReadsAsync(string organizationId, string knowledgeBaseId) =>
+        cache.RemoveAsync(
+            ApiCacheKeys.KnowledgeBases(organizationId),
+            ApiCacheKeys.KnowledgeBase(organizationId, knowledgeBaseId)
         );
 }

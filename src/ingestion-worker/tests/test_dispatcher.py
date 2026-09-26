@@ -38,6 +38,14 @@ async def _insert_job(session, job_id, status="queued"):
     await session.commit()
 
 
+class _RecordingCache:
+    def __init__(self):
+        self.jobs = []
+
+    async def invalidate_job(self, organization_id, knowledge_base_id, job_id):
+        self.jobs.append((organization_id, knowledge_base_id, job_id))
+
+
 async def test_dispatch_claims_queued_jobs_marks_running_and_publishes():
     engine = await _engine()
     async with AsyncSession(engine) as session:
@@ -46,10 +54,15 @@ async def test_dispatch_claims_queued_jobs_marks_running_and_publishes():
         await _insert_job(session, "job-done", status="completed")
 
         published: list[str] = []
-        dispatched = await dispatch_queued_jobs(session, published.append)
+        cache = _RecordingCache()
+        dispatched = await dispatch_queued_jobs(session, published.append, cache=cache)
 
         assert sorted(dispatched) == ["job-1", "job-2"]
         assert sorted(published) == ["job-1", "job-2"]
+        assert sorted(cache.jobs) == [
+            ("org-1", "kb-job-1", "job-1"),
+            ("org-1", "kb-job-2", "job-2"),
+        ]
 
     # The claim is committed before publish, so a fresh session sees running.
     async with AsyncSession(engine) as session:

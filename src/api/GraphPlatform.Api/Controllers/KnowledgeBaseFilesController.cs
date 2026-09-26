@@ -2,6 +2,7 @@ using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
 using GraphPlatform.Api.Services;
+using GraphPlatform.Api.Services.Cache;
 using GraphPlatform.Api.Services.Storage;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -31,7 +32,8 @@ public class KnowledgeBaseFilesController(
     FileService files,
     IStorageService storage,
     IOptions<FileUploadOptions> options,
-    ILogger<KnowledgeBaseFilesController> logger
+    ILogger<KnowledgeBaseFilesController> logger,
+    IApiCache cache
 ) : ApiControllerBase
 {
     /// <summary>Lists a Knowledge Base's files, oldest first.</summary>
@@ -230,6 +232,7 @@ public class KnowledgeBaseFilesController(
                 cancellationToken
             );
         }
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
 
         return CreatedAtAction(
             nameof(GetFile),
@@ -281,6 +284,7 @@ public class KnowledgeBaseFilesController(
         await files.RemoveAsync([link.File], cancellationToken);
         link.KnowledgeBase.UpdatedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
 
         return NoContent();
     }
@@ -319,6 +323,12 @@ public class KnowledgeBaseFilesController(
                     && link.KnowledgeBase.OrganizationId == organizationId,
                 cancellationToken
             );
+
+    private Task InvalidateKnowledgeBaseReadsAsync(string organizationId, string knowledgeBaseId) =>
+        cache.RemoveAsync(
+            ApiCacheKeys.KnowledgeBases(organizationId),
+            ApiCacheKeys.KnowledgeBase(organizationId, knowledgeBaseId)
+        );
 
     private ActionResult ValidationError(string key, string message)
     {

@@ -73,6 +73,19 @@ class _RecordingPublisher:
         self.calls.append((task_name, list(args)))
 
 
+class _RecordingCache:
+    def __init__(self):
+        self.calls = []
+
+    async def invalidate_job(self, organization_id, knowledge_base_id, job_id):
+        self.calls.append(("job", organization_id, knowledge_base_id, job_id))
+
+    async def invalidate_knowledge_base(
+        self, organization_id, knowledge_base_id, *, job_id=None
+    ):
+        self.calls.append(("knowledge_base", organization_id, knowledge_base_id, job_id))
+
+
 async def test_full_dag_completes_the_job_and_publishes_the_knowledge_base():
     engine = await _engine()
     async with AsyncSession(engine) as session:
@@ -83,6 +96,7 @@ async def test_full_dag_completes_the_job_and_publishes_the_knowledge_base():
         await session.commit()
 
         publish = _RecordingPublisher()
+        cache = _RecordingCache()
         await extract_ontology(session, publish, "job-1")
 
         entity_calls = [c for c in publish.calls if c[0] == EXTRACT_ENTITIES_TASK_NAME]
@@ -90,10 +104,10 @@ async def test_full_dag_completes_the_job_and_publishes_the_knowledge_base():
 
         # Walk the fan-out for both files.
         publish.calls.clear()
-        await extract_entities(session, publish, "job-1", file_1)
+        await extract_entities(session, publish, "job-1", file_1, cache=cache)
         assert publish.calls == []  # only one of two files done; no fan-in yet
 
-        await extract_entities(session, publish, "job-1", file_2)
+        await extract_entities(session, publish, "job-1", file_2, cache=cache)
         assert publish.calls == [(CONSTRUCT_GRAPH_TASK_NAME, ["job-1"])]
 
         publish.calls.clear()
@@ -101,8 +115,13 @@ async def test_full_dag_completes_the_job_and_publishes_the_knowledge_base():
         assert publish.calls == [(EMBED_NODES_TASK_NAME, ["job-1", "0"])]
 
         publish.calls.clear()
-        await embed_nodes(session, publish, "job-1", "0")
+        await embed_nodes(session, publish, "job-1", "0", cache=cache)
         assert publish.calls == []
+        assert cache.calls == [
+            ("job", "org-1", "kb-1", "job-1"),
+            ("job", "org-1", "kb-1", "job-1"),
+            ("knowledge_base", "org-1", "kb-1", "job-1"),
+        ]
 
         job = await store.get_job("job-1")
         assert job.status == "completed"
@@ -187,8 +206,17 @@ async def test_fail_job_sets_the_job_and_knowledge_base_to_failed(monkeypatch):
         async with AsyncSession(engine) as session:
             yield session, None
 
+    cache = _RecordingCache()
+
+    @asynccontextmanager
+    async def _fake_open_cache_invalidator():
+        yield cache
+
     monkeypatch.setattr(
         "ingestion_worker.db.open_job_resources", _fake_open_job_resources
+    )
+    monkeypatch.setattr(
+        "ingestion_worker.cache.open_cache_invalidator", _fake_open_cache_invalidator
     )
 
     await fail_job("job-1", "boom")
@@ -200,5 +228,6 @@ async def test_fail_job_sets_the_job_and_knowledge_base_to_failed(monkeypatch):
         assert job.error == "boom"
         kb = await store.read_knowledge_base("kb-1")
         assert kb.state == "failed"
+    assert cache.calls == [("knowledge_base", "org-1", "kb-1", "job-1")]
 
     await engine.dispose()
