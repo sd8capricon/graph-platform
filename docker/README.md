@@ -32,10 +32,13 @@ this folder.
    `docker/.env` or edit the model list in that config. Do not put secrets in
    the YAML file or commit `docker/.env`.
 
-2. Start the database, then apply the API's EF migrations to it from the host.
-   Migrations are deliberately not run automatically, and the host reaches the
-   container's PostgreSQL on `localhost:${POSTGRES_HOST_PORT}` (the containers
-   use the service name `postgres`):
+2. Start the database, then the rest of the stack from the repository root.
+   API-owned tables are migrated by the one-shot `api-migrations` service (the API image run
+   with `--migrate`, migrate-and-exit), which runs once the `postgres` healthcheck passes and
+   gates the API via `service_completed_successfully`. The host reaches the container's
+   PostgreSQL on `localhost:${POSTGRES_HOST_PORT}` (the containers use the service name
+   `postgres`), so to apply migrations deliberately from the host instead — e.g. to inspect
+   them before the stack starts — run:
 
    ```sh
    docker compose --env-file docker/.env -f docker/compose.yaml up -d postgres
@@ -57,7 +60,9 @@ this folder.
    `POSTGRES_DB` the first time its data directory is initialized. The Python
    initializer also creates the Python-owned tables and per-model embedding
    indexes, and runs once before the worker and Beat. API-owned tables remain
-   under EF migration control. Redis has no persistence configured and uses an
+   under EF migration control; the one-shot `api-migrations` service applies them
+   with `--migrate` before the API starts (the API's own
+   `Database:AutoMigrate` stays on as a no-op fallback). Redis has no persistence configured and uses an
    eviction policy because cached values are rebuildable; an outage falls back
    to PostgreSQL reads and best-effort worker invalidation.
 
@@ -138,7 +143,10 @@ only source of truth for API resources and ingestion job state.
 
 - `docker/postgres/Dockerfile`: official PostgreSQL 18.6 with Apache AGE 1.8.0
   and pgvector 0.8.6 compiled from their official sources.
-- `Dockerfile.api`: .NET 10 SDK publish stage and ASP.NET 10 runtime.
+- `Dockerfile.api`: .NET 10 SDK publish stage and ASP.NET 10 runtime. Compose runs the same
+  image as the one-shot `api-migrations` service (`dotnet GraphPlatform.Api.dll --migrate`,
+  migrate-and-exit) before the API starts, so a rollout halts on migration failure instead of
+  crash-looping the API.
 - `Dockerfile.ingestion-worker`: Python 3.14 + uv; built once (by the
   `ingestion-worker` service) and reused by schema-init, worker and Beat, which
   never pull it. `data/volumes/storage` is shared with the API for object storage.

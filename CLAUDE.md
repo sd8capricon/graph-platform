@@ -1263,9 +1263,11 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
   `AddIdentityCore` without `AddRoles` registers no role store. The JWT carries identity only (`sub`,
   `email`, `jti`, `iat`, `exp`); the role is re-read from the membership table per request, so a role
   change takes effect immediately instead of when the token expires.
-- Migrations are never applied automatically (`Database:AutoMigrate` is false even in
+- Migrations run at startup only when `Database:AutoMigrate` is true (false by default, including in
   `appsettings.Development.json`) because the API shares its database with the Python services.
-  Apply them deliberately: `dotnet ef database update --project GraphPlatform.Api`.
+  In Compose the one-shot `api-migrations` service (`--migrate`, migrate-and-exit) is the primary
+  mechanism and the API is gated on its success; the flag stays on there as a no-op fallback.
+  Everywhere else apply them deliberately: `dotnet ef database update --project GraphPlatform.Api`.
 - Connection string resolution is a direct read of `ConnectionStrings:PgConnectionString` — no
   factory, no fallback chain (the old `Data/ConnectionStringFactory.cs`, its `ConnectionStrings:Default`
   fallback and its `PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD` fallback are gone). The key name is the
@@ -1620,7 +1622,9 @@ by the API and the Python services. Full runbook: `docker/README.md`.
 ### Images
 
 - `Dockerfile.api`: .NET 10 SDK `dotnet publish --configuration Release --output /app/publish`,
-  then ASP.NET 10 runtime on `:5087`, running as the `app` user.
+  then ASP.NET 10 runtime on `:5087`, running as the `app` user. Compose runs the same image as
+  the one-shot `api-migrations` service (`dotnet GraphPlatform.Api.dll --migrate`, migrate-and-exit)
+  before the API starts, so a rollout halts on migration failure instead of crash-looping the API.
 - `Dockerfile.ingestion-worker`: `python:3.14-slim` + `uv:0.12.10`; copies `src/common/`,
   `src/ingestion-worker/`, `configs/local.yaml` and `docker/init_python_schema.py`, then
   `uv sync --locked --no-dev`. Default `CMD` is the Celery worker; one image serves three Compose

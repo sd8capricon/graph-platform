@@ -132,17 +132,30 @@ builder.Services.AddOpenApi(options =>
 
 var app = builder.Build();
 
+// Explicit migrate-and-exit for the one-shot `api-migrations` container: apply EF migrations through
+// DI and return before the middleware pipeline and `app.Run()` below. Unlike `Database:AutoMigrate`
+// this does not start the host, so `ValidateOnStart` validators never run here — only the
+// builder-phase gates above (JWT) apply. Unhandled failure propagates as a non-zero exit code,
+// which is what the Compose `service_completed_successfully` gate keys off.
+if (args.Contains("--migrate"))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.MigrateAsync();
+    return;
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+}
 
-    // Migrations run only when asked for. The API shares its database with the Python services, so
-    // migrating silently on every start is not something to do by default.
-    if (app.Configuration.GetValue("Database:AutoMigrate", false))
-    {
-        using var scope = app.Services.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.MigrateAsync();
-    }
+// Migrations run only when asked for (`Database:AutoMigrate`, false by default). Compose sets it, so
+// a fresh stack migrates itself on API startup once the postgres healthcheck passes; everywhere else
+// they are applied deliberately with `dotnet ef database update`.
+if (app.Configuration.GetValue("Database:AutoMigrate", false))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.MigrateAsync();
 }
 
 app.UseHttpsRedirection();

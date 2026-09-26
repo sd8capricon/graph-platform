@@ -99,7 +99,7 @@ there is invisible to migrations.
 
 | Key | Value | Notes |
 |---|---|---|
-| `Database:AutoMigrate` | `false` | Set to `true` to apply EF Core migrations at startup. Left off even in development: the API shares its database with the Python services. Apply migrations deliberately instead:<br>`dotnet ef database update --project GraphPlatform.Api` |
+| `Database:AutoMigrate` | `false` | Set to `true` to apply EF Core migrations at startup. Honoured in any environment. `dotnet GraphPlatform.Api.dll --migrate` migrates and exits without starting the host (what Compose runs one-shot); the flag stays on there as a fallback. Everywhere else it stays off — the API shares its database with the Python services, so apply migrations deliberately instead:<br>`dotnet ef database update --project GraphPlatform.Api` |
 
 The default (`false`) is also what `Program.cs` falls back to when the key is
 absent, so the same value is safe to omit in production.
