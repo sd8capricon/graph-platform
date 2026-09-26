@@ -90,6 +90,7 @@ services:
 
   python-schema-init:
     image: graph-platform/ingestion-worker:latest
+    pull_policy: never
     command: ["python", "/app/docker/init_python_schema.py"]
     environment:
       PGHOST: ${PGHOST:-postgres}
@@ -153,6 +154,7 @@ services:
 
   ingestion-beat:
     image: graph-platform/ingestion-worker:latest
+    pull_policy: never
     command:
       - celery
       - -A
