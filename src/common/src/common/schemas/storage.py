@@ -51,7 +51,7 @@ class FileSystemStorageSettings(BaseModel):
             container, point it at a mounted volume so objects survive restarts.
     """
 
-    root: Path = Path("data/storage")
+    root: Path = Path("data/volumes/storage")
 
 
 class AzureBlobStorageSettings(BaseModel):

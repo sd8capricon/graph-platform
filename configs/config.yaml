@@ -39,7 +39,7 @@ models: []
 # storage:
 #   provider: filesystem                  # filesystem | azure_blob
 #   filesystem:
-#     root: data/storage                  # relative paths resolve against the working directory
+#     root: data/volumes/storage         # relative paths resolve against the working directory
 #   azure_blob:
 #     auth_mode: managed_identity         # managed_identity (DefaultAzureCredential) | connection_string
 #     account_url: https://<account>.blob.core.windows.net   # required for managed_identity

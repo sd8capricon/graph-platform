@@ -39,7 +39,7 @@ def test_storage_defaults_to_the_filesystem_provider():
     settings = AppSettings()
 
     assert settings.storage.provider == StorageProvider.FILESYSTEM
-    assert settings.storage.filesystem.root == Path("data/storage")
+    assert settings.storage.filesystem.root == Path("data/volumes/storage")
     assert settings.storage.azure_blob is None
 
 

@@ -6,5 +6,5 @@
 **/TestResults
 **/__pycache__
 **/*.pyc
-data/storage
+data
 src/api/GraphPlatform.Api/appsettings.Development.json

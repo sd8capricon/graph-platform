@@ -1625,7 +1625,7 @@ starts one. Full runbook: `docker/README.md`.
   `/usr/share/nginx/html/` with `docker/nginx.conf`'s SPA fallback
   (`try_files $uri $uri/ /index.html`).
 - One `Dockerfile.<name>.dockerignore` per image; all four are currently identical (`.venv`,
-  `node_modules`, `bin`/`obj`, `data/storage`, `appsettings.Development.json`).
+  `node_modules`, `bin`/`obj`, `data/`, `appsettings.Development.json`).
 
 ### Configuration (`docker/.env`)
 

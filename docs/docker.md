@@ -28,7 +28,7 @@ One file per Dockerfile (`docker/Dockerfile.<name>.dockerignore`). All four are 
 **/TestResults
 **/__pycache__
 **/*.pyc
-data/storage
+data
 src/api/GraphPlatform.Api/appsettings.Development.json
 ```
 
