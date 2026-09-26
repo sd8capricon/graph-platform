@@ -1,0 +1,21 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+COPY src/api/GraphPlatform.Api/GraphPlatform.Api.csproj src/api/GraphPlatform.Api/
+RUN dotnet restore src/api/GraphPlatform.Api/GraphPlatform.Api.csproj
+
+COPY src/api/GraphPlatform.Api/ src/api/GraphPlatform.Api/
+RUN dotnet publish src/api/GraphPlatform.Api/GraphPlatform.Api.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app/publish
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+ENV ASPNETCORE_URLS=http://+:5087 \
+    ASPNETCORE_HTTP_PORTS=5087
+EXPOSE 5087
+RUN mkdir -p /data/storage && chown -R app:app /data/storage
+COPY --from=build /app/publish .
+USER app
+ENTRYPOINT ["dotnet", "GraphPlatform.Api.dll"]

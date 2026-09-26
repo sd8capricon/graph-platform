@@ -1,0 +1,147 @@
+name: graph-platform
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-graphplatform}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5087
+      ConnectionStrings__PgConnectionString: ${API_PG_CONNECTION_STRING:-}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
+      Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGIN:-http://localhost:8080}
+      Storage__Provider: filesystem
+      Storage__FileSystem__Root: /data/storage
+    ports:
+      - "5087:5087"
+    volumes:
+      - storage-data:/data/storage
+    restart: unless-stopped
+
+  python-schema-init:
+    image: graph-platform/ingestion-worker:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ingestion-worker
+    command: ["python", "/app/docker/init_python_schema.py"]
+    environment:
+      PGHOST: ${PGHOST:-}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:-}
+      PGUSER: ${PGUSER:-}
+      PGPASSWORD: ${PGPASSWORD:-}
+      INGESTION_CONFIG_PATH: /app/configs/local.yaml
+      STORAGE_PROVIDER: filesystem
+      STORAGE_FILESYSTEM_ROOT: /data/storage
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+    volumes:
+      - ../configs/local.yaml:/app/configs/local.yaml:ro
+      - storage-data:/data/storage
+    restart: "no"
+
+  ingestion-worker:
+    image: graph-platform/ingestion-worker:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ingestion-worker
+    command:
+      - celery
+      - -A
+      - ingestion_worker.celery_app
+      - worker
+      - --loglevel=info
+    environment:
+      PGHOST: ${PGHOST:-}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:-}
+      PGUSER: ${PGUSER:-}
+      PGPASSWORD: ${PGPASSWORD:-}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-graphplatform}:${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}@rabbitmq:5672//
+      INGESTION_CONFIG_PATH: /app/configs/local.yaml
+      STORAGE_PROVIDER: filesystem
+      STORAGE_FILESYSTEM_ROOT: /data/storage
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+    volumes:
+      - ../configs/local.yaml:/app/configs/local.yaml:ro
+      - storage-data:/data/storage
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      python-schema-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ingestion-beat:
+    image: graph-platform/ingestion-worker:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.ingestion-worker
+    command:
+      - celery
+      - -A
+      - ingestion_worker.celery_app
+      - beat
+      - --loglevel=info
+      - --schedule=/tmp/celerybeat-schedule
+    environment:
+      PGHOST: ${PGHOST:-}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:-}
+      PGUSER: ${PGUSER:-}
+      PGPASSWORD: ${PGPASSWORD:-}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-graphplatform}:${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}@rabbitmq:5672//
+      INGESTION_CONFIG_PATH: /app/configs/local.yaml
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+    volumes:
+      - ../configs/local.yaml:/app/configs/local.yaml:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      python-schema-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_APP_NAME: ${VITE_APP_NAME:-GraphForge}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5087}
+        VITE_MAX_UPLOAD_BYTES: ${VITE_MAX_UPLOAD_BYTES:-104857600}
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  rabbitmq-data:
+  storage-data:
