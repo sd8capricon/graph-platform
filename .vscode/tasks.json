@@ -80,7 +80,7 @@
             "dockerBuild": {
                 "context": "${workspaceFolder}",
                 "dockerfile": "${workspaceFolder}/docker/Dockerfile.api",
-                "tag": "graph-platform/api:local",
+                "tag": "graph-platform/api:latest",
                 "pull": true
             },
             "presentation": {
@@ -95,7 +95,7 @@
             "dockerBuild": {
                 "context": "${workspaceFolder}",
                 "dockerfile": "${workspaceFolder}/docker/Dockerfile.frontend",
-                "tag": "graph-platform/frontend:local",
+                "tag": "graph-platform/frontend:latest",
                 "pull": true,
                 "buildArgs": {
                     "VITE_APP_NAME": "GraphForge",
@@ -115,7 +115,7 @@
             "dockerBuild": {
                 "context": "${workspaceFolder}",
                 "dockerfile": "${workspaceFolder}/docker/Dockerfile.ingestion-worker",
-                "tag": "graph-platform/ingestion-worker:local",
+                "tag": "graph-platform/ingestion-worker:latest",
                 "pull": true
             },
             "presentation": {
@@ -130,7 +130,7 @@
             "dockerBuild": {
                 "context": "${workspaceFolder}",
                 "dockerfile": "${workspaceFolder}/docker/Dockerfile.agent-runtime",
-                "tag": "graph-platform/agent-runtime:local",
+                "tag": "graph-platform/agent-runtime:latest",
                 "pull": true
             },
             "presentation": {

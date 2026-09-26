@@ -63,7 +63,7 @@ this folder.
 
 ## PostgreSQL image
 
-`docker/postgres/Dockerfile` builds `graph-platform/postgres-age-vector:local` in two
+`docker/postgres/Dockerfile` builds `graph-platform/postgres-age-vector:latest` in two
 stages from the **official** `postgres:18.6-trixie` image. It compiles, from
 their official upstream sources:
 
