@@ -1401,14 +1401,20 @@ npm run build    # tsc -b && vite build
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VITE_APP_NAME` | `GraphForge` | Brand text and `<title>` (substituted into `index.html` as `%VITE_APP_NAME%`) |
-| `VITE_API_BASE_URL` | `http://localhost:5087` | Absolute API origin |
-| `VITE_MAX_UPLOAD_BYTES` | `104857600` | Client-side upload guard; mirrors `FileUploads:MaxFileSizeBytes` |
+| `VITE_APP_NAME` | `GraphForge` | Brand text and static `<title>` fallback (substituted into `index.html` as `%VITE_APP_NAME%` at build time) |
+| `VITE_API_BASE_URL` | `http://localhost:5087` | Build-time/dev fallback for the API origin; overridden at runtime by `FRONTEND_API_BASE_URL` |
+| `VITE_MAX_UPLOAD_BYTES` | `104857600` | Build-time/dev fallback for the client-side upload guard (mirrors `FileUploads:MaxFileSizeBytes`); overridden at runtime by `FRONTEND_MAX_UPLOAD_BYTES` |
+| `FRONTEND_APP_NAME` | `GraphForge` | Runtime brand text (container env, rendered into `/config.js` at startup) |
+| `FRONTEND_API_BASE_URL` | `http://localhost:5087` | Runtime API origin (container env, rendered into `/config.js` at startup) |
+| `FRONTEND_MAX_UPLOAD_BYTES` | `104857600` | Runtime upload guard (container env, rendered into `/config.js` at startup) |
 
 Committed defaults live in `.env` (not only `.env.example`): Vite substitutes `%VITE_*%` in HTML
 **only** for variables that are actually defined, so a missing `VITE_APP_NAME` renders the literal
 token. Local overrides go in `.env.local`, which is gitignored. `src/app/env.ts` reads and
-normalises all three once.
+normalises all values once, preferring `window.__APP_CONFIG__` (from `/config.js`) per field and
+falling back to the `VITE_*` build-time value. In Docker, `src/frontend/scripts/docker-entrypoint.sh` renders
+`/config.js` from `FRONTEND_*` at container start, so changing a `FRONTEND_*` value needs only a
+container restart — only non-`FRONTEND_` (i.e. `VITE_*`) values are build-time.
 
 ### Structure
 
@@ -1533,8 +1539,10 @@ starts one. Full runbook: `docker/README.md`.
 - Provider secrets (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OLLAMA_API_KEY`) are
   resolved by `configs/local.yaml`'s `*_env` entries; if a configured key is missing, either set it
   in `docker/.env` or trim the model list — never paste secrets into the YAML.
-- `VITE_APP_NAME`/`VITE_API_BASE_URL`/`VITE_MAX_UPLOAD_BYTES` are baked into the frontend assets at
-  image-build time (Docker `ARG`), so changing one requires `build frontend`, not just a restart.
+- `FRONTEND_APP_NAME`/`FRONTEND_API_BASE_URL`/`FRONTEND_MAX_UPLOAD_BYTES` are rendered into
+  `/config.js` by the frontend entrypoint at container start, so changing one needs only a
+  container restart, not a rebuild. Only `VITE_APP_NAME` is baked into the frontend assets at
+  image-build time (Docker `ARG`), as the static `<title>` fallback.
   `CORS_ALLOWED_ORIGIN` must be the browser-visible frontend origin (default `http://localhost:8080`).
 
 ### Database ownership in containers
@@ -1551,7 +1559,7 @@ and guarded-transition conventions as the pipeline itself.
 ### Runtime shape
 
 - Ports: `8080:80` frontend, `5087:5087` API, `5672`/`15672` RabbitMQ (AMQP + management UI).
-  The browser calls the API directly at `VITE_API_BASE_URL`, not through nginx.
+  The browser calls the API directly at the runtime `FRONTEND_API_BASE_URL`, not through nginx.
 - `data/volumes/storage` (`/data/storage`) is shared by `api`, `python-schema-init` and
   `ingestion-worker`; compose pins `Storage__Provider=filesystem`, and both stacks implement the
   same ADR-0006 on-disk layout so they can share the directory.

@@ -61,9 +61,11 @@ Docker-related files are kept in this folder.
 - API: <http://localhost:5087>
 - RabbitMQ management UI: <http://localhost:15672> (credentials from `docker/.env`)
 
-The browser calls the API directly. `VITE_API_BASE_URL` is compiled into the
-frontend assets at image-build time; changing it requires rebuilding the
-frontend (`docker compose ... build frontend`). Set `CORS_ALLOWED_ORIGIN` to
+The browser calls the API directly. The frontend reads its configuration from
+`/config.js`, which the container entrypoint renders at startup from the
+`FRONTEND_*` environment — changing them needs only a container restart, not a
+rebuild (`docker compose ... up -d frontend`). `VITE_APP_NAME` remains a
+build-time arg for the static `<title>` fallback. Set `CORS_ALLOWED_ORIGIN` to
 the browser-visible frontend origin if it differs from `http://localhost:8080`.
 
 ## Redis cache
@@ -90,7 +92,8 @@ only source of truth for API resources and ingestion job state.
 - `Dockerfile.agent-runtime`: buildable developer smoke-test image, not started
   by Compose because the agent package does not expose an HTTP server.
 - `Dockerfile.frontend`: Node build stage and nginx static runtime with SPA
-  fallback routing.
+  fallback routing, plus a startup entrypoint that renders `/config.js` from
+  `FRONTEND_*`.
 
 The worker and Beat mount `configs/local.yaml` read-only so configuration edits
 do not require rebuilding the images. RabbitMQ data and uploaded files persist
