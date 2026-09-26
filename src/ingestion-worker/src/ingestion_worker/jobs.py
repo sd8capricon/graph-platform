@@ -1,87 +1,42 @@
-"""Async orchestration of one ingestion job.
+"""Async orchestration glue for the ADR-0005 stage pipeline.
 
-`ingest_job` is Celery-free so it can be unit-tested directly against a SQLite
-session and a fake repository. `run_job` opens the real resources. The Celery
-task wrapper in `tasks.py` only translates errors into retry/DLQ policy.
+`run_stage` opens the worker's real DB resources (mirroring the old `run_job`)
+and calls one Celery-free stage function from `stages.py`, so the Celery task
+wrappers in `tasks.py` stay thin translators of errors into retry/DLQ policy.
+`fail_job` records a terminal failure once a task's retries are exhausted.
 """
 
-import logging
-
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from common.repositories.age_graph_repository import AgeGraphRepository
-
-from ingestion_worker.errors import NonRetryableIngestionError, classify_exception
-from ingestion_worker.job_store import IndexJobStore
-
-logger = logging.getLogger(__name__)
-
-_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "partially_failed"})
-
-
-async def ingest_job(
-    job_id: str,
-    session: AsyncSession,
-    repository: AgeGraphRepository,
-    *,
-    store: IndexJobStore | None = None,
-) -> None:
-    """Run one indexing job, or raise a classified error.
-
-    Idempotent: a job already in a terminal state is skipped.
-
-    The graph-payload ingestion this used to perform read the knowledge base's
-    inline `Data` JSON, which the management API no longer stores. Until
-    file-based ingestion (ADR-0005 Phase 2) exists, a claimed job fails with a
-    non-retryable error naming that reason.
-    """
-    store = store or IndexJobStore(session)
-    job = await store.get_job(job_id)
-    if job is None:
-        logger.warning("index_job %s not found; nothing to do", job_id)
-        return
-    if job.status in _TERMINAL_STATUSES:
-        logger.info("index_job %s already %s; skipping", job_id, job.status)
-        return
-
-    try:
-        kb_row = await store.read_knowledge_base(job.knowledge_base_id)
-        if kb_row is None:
-            raise NonRetryableIngestionError(
-                f"knowledge_base {job.knowledge_base_id} not found for job {job_id}"
-            )
-
-        # The knowledge base's inline graph JSON was removed from the API: a
-        # knowledge base's content is now the files uploaded to it, and
-        # ingesting those is ADR-0005 Phase 2, which is not implemented. Fail
-        # explicitly rather than retrying work that cannot succeed.
-        raise NonRetryableIngestionError(
-            f"knowledge_base {job.knowledge_base_id} has no inline graph payload: "
-            "file-based ingestion is not implemented yet"
-        )
-    except Exception as exc:
-        await session.rollback()
-        raise classify_exception(exc) from exc
+from ingestion_worker.job_store import KB_FAILED, IndexJobStore
 
 
 async def fail_job(job_id: str, error: str) -> None:
-    """Record a terminal failure on a job, opening its own short-lived session.
+    """Record a terminal failure on a job and its knowledge base.
 
     Called from the Celery task's `on_failure` hook once retries are exhausted.
+    Opens its own short-lived session/resources.
     """
     from ingestion_worker.db import open_job_resources
 
     async with open_job_resources() as (session, _repository):
-        await IndexJobStore(session).mark_job_failed(job_id, error)
+        store = IndexJobStore(session)
+        job = await store.get_job(job_id)
+        await store.mark_job_failed(job_id, error)
+        if job is not None:
+            await store.set_knowledge_base_state(job.knowledge_base_id, KB_FAILED)
         await session.commit()
 
 
-async def run_job(job_id: str) -> None:
-    """Open the worker's DB resources and run one job (the Celery entrypoint)."""
+async def run_stage(fn, publish, *args) -> None:
+    """Open the worker's DB resources and run one stage function.
+
+    `fn` is one of `stages.py`'s Celery-free stage coroutines, called as
+    `fn(session, publish, *args)`. This is the Celery entrypoint each task in
+    `tasks.py` awaits via `asyncio.run`.
+    """
     from ingestion_worker.db import open_job_resources
 
-    async with open_job_resources() as (session, repository):
-        await ingest_job(job_id, session, repository)
+    async with open_job_resources() as (session, _repository):
+        await fn(session, publish, *args)
 
 
-__all__ = ["ingest_job", "run_job", "fail_job"]
+__all__ = ["fail_job", "run_stage"]

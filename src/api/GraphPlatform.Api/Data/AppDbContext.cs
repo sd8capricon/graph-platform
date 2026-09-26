@@ -62,6 +62,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityUser
     /// <summary>Links between Knowledge Bases and their files.</summary>
     public DbSet<KnowledgeBaseFile> KnowledgeBaseFiles => Set<KnowledgeBaseFile>();
 
+    /// <summary>
+    /// Ingestion requests, one per Knowledge Base publish, claimed and advanced by the ingestion
+    /// worker (ADR-0005).
+    /// </summary>
+    public DbSet<IndexJob> IndexJobs => Set<IndexJob>();
+
+    /// <summary>Files tracked within an <see cref="IndexJob"/>.</summary>
+    public DbSet<IndexFile> IndexFiles => Set<IndexFile>();
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -236,6 +245,116 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityUser
             file.HasOne<Organization>()
                 .WithMany()
                 .HasForeignKey(entity => entity.OrganizationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<IndexJob>(job =>
+        {
+            job.ToTable("index_job");
+            job.HasKey(entity => entity.Id);
+            job.Property(entity => entity.Id).HasColumnName("id").HasMaxLength(IndexJob.IdMaxLength);
+            job.Property(entity => entity.OrganizationId)
+                .HasColumnName("organization_id")
+                .HasMaxLength(Organization.IdMaxLength)
+                .IsRequired();
+            job.Property(entity => entity.KnowledgeBaseId)
+                .HasColumnName("knowledge_base_id")
+                .HasMaxLength(KnowledgeBase.IdMaxLength)
+                .IsRequired();
+            job.Property(entity => entity.GraphName)
+                .HasColumnName("graph_name")
+                .HasMaxLength(IndexJob.IdMaxLength)
+                .IsRequired();
+            job.Property(entity => entity.Status)
+                .HasColumnName("status")
+                .HasMaxLength(Converters.EnumMaxLength)
+                .HasConversion(Converters.SnakeCaseEnum<IndexJobStatus>())
+                .IsRequired();
+            job.Property(entity => entity.TotalFiles)
+                .HasColumnName("total_files")
+                .HasDefaultValue(0)
+                .IsRequired();
+            job.Property(entity => entity.ProcessedFiles)
+                .HasColumnName("processed_files")
+                .HasDefaultValue(0)
+                .IsRequired();
+            job.Property(entity => entity.FailedFiles)
+                .HasColumnName("failed_files")
+                .HasDefaultValue(0)
+                .IsRequired();
+            job.Property(entity => entity.GraphDispatched)
+                .HasColumnName("graph_dispatched")
+                .HasDefaultValue(false)
+                .IsRequired();
+            job.Property(entity => entity.EmbeddingModelId)
+                .HasColumnName("embedding_model_id")
+                .HasMaxLength(IndexJob.IdMaxLength);
+            job.Property(entity => entity.RequestedBy)
+                .HasColumnName("requested_by")
+                .HasMaxLength(IndexJob.IdMaxLength);
+            job.Property(entity => entity.Error).HasColumnName("error");
+            job.Property(entity => entity.CreatedAt).HasColumnName("created_at").IsRequired();
+            job.Property(entity => entity.StartedAt).HasColumnName("started_at");
+            job.Property(entity => entity.CompletedAt).HasColumnName("completed_at");
+
+            job.HasIndex(entity => entity.OrganizationId).HasDatabaseName("IX_index_job_organization_id");
+
+            // A plain lookup index (every status) plus, separately, the partial unique index below,
+            // over the same property. Passing a distinct name directly to each HasIndex call is
+            // required: two calls with only a property list (and the name attached later via
+            // HasDatabaseName) resolve to the same index by convention, so the second call's
+            // uniqueness/filter would silently replace the first index instead of adding a second.
+            job.HasIndex(
+                entity => entity.KnowledgeBaseId,
+                "IX_index_job_knowledge_base_id"
+            );
+
+            // One active (queued or running) job per Knowledge Base at a time: this is what closes
+            // the double-publish race, since two concurrent publishes cannot both insert a row here.
+            // The raw filter SQL is honoured by both Npgsql and SQLite (the test suite's provider).
+            job.HasIndex(entity => entity.KnowledgeBaseId, "IX_index_job_KnowledgeBaseId_Active")
+                .IsUnique()
+                .HasFilter("status IN ('queued','running')");
+
+            // Deleting the Knowledge Base (or its organization, cascading through it) takes its jobs
+            // with it; the worker has no independent reason to keep a job whose source is gone.
+            job.HasOne(entity => entity.KnowledgeBase)
+                .WithMany()
+                .HasForeignKey(entity => entity.KnowledgeBaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<IndexFile>(file =>
+        {
+            file.ToTable("index_file");
+            file.HasKey(entity => entity.Id);
+            file.Property(entity => entity.Id).HasColumnName("id").HasMaxLength(IndexFile.IdMaxLength);
+            file.Property(entity => entity.IndexJobId)
+                .HasColumnName("index_job_id")
+                .HasMaxLength(IndexJob.IdMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.FileId)
+                .HasColumnName("file_id")
+                .HasMaxLength(Models.File.IdMaxLength)
+                .IsRequired();
+            file.Property(entity => entity.Status)
+                .HasColumnName("status")
+                .HasMaxLength(Converters.EnumMaxLength)
+                .HasConversion(Converters.SnakeCaseEnum<IndexFileStatus>())
+                .IsRequired();
+            file.Property(entity => entity.Attempts)
+                .HasColumnName("attempts")
+                .HasDefaultValue(0)
+                .IsRequired();
+            file.Property(entity => entity.Error).HasColumnName("error");
+            file.Property(entity => entity.StartedAt).HasColumnName("started_at");
+            file.Property(entity => entity.CompletedAt).HasColumnName("completed_at");
+
+            file.HasIndex(entity => entity.IndexJobId);
+
+            file.HasOne(entity => entity.IndexJob)
+                .WithMany(entity => entity.Files)
+                .HasForeignKey(entity => entity.IndexJobId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

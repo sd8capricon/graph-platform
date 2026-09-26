@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 
 import { isApiError } from '@/api/errors'
 import { env } from '@/app/env'
-import { KnowledgeBaseState, type FileDto } from '@/api/types'
+import type { FileDto } from '@/api/types'
 import { ActionTooltip } from '@/components/data/ActionTooltip'
 import { announce } from '@/components/feedback/announcer'
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog'
@@ -33,6 +33,7 @@ import { RenameKnowledgeBaseDialog } from '@/features/knowledge-bases/RenameKnow
 import { useDocumentTitle } from '@/hooks/use-document-title'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { newUuid } from '@/lib/uuid'
+import { isEditableKnowledgeBaseState } from '@/org/permissions'
 import { useCurrentOrg } from '@/org/use-current-org'
 import {
   useDeleteKnowledgeBase,
@@ -47,7 +48,8 @@ import {
 } from '@/queries/use-files'
 
 const NEEDS_ROLE = 'You need the Contributor or Organization Admin role.'
-const DRAFT_ONLY = 'Only a draft knowledge base can be changed.'
+const NOT_EDITABLE = 'A published or indexing knowledge base can no longer be changed.'
+const NO_FILES = 'Upload at least one file before publishing.'
 
 export function KnowledgeBaseDetailPage() {
   const { knowledgeBaseId = '' } = useParams<{ knowledgeBaseId: string }>()
@@ -76,8 +78,8 @@ export function KnowledgeBaseDetailPage() {
   const [pendingFileDelete, setPendingFileDelete] = React.useState<FileDto | null>(null)
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
 
-  const isDraft = knowledgeBase?.state === KnowledgeBaseState.Draft
-  const mutateReason = !canAuthor ? NEEDS_ROLE : !isDraft ? DRAFT_ONLY : null
+  const isEditable = !!knowledgeBase && isEditableKnowledgeBaseState(knowledgeBase.state)
+  const mutateReason = !canAuthor ? NEEDS_ROLE : !isEditable ? NOT_EDITABLE : null
 
   const startUpload = (files: File[]) => {
     for (const file of files) {
@@ -202,6 +204,13 @@ export function KnowledgeBaseDetailPage() {
   if (!knowledgeBase) return null
 
   const files = filesQuery.data ?? []
+  const publishReason = !canAuthor
+    ? NEEDS_ROLE
+    : !isEditable
+      ? NOT_EDITABLE
+      : files.length === 0
+        ? NO_FILES
+        : null
 
   return (
     <>
@@ -227,18 +236,10 @@ export function KnowledgeBaseDetailPage() {
               </Button>
             </ActionTooltip>
 
-            <ActionTooltip
-              reason={
-                !canAuthor
-                  ? NEEDS_ROLE
-                  : !isDraft
-                    ? 'This knowledge base has already been published.'
-                    : null
-              }
-            >
+            <ActionTooltip reason={publishReason}>
               <Button
-                disabled={!canAuthor || !isDraft}
-                aria-disabled={!canAuthor || !isDraft}
+                disabled={!!publishReason}
+                aria-disabled={!!publishReason}
                 onClick={() => setPublishOpen(true)}
               >
                 <Rocket aria-hidden="true" />
@@ -287,13 +288,13 @@ export function KnowledgeBaseDetailPage() {
         <CardHeader>
           <CardTitle>Files</CardTitle>
           <CardDescription>
-            {isDraft
+            {isEditable
               ? 'Upload the source documents to be indexed.'
-              : 'A published knowledge base is read-only.'}
+              : 'A published or indexing knowledge base is read-only.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {canAuthor && isDraft ? (
+          {canAuthor && isEditable ? (
             <FileDropzone onFiles={startUpload} />
           ) : (
             <p className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
@@ -321,8 +322,8 @@ export function KnowledgeBaseDetailPage() {
             <EmptyState
               title="No files yet"
               description={
-                isDraft
-                  ? 'Upload at least one file before publishing.'
+                isEditable
+                  ? NO_FILES
                   : 'No files were uploaded to this knowledge base.'
               }
             />

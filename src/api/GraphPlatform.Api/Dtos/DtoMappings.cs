@@ -116,4 +116,43 @@ public static class DtoMappings
             CreatedAtUtc = file.CreatedAtUtc,
             UpdatedAtUtc = file.UpdatedAtUtc,
         };
+
+    /// <summary>Projects an ingestion job.</summary>
+    /// <param name="job">
+    /// The job to project. Its <c>Files</c> navigation must be loaded, or the DTO lists none.
+    /// </param>
+    /// <returns>The job DTO.</returns>
+    public static IndexJobDto ToDto(this IndexJob job) =>
+        new()
+        {
+            Id = job.Id,
+            KnowledgeBaseId = job.KnowledgeBaseId,
+            GraphName = job.GraphName,
+            Status = job.Status,
+            TotalFiles = job.TotalFiles,
+            ProcessedFiles = job.ProcessedFiles,
+            FailedFiles = job.FailedFiles,
+            EmbeddingModelId = job.EmbeddingModelId,
+            RequestedBy = job.RequestedBy,
+            Error = job.Error,
+            CreatedAt = job.CreatedAt,
+            StartedAt = job.StartedAt,
+            CompletedAt = job.CompletedAt,
+            Files = [.. job.Files.Select(file => file.ToDto())],
+        };
+
+    /// <summary>Projects one file tracked within an ingestion job.</summary>
+    /// <param name="file">The file to project.</param>
+    /// <returns>The file DTO.</returns>
+    public static IndexFileDto ToDto(this IndexFile file) =>
+        new()
+        {
+            Id = file.Id,
+            FileId = file.FileId,
+            Status = file.Status,
+            Attempts = file.Attempts,
+            Error = file.Error,
+            StartedAt = file.StartedAt,
+            CompletedAt = file.CompletedAt,
+        };
 }

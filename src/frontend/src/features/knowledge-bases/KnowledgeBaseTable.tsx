@@ -1,7 +1,7 @@
 import { Database, MoreVertical, Pencil, Trash2 } from 'lucide-react'
 import { Link } from 'react-router'
 
-import { KnowledgeBaseState, type KnowledgeBaseDto } from '@/api/types'
+import type { KnowledgeBaseDto, KnowledgeBaseState } from '@/api/types'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/table'
 import { KbStateBadge } from '@/features/knowledge-bases/KbStateBadge'
 import { formatDateTime, formatRelativeTime } from '@/lib/format'
+import { isEditableKnowledgeBaseState } from '@/org/permissions'
 
 interface KnowledgeBaseTableProps {
   items: KnowledgeBaseDto[]
@@ -28,7 +29,7 @@ interface KnowledgeBaseTableProps {
   onDelete: (knowledgeBase: KnowledgeBaseDto) => void
 }
 
-const DRAFT_ONLY = 'Only a draft knowledge base can be changed.'
+const NOT_EDITABLE = 'A published or indexing knowledge base can no longer be changed.'
 const NEEDS_ROLE = 'You need the Contributor or Organization Admin role.'
 
 function unavailableReason(
@@ -36,7 +37,7 @@ function unavailableReason(
   state: KnowledgeBaseState,
 ): string | null {
   if (!canAuthor) return NEEDS_ROLE
-  if (state !== KnowledgeBaseState.Draft) return DRAFT_ONLY
+  if (!isEditableKnowledgeBaseState(state)) return NOT_EDITABLE
   return null
 }
 

@@ -34,6 +34,19 @@ public class KnowledgeBase
 
     /// <summary>When the resource was last changed (UTC).</summary>
     public DateTimeOffset UpdatedAtUtc { get; set; }
+
+    /// <summary>
+    /// Whether this Knowledge Base can currently be edited: metadata/files changed, or published.
+    /// </summary>
+    /// <remarks>
+    /// True for <see cref="KnowledgeBaseState.Draft"/> and <see cref="KnowledgeBaseState.Failed"/> —
+    /// a failed ingestion is not a dead end, so the same author actions that apply to a draft
+    /// (update, delete, file upload/delete, publish) apply to it too, letting the author fix the
+    /// input and republish. <see cref="KnowledgeBasesController"/> and
+    /// <see cref="KnowledgeBaseFilesController"/> use this instead of repeating a
+    /// <c>State != Draft</c> check at every mutation.
+    /// </remarks>
+    public bool IsEditable => State is KnowledgeBaseState.Draft or KnowledgeBaseState.Failed;
 }
 
 /// <summary>The lifecycle states for a knowledge base.</summary>
@@ -47,4 +60,10 @@ public enum KnowledgeBaseState
 
     /// <summary>Ingestion completed and available for use.</summary>
     Published,
+
+    /// <summary>
+    /// Ingestion failed. Editable, like a draft: the author can fix the files/metadata and
+    /// republish (ADR-0005).
+    /// </summary>
+    Failed,
 }

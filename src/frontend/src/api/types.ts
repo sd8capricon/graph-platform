@@ -32,6 +32,7 @@ export const KnowledgeBaseState = {
   Draft: 'draft',
   Indexing: 'indexing',
   Published: 'published',
+  Failed: 'failed',
 } as const
 export type KnowledgeBaseState =
   (typeof KnowledgeBaseState)[keyof typeof KnowledgeBaseState]

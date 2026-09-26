@@ -45,9 +45,9 @@ async def dispatch_queued_jobs(session, publish, *, limit: int = DEFAULT_BATCH) 
 
 
 def _publish(job_id: str) -> None:
-    from ingestion_worker.tasks import INGEST_TASK_NAME
+    from ingestion_worker.tasks import EXTRACT_ONTOLOGY_TASK_NAME
 
-    app.send_task(INGEST_TASK_NAME, args=[job_id])
+    app.send_task(EXTRACT_ONTOLOGY_TASK_NAME, args=[job_id])
 
 
 @app.task(name=DISPATCH_TASK_NAME)

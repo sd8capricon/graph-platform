@@ -1,4 +1,4 @@
-import { CheckCircle2, FileEdit, Loader2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FileEdit, Loader2 } from 'lucide-react'
 
 import { KnowledgeBaseState } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -20,6 +20,12 @@ const PRESENTATION = {
     label: 'Published',
     icon: CheckCircle2,
     variant: 'default' as const,
+    spin: false,
+  },
+  [KnowledgeBaseState.Failed]: {
+    label: 'Failed',
+    icon: AlertTriangle,
+    variant: 'destructive' as const,
     spin: false,
   },
 }

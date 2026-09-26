@@ -2,11 +2,18 @@
 
 ## Status
 
-Proposed. Nothing in this ADR is implemented. The current ingestion path is a single-pass script
-(`src/ingestion-worker/src/ingestion_worker/__init__.py`) and the API only flips a state column
-(`KnowledgeBasesController.PublishKnowledgeBase`); there is no broker, worker pool, scheduler or
-workflow engine anywhere in the repository (see "Findings" below). This ADR decides the shape of the
-asynchronous indexing pipeline and the state model the API and the ingestion worker will share.
+Partially implemented. The RabbitMQ + Celery topology, the Postgres-backed `index_job`/`index_file`
+outbox (now EF-owned DDL, migration `AddIndexJobs`), the Celery Beat dispatcher
+(`ingestion_worker/dispatcher.py`, claim-then-publish via `FOR UPDATE SKIP LOCKED`), and
+`KnowledgeBasesController.PublishKnowledgeBase` writing the outbox row and returning 202 are all in
+place. The four-stage DAG this ADR calls for (ontology -> per-file entity fan-out -> guarded fan-in
+graph construction -> embedding) is wired end to end as **stub** stages
+(`ingestion_worker/stages.py`/`tasks.py`): each stage runs, respects the guarded fan-in, and the job
+completes with the knowledge base moving to `published` (or `failed`, on exhausted retries/
+non-retryable errors) — but no stage does real ontology/entity extraction or graph/embedding writes
+yet. That content is ADR-0005 Phase 2. The earlier single-pass script
+(`src/ingestion-worker/src/ingestion_worker/__init__.py`) still exists as an unrelated legacy demo
+pipeline, not on this DAG.
 
 ## Context
 
@@ -742,14 +749,22 @@ These genuinely cannot be answered from the repository:
    *Update:* the storage side is now in place (EF migration `AddFiles`). The API owns an
    owner-agnostic `file` table holding file metadata and an ADR-0006 object key, with content
    written through the configured storage provider, plus a `knowledge_base_file` link table.
-   Python maps them as `common.models.file` and `common.models.knowledge_base_file`. Still open:
-   whether `index_file.file_id` should reference `file.Id`, and how the worker reads that content.
+   Python maps them as `common.models.file` and `common.models.knowledge_base_file`.
+   *Update:* resolved — `index_file.file_id` references `file.Id` directly (`Models/IndexFile.cs`'s
+   `FileId`); `PublishKnowledgeBase` creates one `IndexFile` row per uploaded file at publish time,
+   fixing `index_job.total_files` before any fan-out. Reading the file's content during ingestion
+   (via its `storage_key`) is still ADR-0005 Phase 2 — the stub `extract_ontology`/`extract_entities`
+   stages (see "Status" above) receive the file id but don't read storage yet.
 2. **Ontology/entity extraction contract.** Which chat model(s), what prompts, and what the extracted
    ontology/entity schema looks like. The pipeline shape is decided here, but the domain contract is
    not derivable from the code.
 3. **Job/file table ownership.** EF-owned DDL + Python raw-SQL status writes (this ADR's
    recommendation) vs. `common`-owned SQLAlchemy models. Both are workable; the choice affects the
    two-owners convention.
+   *Update:* resolved as EF-owned DDL — migration `AddIndexJobs` creates `index_job`/`index_file`
+   with explicit snake_case columns; the worker reads/writes them via `IndexJobStore` on declarative
+   ORM classes over a private base (`ingestion_worker/models/base.py`), never on
+   `common.models.base.Base.metadata`, so Python's own `create_all` never touches these tables.
 4. **Partial-failure policy.** Should any failed file fail the whole job, or may a job be `published`
    with `partially_failed`? This is a product decision.
 5. **Result backend.** This ADR deliberately uses none (`task_ignore_result = True`). Confirm that

@@ -36,6 +36,12 @@ FILE_EXTRACTED = "extracted"
 FILE_FAILED = "failed"
 FILE_SKIPPED = "skipped"
 
+FILE_TERMINAL_STATUSES = frozenset({FILE_EXTRACTED, FILE_FAILED, FILE_SKIPPED})
+
+# knowledge_base.State values this worker sets
+KB_PUBLISHED = "published"
+KB_FAILED = "failed"
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -56,6 +62,18 @@ class IndexJobRow:
     requested_by: str | None
     error: str | None
     created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class IndexFileRow:
+    id: str
+    index_job_id: str
+    file_id: str
+    status: str
+    attempts: int
+    error: str | None
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
@@ -96,17 +114,24 @@ class IndexJobStore:
         )
         return result.rowcount > 0
 
-    async def mark_job_completed(self, job_id: str) -> None:
-        """Mark a job completed, treating every file as processed."""
-        await self.session.execute(
+    async def mark_job_completed(self, job_id: str) -> bool:
+        """Mark a `running` job completed, treating every file as processed.
+
+        Guarded on the current status so a redelivered `embed_nodes` cannot
+        re-run the completion side effects (e.g. re-publishing downstream work
+        or double-setting the knowledge base state). Returns True when this
+        call performed the transition.
+        """
+        result = await self.session.execute(
             update(IndexJob)
-            .where(IndexJob.id == job_id)
+            .where(IndexJob.id == job_id, IndexJob.status == JOB_RUNNING)
             .values(
                 status=JOB_COMPLETED,
                 processed_files=IndexJob.total_files,
                 completed_at=_now(),
             )
         )
+        return result.rowcount > 0
 
     async def mark_job_failed(self, job_id: str, error: str) -> None:
         """Mark a job failed with a durable error message."""
@@ -202,20 +227,65 @@ class IndexJobStore:
             )
         )
 
-    async def increment_and_check_fan_in(self, job_id: str) -> bool:
-        """Advance the fan-in counter, then claim graph dispatch exactly once.
+    async def list_files(self, job_id: str) -> list[IndexFileRow]:
+        """List every file row belonging to a job, in no particular order."""
+        rows = (
+            await self.session.execute(
+                select(IndexFile).where(IndexFile.index_job_id == job_id)
+            )
+        ).scalars().all()
+        return [
+            IndexFileRow(
+                id=row.id,
+                index_job_id=row.index_job_id,
+                file_id=row.file_id,
+                status=row.status,
+                attempts=row.attempts,
+                error=row.error,
+                started_at=row.started_at,
+                completed_at=row.completed_at,
+            )
+            for row in rows
+        ]
 
-        The first statement counts a finished file; the second atomically claims
-        the right to enqueue graph construction by flipping `graph_dispatched`
-        only if every file is accounted for and no one else has claimed it. A
-        True return means *this* caller must enqueue `construct_graph(job_id)` —
-        safe under redelivery (ADR-0005, "Fan-out and fan-in").
+    async def complete_file(self, file_row_id: str) -> bool:
+        """Move a file row to `extracted`, guarded on its current status.
+
+        Only a `pending`/`extracting` row transitions. Returns True when *this*
+        call performed the transition, so a redelivered `extract_entities` can
+        tell whether it should also count itself toward the fan-in.
+        """
+        result = await self.session.execute(
+            update(IndexFile)
+            .where(
+                IndexFile.id == file_row_id,
+                IndexFile.status.in_((FILE_PENDING, FILE_EXTRACTING)),
+            )
+            .values(status=FILE_EXTRACTED, completed_at=_now())
+        )
+        return result.rowcount > 0
+
+    async def record_file_done(self, job_id: str) -> None:
+        """Advance the fan-in counter by one finished file.
+
+        Callers must only call this once per file - guard with `complete_file`'s
+        return value first, so a redelivery can't double-count.
         """
         await self.session.execute(
             update(IndexJob)
             .where(IndexJob.id == job_id)
             .values(processed_files=IndexJob.processed_files + 1)
         )
+
+    async def claim_graph_dispatch(self, job_id: str) -> bool:
+        """Atomically claim the right to enqueue graph construction, once.
+
+        Flips `graph_dispatched` only if every file is accounted for and no one
+        else has claimed it yet. A True return means *this* caller must enqueue
+        `construct_graph(job_id)` - safe under redelivery, and safe to call
+        unconditionally even when this call didn't advance the counter itself
+        (a previous crash could have incremented but not published).
+        """
         result = await self.session.execute(
             update(IndexJob)
             .where(
@@ -253,6 +323,7 @@ class IndexJobStore:
 __all__ = [
     "IndexJobStore",
     "IndexJobRow",
+    "IndexFileRow",
     "JOB_QUEUED",
     "JOB_RUNNING",
     "JOB_COMPLETED",
@@ -264,4 +335,7 @@ __all__ = [
     "FILE_EXTRACTED",
     "FILE_FAILED",
     "FILE_SKIPPED",
+    "FILE_TERMINAL_STATUSES",
+    "KB_PUBLISHED",
+    "KB_FAILED",
 ]

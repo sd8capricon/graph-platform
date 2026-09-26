@@ -37,7 +37,22 @@
         {
             "label": "Ingestion Worker: celery worker",
             "type": "shell",
-            "command": "uv run --project src/ingestion-worker celery -A ingestion_worker.celery_app worker --loglevel=info",
+            "command": "uv run --project src/ingestion-worker celery -A ingestion_worker.celery_app worker --loglevel=info -Q q.ontology,q.entity,q.graph,q.embedding",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Ingestion Worker: celery beat",
+            "type": "shell",
+            "command": "uv run --project src/ingestion-worker celery -A ingestion_worker.celery_app beat --loglevel=info",
             "options": {
                 "cwd": "${workspaceFolder}"
             },
@@ -54,7 +69,8 @@
             "dependsOn": [
                 "Frontend: dev server",
                 "API: dotnet run",
-                "Ingestion Worker: celery worker"
+                "Ingestion Worker: celery worker",
+                "Ingestion Worker: celery beat"
             ],
             "problemMatcher": []
         }

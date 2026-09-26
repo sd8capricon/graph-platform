@@ -1,4 +1,4 @@
-import { OrganizationRole } from '@/api/types'
+import { KnowledgeBaseState, OrganizationRole } from '@/api/types'
 
 /**
  * Mirrors the server's `OrganizationAccessService`. The names match deliberately
@@ -16,6 +16,15 @@ export function canAuthor(role: OrganizationRole | null | undefined): boolean {
 
 export function canRead(role: OrganizationRole | null | undefined): boolean {
   return role != null
+}
+
+/**
+ * A knowledge base can be updated/deleted/have files uploaded or deleted while
+ * it is `draft` or `failed` — a failed indexing run is retried by editing and
+ * republishing, not by starting over. Mirrors the API's editable rule.
+ */
+export function isEditableKnowledgeBaseState(state: KnowledgeBaseState): boolean {
+  return state === KnowledgeBaseState.Draft || state === KnowledgeBaseState.Failed
 }
 
 export const ROLE_LABELS: Record<OrganizationRole, string> = {

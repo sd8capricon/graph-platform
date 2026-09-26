@@ -18,7 +18,7 @@ export const knowledgeBasesApi = {
   create: (organizationId: string, body: CreateKnowledgeBaseRequest) =>
     apiJson<KnowledgeBaseDto>(base(organizationId), { method: 'POST', body }),
 
-  /** Draft-only: the API returns 409 once indexing has started. */
+  /** Editable (draft/failed) only: the API returns 409 once indexing has started. */
   update: (
     organizationId: string,
     knowledgeBaseId: string,
@@ -32,7 +32,13 @@ export const knowledgeBasesApi = {
   remove: (organizationId: string, knowledgeBaseId: string) =>
     apiVoid(`${base(organizationId)}/${knowledgeBaseId}`, { method: 'DELETE' }),
 
-  /** Moves a draft to `indexing`. Irreversible from the UI's point of view. */
+  /**
+   * Moves a draft/failed knowledge base to `indexing`. Returns 202 Accepted
+   * with the updated `KnowledgeBaseDto` body (`apiJson` reads the body off any
+   * `response.ok` status, so 202 is handled the same as 200) and a `Location`
+   * header pointing at the new index job's status endpoint, which this client
+   * does not yet follow. Returns 409 when the knowledge base has no files.
+   */
   publish: (organizationId: string, knowledgeBaseId: string) =>
     apiJson<KnowledgeBaseDto>(`${base(organizationId)}/${knowledgeBaseId}/publish`, {
       method: 'POST',

@@ -470,42 +470,84 @@ NodeEmbedding.vector_search(query, graph_name, organization_id) → nodes ranked
 - RabbitMQ (broker) + Celery (task execution) + Postgres (`index_job`/`index_file` orchestration,
   the source of truth). No result backend (`task_ignore_result=True`) and no Redis; the pipeline
   never reads Celery return values. Fan-in is a guarded Postgres counter, **not** Celery chords
-- `index_job`/`index_file` are API-owned DDL (EF migration), written by the Python worker through
-  `ingestion_worker.job_store.IndexJobStore` using declarative ORM classes on private
-  `IndexJobBase` (`ingestion_worker/models/base.py`), never on `common.models.base.Base.metadata` —
-  so `create_all` never touches the API's tables. `IndexJob` and `IndexFile` live under
-  `ingestion_worker/models/`, one class per model. The shared API-owned `knowledge_base` table mapping lives at
+- **`index_job`/`index_file` are EF-owned DDL**, created by an API migration (`AddIndexJobs`) with
+  explicit snake_case `HasColumnName` on every column (`AppDbContext`'s first tables needing it —
+  every other EF table keeps PascalCase). `Models/IndexJob.cs`/`Models/IndexFile.cs` mirror the
+  worker's own `ingestion_worker/models/index_job.py`/`index_file.py` column-for-column, so both
+  stacks agree on shape even though only the API creates the tables. The Python worker reads/writes
+  them exclusively through `ingestion_worker.job_store.IndexJobStore`, using declarative ORM classes
+  on a private `IndexJobBase` (`ingestion_worker/models/base.py`), never on
+  `common.models.base.Base.metadata` — so Python's own `create_all` never touches these tables
+  either; it only ever runs `UPDATE`/`SELECT` against a schema the API already created. A partial
+  unique index on `index_job.knowledge_base_id` filtered to `status IN ('queued','running')`
+  enforces one active job per knowledge base and turns a double-publish race into a 409, not two
+  rows. `IndexJob.GraphName` is computed **once, by the API**, at publish time (see the
+  `GraphNames` bullet under "Files" below) and stamped onto the row; the worker only ever reads it
+  back — the two stacks cannot disagree about which graph a job targets even though only one of
+  them derives the name. The shared API-owned `knowledge_base` table mapping lives at
   `common.models.knowledge_base.KnowledgeBase` on `ApiOwnedBase.metadata`; the worker reads it as
   `KnowledgeBaseRecordDTO` and updates its lifecycle `State` through the same mapped model. That DTO
   carries the knowledge base's uploaded files (`files`, with each file's `storage_key`).
   **The inline `Data` graph-JSON column was removed** from the API, the DTO and the database (EF
   migration `RemoveKnowledgeBaseData`): a knowledge base's content is now only its uploaded files.
-  Phase 1 ingestion read that column, so `jobs.ingest_job()` now raises a
-  `NonRetryableIngestionError` naming the reason instead, and stays that way until file-based
-  ingestion (Phase 2) is built.
   `create_job_tables(include_knowledge_base=True)` creates `knowledge_base`, `file` and
   `knowledge_base_file` stand-ins for tests
 - Ingestion extraction returns `GraphSchemaRegistryDTO` / `NodeEmbeddingDTO` rather than transient
   ORM instances. `ingestion_worker.ingestion.writer` maps those DTOs into ORM rows for upsert and
   returns DTOs; no ORM objects cross the ingestion extraction/writer boundary
-- The API never calls a worker: it writes a `queued` job row, and the Celery Beat **dispatcher**
-  (`ingestion_worker/dispatcher.py`) claims it with `FOR UPDATE SKIP LOCKED` + a guarded
-  `queued -> running` transition, commits, then publishes the task. Commit-before-publish means a
-  crash leaves the job `running` for a future reconciler rather than losing it
+- The API never calls a worker: `KnowledgeBasesController.PublishKnowledgeBase` writes a `queued`
+  `IndexJob` row (plus one `Pending` `IndexFile` row per uploaded file, so `TotalFiles` is fixed
+  before any fan-out and fan-in can't fire early) and returns 202 with a `Location` header at the
+  new job-status endpoint; it never touches RabbitMQ. The Celery Beat **dispatcher**
+  (`ingestion_worker/dispatcher.py`) claims the row with `FOR UPDATE SKIP LOCKED` + a guarded
+  `queued -> running` transition, commits, then publishes `extract_ontology`. Commit-before-publish
+  means a crash leaves the job `running` for a future reconciler rather than losing it
+- **The stage DAG walks four stub stages**, none doing real extraction/graph work yet (that's
+  ADR-0005 Phase 2 — each stub logs a `# TODO(ADR-0005 Phase 2)` marker where the real work goes):
+  `extract_ontology(job_id)` fans out one `extract_entities(job_id, file_row_id)` per non-terminal
+  file row; `extract_entities` completes its one file
+  (`IndexJobStore.complete_file`, guarded `pending`/`extracting` -> `extracted`, returns whether
+  *this* call performed the transition) and, only when that returned `True`, increments the fan-in
+  counter (`record_file_done`) — but *always* retries the fan-in claim (`claim_graph_dispatch`, the
+  guarded one-shot flip) regardless, since a prior crash could have incremented the counter without
+  publishing the next stage; when claimed, it publishes `construct_graph(job_id)`; `construct_graph`
+  publishes a single stub embedding batch, `embed_nodes(job_id, "0")`; `embed_nodes` completes the
+  job (`mark_job_completed`, guarded on `status == running`, returns whether it transitioned) and,
+  only then, publishes the knowledge base's state to `published`
+  (`set_knowledge_base_state`) — both guards mean a redelivered final batch neither re-completes the
+  job nor re-publishes the state. These four functions live in the new, Celery-free
+  `ingestion_worker/stages.py`, unit-testable exactly like `dispatcher.dispatch_queued_jobs`: each
+  takes `(session, publish, *args)` where `publish(task_name, args)` is injected, and each commits
+  before publishing — the same convention, and the same documented reconciler gap, as the
+  dispatcher. A stage skips a missing job or one that isn't `running` (already terminal, or
+  redelivered after terminal state)
 - Worker modules: `models/` (`IndexJob`/`IndexFile` ORM classes) + `job_store.py` (`IndexJobStore`),
-  `celery_app.py` (app + `ingestion` topic exchange, per-stage `q.<stage>`, `q.<stage>.retry` and
-  `q.<stage>.dlq`; Phase 1 routes the combined task to `q.ontology`), `tasks.py`
-  (`ingest_knowledge_base_task`; sync wrapper over `asyncio.run`, `autoretry_for` the retryable error,
-  `on_failure` records the terminal failure), `jobs.py` (Celery-free `ingest_job`/`run_job`/`fail_job`),
-  `errors.py` (retryable vs non-retryable classification: 429/5xx/timeout vs 4xx/parse), `db.py`,
-  `config.py`
+  `stages.py` (the four Celery-free stage functions above), `celery_app.py` (app + `ingestion` topic
+  exchange, one `q.<stage>`/`q.<stage>.retry`/`q.<stage>.dlq` triple per stage — `ontology`,
+  `entity`, `graph`, `embedding` — with `task_routes` sending each of the four Celery tasks to its
+  own queue), `tasks.py` (`extract_ontology`/`extract_entities`/`construct_graph`/`embed_nodes`,
+  thin `IngestionTask`-based Celery wrappers around `stages.py`'s coroutines via
+  `asyncio.run(run_stage(...))`; `autoretry_for` the retryable error, `on_failure` records the
+  terminal failure via `jobs.fail_job`), `jobs.py` (`run_stage(fn, publish, *args)` — opens the
+  worker's DB resources and calls one stage function, mirroring the old `run_job` — and
+  `fail_job(job_id, error)`, which now also sets the knowledge base's state to `failed` in the same
+  commit as marking the job failed), `errors.py` (retryable vs non-retryable classification:
+  429/5xx/timeout vs 4xx/parse), `db.py`, `config.py`. Launching the worker must pass
+  `-Q q.ontology,q.entity,q.graph,q.embedding` (`.vscode/tasks.json`'s "Ingestion Worker" task) —
+  without it Celery also consumes the `.retry`/`.dlq` queues, defeating the TTL delay and draining
+  the DLQ; a separate "Ingestion Worker: celery beat" task runs the dispatcher on schedule, and both
+  are part of "Start All". A minimal root `compose.yaml` provides `rabbitmq:4-management`
+  (5672/15672) since nothing else in the repo starts a broker
 - Idempotency (required by `acks_late`): graph writes use `MERGE`-on-`id`
   (`AgeGraphRepository.merge_node`/`merge_relationship`), side-table writes are upserts, and the
   file row is reused via `IndexJobStore.find_file` on redelivery. A job already in a terminal state
   is skipped
-- Phase 1 treats the whole knowledge base as one file and runs graph + embeddings in one task; the
-  four-stage ontology/entity fan-out + guarded fan-in (`IndexJobStore.increment_and_check_fan_in`)
-  and the files model are Phase 2
+- The stub DAG above walks the whole four-stage shape (ontology -> per-file entity fan-out ->
+  guarded fan-in graph construction -> embedding) end to end, including the guarded fan-in
+  (`record_file_done`/`claim_graph_dispatch`, split out of the former single
+  `increment_and_check_fan_in`) — what's still Phase 2 is the *content* of each stage (real
+  ontology/entity extraction, real `MERGE`s, real embedding computation), not the DAG shape or the
+  fan-in mechanism itself, both of which are now implemented
 
 ### Vector Embedding & Search Pattern
 - **Schema-registry embeddings live in their own table, `SchemaEmbedding`** (`models/schema_embedding.py`,
@@ -930,18 +972,26 @@ shared library resolve through a path dependency (`common` in `[project.dependen
 - `tests/test_model_dtos.py` - verifies `from_attributes` conversions for DTOs paired with each ORM
   model (`KnowledgeBaseRecordDTO`, `GraphSchemaRegistryDTO`, `NodeEmbeddingDTO`, `SchemaEmbeddingDTO`)
 - `src/ingestion-worker/tests/test_job_store.py` - test suite for `IndexJobStore` (guarded
-  transitions, fan-in gate, KB read/state, `FOR UPDATE SKIP LOCKED` compiled SQL)
+  transitions incl. `complete_file`/`mark_job_completed`, the `record_file_done`/
+  `claim_graph_dispatch` fan-in split, `list_files`, KB read/state, `FOR UPDATE SKIP LOCKED`
+  compiled SQL)
 - `src/ingestion-worker/tests/test_models.py` - verifies class-based worker ORM mappings and
   private metadata ownership
 - `tests/test_age_graph_repository_merge.py` - test suite for the idempotent `merge_node`/
   `merge_relationship` Cypher
 - `src/ingestion-worker/tests/test_ingestion.py` - test suite for the worker's extraction, writer,
-  graph-merge and `ingest_knowledge_base()` pipeline
-- `src/ingestion-worker/tests/test_jobs.py` - test suite for `jobs.ingest_job()` (completion,
-  idempotent redelivery, graph creation, classified failure)
+  graph-merge and `ingest_knowledge_base()` pipeline (the legacy one-shot demo pipeline used by
+  `ingestion_worker/__init__.py`, unrelated to the ADR-0005 stage tasks)
+- `src/ingestion-worker/tests/test_stages.py` - test suite for the four Celery-free ADR-0005 stage
+  functions in `stages.py`: a 2-file job walking the whole DAG to `construct_graph` published
+  exactly once and the job/KB reaching `completed`/`published`; a redelivered `extract_entities`
+  neither double-counting nor re-publishing; each stage skipping a non-`running` job; `fail_job`
+  setting both the job and its knowledge base to `failed`
 - `src/ingestion-worker/tests/test_dispatcher.py` - test suite for the claim-then-publish dispatcher
-- `src/ingestion-worker/tests/test_celery_app.py` / `test_errors.py` - Celery topology/config and
-  retryable/non-retryable error classification
+  (publishes `extract_ontology`, the first stage task)
+- `src/ingestion-worker/tests/test_celery_app.py` / `test_errors.py` - Celery topology/config
+  (one `task_routes` entry per stage task, each to its own `q.<stage>`) and retryable/non-retryable
+  error classification
 - `tests/test_schema_embedding_model.py` - test suite for `SchemaEmbedding` (the schema registry's embedding side table) and its cascade delete from `GraphSchemaRegistry`
 - `tests/test_knowledge_base_model.py` - verifies the shared API-owned `KnowledgeBase` mapping and
   that it stays outside `Base.metadata`
@@ -1031,8 +1081,12 @@ discover a config file upward from `tests/`.
 - Tests use SQLite in-memory databases (no PostgreSQL required for unit tests)
 - Tests validate schema structure, constraints, and upsert logic
   - Ingestion-write tests (the upsert/extraction logic, `upsert_knowledge_base`) moved with the code
-    into `src/ingestion-worker/tests/` (`test_ingestion.py`, `test_jobs.py`, `test_dispatcher.py`,
-    `test_job_store.py`, `test_celery_app.py`, `test_errors.py`); the root `tests/` suite keeps the
+    into `src/ingestion-worker/tests/` (`test_ingestion.py`, `test_stages.py`, `test_dispatcher.py`,
+    `test_job_store.py`, `test_celery_app.py`, `test_errors.py`); `test_jobs.py` (the always-failing
+    Phase 1 `ingest_job()` path) was deleted once `jobs.py` was reduced to `run_stage`/`fail_job` —
+    both are exercised indirectly through `test_stages.py`'s stage-function tests and
+    `test_dispatcher.py`, the same convention already used for `run_job`, which opens real DB
+    resources and was never unit-tested directly either. The root `tests/` suite keeps the
     model/table/read/`vector_search`/repository/lifecycle coverage
   - `src/ingestion-worker/tests/test_job_store.py` - `IndexJobStore`: guarded transitions, fan-in
     gate, KB read/state, and the Postgres `FOR UPDATE SKIP LOCKED` compiled statement
@@ -1186,14 +1240,20 @@ project: no `pyproject.toml`, no `common` import. `GraphPlatform.slnx` holds two
 - `ModelConfig.Type` is a `jsonb` column holding a JSON array, via a string value converter; Npgsql
   documents a `string` property with `HasColumnType("jsonb")` as a supported mapping.
 - `KnowledgeBase` (`Models/KnowledgeBase.cs`) stores the resource `Id`/`Name`, its organization, UTC
-  timestamps and `KnowledgeBaseState`. It carries **no graph payload**: the former `Data` (`jsonb`)
+  timestamps and `KnowledgeBaseState` (`Draft`/`Indexing`/`Published`/**`Failed`**). It carries
+  **no graph payload**: the former `Data` (`jsonb`)
   column, the `id`/`name` overlay onto that payload, and the node/relationship shape validation in
   `KnowledgeBaseWriteRequest` were all removed, so a write request is just a `Name` (plus an optional
   caller-assigned `Id` on create). Content comes from the files uploaded through
   `KnowledgeBaseFilesController`. Member reads are organization-scoped;
-  Contributor/Admin mutations create drafts, and update/delete are draft-only. Publish changes a
-  draft to `indexing`; the ingestion worker and dispatch/completion bridge are not wired to this API,
-  so completion to `published` remains future integration work.
+  Contributor/Admin mutations create drafts. Update/delete/publish/file-upload/file-delete all gate on
+  `KnowledgeBase.IsEditable` (`Draft` or `Failed`) rather than draft-only, so a failed ingestion run
+  can be retried by editing and republishing without recreating the knowledge base. Publish moves an
+  editable knowledge base with at least one file to `indexing` and writes the `IndexJob`/`IndexFile`
+  outbox rows the ingestion worker's dispatcher polls for (see "Ingestion Pipeline Pattern" above);
+  it 409s when not editable or when the knowledge base has no files. The worker moves a completed job's
+  knowledge base to `published`, and `jobs.fail_job` moves a failed one to `failed` — both write
+  through the same EF-mapped `KnowledgeBase.State` column the API reads.
 - ADR-0002 roles are **per organization**, so they live in `user_organization.Role`, not in ASP.NET
   Identity roles: `AppDbContext` derives from `IdentityUserContext<AppUser>`, not
   `IdentityDbContext<AppUser>`, so `IdentityRole`/`IdentityUserRole`/`IdentityRoleClaim` are never
@@ -1234,9 +1294,13 @@ Any authenticated user may `POST /api/organizations` (the bootstrap path — the
 first Organization Admin). Creating a model needs Contributor or Admin; choosing the org's active
 embedding model needs Admin (ADR-0002, Decision 3). The last Organization Admin cannot be demoted or
 removed (409), and the active embedding model cannot be deleted (409). Knowledge Base reads are
-available to any member; create/update/delete/publish require Contributor or Admin, with update and
-delete additionally restricted to drafts. Knowledge Base files follow the same rules: any member may
-list, read or download them, and upload/delete need Contributor or Admin and a draft Knowledge Base.
+available to any member; create/update/delete/publish require Contributor or Admin, with update,
+delete and publish additionally restricted to editable (`draft`/`failed`) knowledge bases, and
+publish further 409ing when the knowledge base has no files. Knowledge Base files follow the same
+rules: any member may list, read or download them, and upload/delete need Contributor or Admin and
+an editable Knowledge Base. Index job reads (`GET .../index-jobs/{jobId}`) are available to any
+member and 404 across organizations or for an unknown job id, the same convention as every other
+cross-organization lookup here.
 
 ### Files
 - `Models/File.cs` (`file` table) is **owner-agnostic**: metadata (`FileName`, `ContentType`, `Size`,
@@ -1292,11 +1356,47 @@ list, read or download them, and upload/delete need Contributor or Admin and a d
 - Tests: `GraphPlatform.Api.Tests/KnowledgeBaseFileEndpointTests.cs` covers:
   - storage, row and link consistency, download and file-name sanitising;
   - Knowledge Base and organization delete cleanup;
-  - the draft-only and role rules, and cross-organization 404s;
+  - the editable-state and role rules, and cross-organization 404s;
   - the size limit (`WithWebHostBuilder` configuration);
   - a storage outage during delete, using a `ConfigureTestServices` decorator whose `DeleteAsync`
     throws, which must leave the row for a retry.
   - Not covered: the orphan cleanup when `SaveChangesAsync` fails after an upload
+
+### Ingestion Jobs (ADR-0005)
+- `Services/GraphNames.cs`'s `GraphNames.ForOrganization(organizationId)` is the **only** place that
+  computes an Apache Age graph name: `"org_"` plus the lower-cased organization id with every
+  character outside `[a-z0-9_]` replaced by `_`, or — when that would exceed PostgreSQL's 63-byte
+  identifier limit — `"org_"` plus the first 32 hex characters of `SHA256(organizationId)` (a hash,
+  not a truncation, so two long ids sharing a prefix can't collide). Called once, in
+  `KnowledgeBasesController.PublishKnowledgeBase`, and stamped onto `IndexJob.GraphName`; the worker
+  only ever reads it back off the claimed row (see "Ingestion Pipeline Pattern" above).
+- `Models/IndexJob.cs` / `Models/IndexFile.cs` mirror the worker's own
+  `ingestion_worker/models/index_job.py` / `index_file.py` column-for-column, including their
+  snake_case columns (`AppDbContext`'s first explicit `HasColumnName` mapping — every other EF table
+  keeps PascalCase). `IndexJobStatus` (`Queued`/`Running`/`Completed`/`PartiallyFailed`/`Failed`/
+  `Cancelled`) and `IndexFileStatus` (`Pending`/`Extracting`/`Extracted`/`Failed`/`Skipped`) use the
+  same `SnakeCaseEnum<T>()` convention as every other persisted enum here. The API only ever writes
+  `Queued` job rows and `Pending` file rows, at publish time; every other transition belongs to the
+  worker's `IndexJobStore`. Migration: `AddIndexJobs`.
+- `AppDbContext` maps a plain index each on `index_job.organization_id`/`knowledge_base_id`, an FK
+  `index_file.index_job_id -> index_job.id` (cascade), an FK `index_job.knowledge_base_id ->
+  knowledge_base.Id` (cascade, so deleting an organization or knowledge base cleans up its jobs), and
+  a **partial unique index** on `index_job.knowledge_base_id` filtered to
+  `status IN ('queued','running')` — one active job per knowledge base, closing the double-publish
+  race (`PublishKnowledgeBase` catches the resulting `DbUpdateException` and returns 409). Note: a
+  plain index and a partial-unique index on the *same* column both need an explicit, distinct name
+  passed directly into their own `HasIndex(...)` call — two `HasIndex` calls that only differ by a
+  later `HasDatabaseName` resolve to the same index by EF convention, silently dropping one.
+- `PublishKnowledgeBase` (one `SaveChangesAsync`): 409 unless `IsEditable`; 409 when the knowledge
+  base has no files; otherwise creates one `IndexJob` (`Queued`, `GraphName` via
+  `GraphNames.ForOrganization`, `TotalFiles` fixed to the file count, `EmbeddingModelId` from the
+  organization's active embedding model, `RequestedBy` the caller) plus one `Pending` `IndexFile`
+  per file, moves the knowledge base to `Indexing`, and returns **202 Accepted** with the
+  `KnowledgeBaseDto` and a `Location` header at `GetIndexJob`.
+- `GET .../knowledge-bases/{kbId}/index-jobs/{jobId}` (`GetIndexJob`) returns `IndexJobDto`
+  (status, counters, error, timestamps, and each file's status/attempts/error), hand-mapped in
+  `Dtos/DtoMappings.cs` from `Models/IndexJob.cs`/`IndexFile.cs`. Any member may read it; a wrong
+  organization or unknown job id both 404, per the usual convention.
 
 ### Storage (ADR-0006)
 - `Services/Storage/` holds `IStorageService` (the API's first interface), `FileSystemStorage`,
@@ -1445,10 +1545,14 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
   token-derived roles would go stale. `src/org/permissions.ts` mirrors `OrganizationAccessService`
   (`canAuthor`, `canGovern`) by name so drift is visible in review.
 - **Gating is disabled-with-a-reason, not hidden**, except for whole sections a role can never use
-  (Settings, Members). Three server 409s are mirrored client-side: draft-only knowledge bases, the
-  last remaining admin, and deleting the active embedding model. Because a natively `disabled`
-  button fires no pointer events (so a tooltip on it never opens), `ActionTooltip` wraps such
-  controls in a focusable span.
+  (Settings, Members). Server 409s are mirrored client-side: non-editable (`indexing`/`published`)
+  knowledge bases via `isEditableKnowledgeBaseState` (`draft`/`failed`, mirroring the API's
+  `KnowledgeBase.IsEditable`) in `src/org/permissions.ts`, a fileless knowledge base's Publish button
+  (`KnowledgeBaseDetailPage`'s `publishReason`), the last remaining admin, and deleting the active
+  embedding model. Because a natively `disabled` button fires no pointer events (so a tooltip on it
+  never opens), `ActionTooltip` wraps such controls in a focusable span. `KbStateBadge` renders a
+  `failed` state with a `destructive`-variant badge and an `AlertTriangle` icon, alongside the
+  existing draft/indexing/published entries.
 - **Editing a model replaces it wholesale, so `apiKey` is always required, even to change an
   unrelated field.** The edit form therefore requires re-entering it, shows a warning, and never
   renders a fake `••••` value. `ModelForm` has no authentication-mode selector at all — the API only

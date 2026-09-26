@@ -1,7 +1,12 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
+using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace GraphPlatform.Api.Tests;
 
@@ -9,6 +14,7 @@ namespace GraphPlatform.Api.Tests;
 public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
     : IClassFixture<GraphPlatformApiFactory>
 {
+    private static readonly byte[] Content = Encoding.UTF8.GetBytes("Max Verstappen drives for Red Bull.");
     [Fact]
     public async Task Create_generates_an_id_and_returns_the_draft()
     {
@@ -141,7 +147,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
-    public async Task Publish_moves_a_draft_to_indexing_and_locks_crud_mutations()
+    public async Task Publish_requires_at_least_one_file()
     {
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
@@ -159,9 +165,58 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
             content: null
         );
 
-        Assert.Equal(HttpStatusCode.OK, publish.StatusCode);
-        var indexing = (await publish.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
-        Assert.Equal(KnowledgeBaseState.Indexing, indexing.State);
+        Assert.Equal(HttpStatusCode.Conflict, publish.StatusCode);
+    }
+
+    [Fact]
+    public async Task Publish_moves_a_draft_to_indexing_writes_a_job_and_locks_crud_mutations()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        var model = await factory.CreateModelAsync(
+            admin.AccessToken,
+            organization.Id,
+            Api.EmbeddingModel()
+        );
+        model.EnsureSuccessStatusCode();
+        var embeddingModel = (await model.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
+        using var setActiveClient = factory.AuthedClient(admin.AccessToken);
+        using var setActive = await setActiveClient.PutAsJsonAsync(
+            $"/api/organizations/{organization.Id}/embedding-model",
+            new SetActiveEmbeddingModelRequest { ModelId = embeddingModel.Id },
+            Api.Json
+        );
+        setActive.EnsureSuccessStatusCode();
+
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+
+        var location = await PublishAsync(client, organization.Id, knowledgeBase.Id);
+
+        var indexing = await client.GetFromJsonAsync<KnowledgeBaseDto>(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
+            Api.Json
+        );
+        Assert.Equal(KnowledgeBaseState.Indexing, indexing!.State);
+
+        using var jobResponse = await client.GetAsync(location);
+        Assert.Equal(HttpStatusCode.OK, jobResponse.StatusCode);
+        var job = (await jobResponse.Content.ReadFromJsonAsync<IndexJobDto>(Api.Json))!;
+        Assert.Equal(knowledgeBase.Id, job.KnowledgeBaseId);
+        Assert.Equal(IndexJobStatus.Queued, job.Status);
+        Assert.Equal(1, job.TotalFiles);
+        Assert.Equal(admin.User.Id, job.RequestedBy);
+        Assert.Equal(embeddingModel.Id, job.EmbeddingModelId);
+        var file = Assert.Single(job.Files);
+        Assert.Equal(knowledgeBase.Files[0].Id, file.FileId);
+        Assert.Equal(IndexFileStatus.Pending, file.Status);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var jobRow = await db.IndexJobs.AsNoTracking().FirstAsync(row => row.KnowledgeBaseId == knowledgeBase.Id);
+        Assert.Equal(GraphPlatform.Api.Services.GraphNames.ForOrganization(organization.Id), jobRow.GraphName);
+        Assert.Equal(admin.User.Id, jobRow.RequestedBy);
+        Assert.Equal(embeddingModel.Id, jobRow.EmbeddingModelId);
 
         var update = await client.PutAsJsonAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
@@ -179,6 +234,114 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         Assert.Equal(HttpStatusCode.Conflict, update.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, delete.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, publishAgain.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_republish_while_one_is_already_active_conflicts()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+
+        // The Knowledge Base is already indexing, so the up-front editable check rejects a second
+        // publish before the database's own partial unique index would ever need to.
+        var publishAgain = await client.PostAsync(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}/publish",
+            content: null
+        );
+        Assert.Equal(HttpStatusCode.Conflict, publishAgain.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_failed_knowledge_base_can_be_edited_and_republished()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.KnowledgeBases.FirstAsync(entity => entity.Id == knowledgeBase.Id);
+        row.State = KnowledgeBaseState.Failed;
+        var job = await db.IndexJobs.FirstAsync(entity => entity.KnowledgeBaseId == knowledgeBase.Id);
+        job.Status = IndexJobStatus.Failed;
+        await db.SaveChangesAsync();
+
+        var update = await client.PutAsJsonAsync(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
+            new UpdateKnowledgeBaseRequest { Name = "Retry" },
+            Api.Json
+        );
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+
+        var republish = await client.PostAsync(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}/publish",
+            content: null
+        );
+        Assert.Equal(HttpStatusCode.Accepted, republish.StatusCode);
+    }
+
+    [Fact]
+    public async Task Index_job_reads_are_hidden_from_other_organizations()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        var location = await PublishAsync(client, organization.Id, knowledgeBase.Id);
+
+        var outsider = await factory.SignupAsync();
+        var otherOrganization = await factory.CreateOrganizationAsync(outsider.AccessToken);
+        using var outsiderClient = factory.AuthedClient(outsider.AccessToken);
+
+        using var crossOrganization = await outsiderClient.GetAsync(location);
+        Assert.Equal(HttpStatusCode.NotFound, crossOrganization.StatusCode);
+
+        using var missingJob = await outsiderClient.GetAsync(
+            $"/api/organizations/{otherOrganization.Id}/knowledge-bases/{knowledgeBase.Id}/index-jobs/does-not-exist"
+        );
+        Assert.Equal(HttpStatusCode.NotFound, missingJob.StatusCode);
+    }
+
+    private async Task<KnowledgeBaseDto> CreateDraftWithFileAsync(HttpClient client, string organizationId)
+    {
+        using var create = await client.PostAsJsonAsync(
+            $"/api/organizations/{organizationId}/knowledge-bases",
+            new CreateKnowledgeBaseRequest { Name = "F1" },
+            Api.Json
+        );
+        create.EnsureSuccessStatusCode();
+        var knowledgeBase = (await create.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
+
+        var part = new ByteArrayContent(Content);
+        part.Headers.ContentType = new MediaTypeHeaderValue("text/plain");
+        using var form = new MultipartFormDataContent { { part, "file", "notes.txt" } };
+        using var upload = await client.PostAsync(
+            $"/api/organizations/{organizationId}/knowledge-bases/{knowledgeBase.Id}/files",
+            form
+        );
+        upload.EnsureSuccessStatusCode();
+
+        var reloaded = await client.GetFromJsonAsync<KnowledgeBaseDto>(
+            $"/api/organizations/{organizationId}/knowledge-bases/{knowledgeBase.Id}",
+            Api.Json
+        );
+        return reloaded!;
+    }
+
+    private static async Task<Uri> PublishAsync(HttpClient client, string organizationId, string knowledgeBaseId)
+    {
+        using var publish = await client.PostAsync(
+            $"/api/organizations/{organizationId}/knowledge-bases/{knowledgeBaseId}/publish",
+            content: null
+        );
+        Assert.Equal(HttpStatusCode.Accepted, publish.StatusCode);
+        return publish.Headers.Location!;
     }
 
     [Fact]

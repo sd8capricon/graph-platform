@@ -2,7 +2,12 @@
 
 from ingestion_worker.celery_app import STAGES, app, build_task_queues
 from ingestion_worker.dispatcher import DISPATCH_TASK_NAME
-from ingestion_worker.tasks import INGEST_TASK_NAME
+from ingestion_worker.tasks import (
+    CONSTRUCT_GRAPH_TASK_NAME,
+    EMBED_NODES_TASK_NAME,
+    EXTRACT_ENTITIES_TASK_NAME,
+    EXTRACT_ONTOLOGY_TASK_NAME,
+)
 
 
 def test_acknowledgement_and_no_result_backend():
@@ -21,10 +26,17 @@ def test_per_stage_queues_including_retry_and_dlq():
         assert f"q.{stage}.dlq" in names
 
 
-def test_ingest_task_routes_to_the_ontology_queue():
-    route = app.conf.task_routes[INGEST_TASK_NAME]
-    assert route["queue"] == "q.ontology"
-    assert route["routing_key"] == "ingestion.ontology"
+def test_each_stage_task_routes_to_its_own_queue():
+    expected = {
+        EXTRACT_ONTOLOGY_TASK_NAME: ("q.ontology", "ingestion.ontology"),
+        EXTRACT_ENTITIES_TASK_NAME: ("q.entity", "ingestion.entity"),
+        CONSTRUCT_GRAPH_TASK_NAME: ("q.graph", "ingestion.graph"),
+        EMBED_NODES_TASK_NAME: ("q.embedding", "ingestion.embedding"),
+    }
+    for task_name, (queue, routing_key) in expected.items():
+        route = app.conf.task_routes[task_name]
+        assert route["queue"] == queue
+        assert route["routing_key"] == routing_key
 
 
 def test_beat_schedules_the_dispatcher():

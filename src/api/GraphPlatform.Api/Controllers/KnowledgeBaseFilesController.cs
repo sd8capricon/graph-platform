@@ -20,7 +20,8 @@ namespace GraphPlatform.Api.Controllers;
 /// </para>
 /// <para>
 /// Reads are open to any organization member. Uploads and deletes need Contributor or Organization
-/// Admin, and a draft Knowledge Base, like every other Knowledge Base mutation.
+/// Admin, and an editable (<see cref="KnowledgeBaseState.Draft"/> or
+/// <see cref="KnowledgeBaseState.Failed"/>) Knowledge Base, like every other Knowledge Base mutation.
 /// </para>
 /// </remarks>
 [Route("api/organizations/{organizationId}/knowledge-bases/{knowledgeBaseId}/files")]
@@ -124,7 +125,7 @@ public class KnowledgeBaseFilesController(
         return File(download.Content, file.ContentType, file.FileName);
     }
 
-    /// <summary>Uploads a file to a draft Knowledge Base.</summary>
+    /// <summary>Uploads a file to an editable Knowledge Base.</summary>
     /// <param name="organizationId">Owning organization.</param>
     /// <param name="knowledgeBaseId">Knowledge Base to attach the file to.</param>
     /// <param name="file">The file, sent as the <c>file</c> part of a multipart form.</param>
@@ -167,9 +168,9 @@ public class KnowledgeBaseFilesController(
             return NotFound();
         }
 
-        if (knowledgeBase.State != KnowledgeBaseState.Draft)
+        if (!knowledgeBase.IsEditable)
         {
-            return DraftOnlyConflict();
+            return EditableOnlyConflict();
         }
 
         if (file.Length == 0)
@@ -242,7 +243,7 @@ public class KnowledgeBaseFilesController(
         );
     }
 
-    /// <summary>Deletes a file's content and metadata from a draft Knowledge Base.</summary>
+    /// <summary>Deletes a file's content and metadata from an editable Knowledge Base.</summary>
     [HttpDelete("{fileId}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
@@ -272,9 +273,9 @@ public class KnowledgeBaseFilesController(
             return NotFound();
         }
 
-        if (link.KnowledgeBase.State != KnowledgeBaseState.Draft)
+        if (!link.KnowledgeBase.IsEditable)
         {
-            return DraftOnlyConflict();
+            return EditableOnlyConflict();
         }
 
         await files.RemoveAsync([link.File], cancellationToken);
@@ -325,11 +326,11 @@ public class KnowledgeBaseFilesController(
         return ValidationProblem(ModelState);
     }
 
-    private ObjectResult DraftOnlyConflict() =>
+    private ObjectResult EditableOnlyConflict() =>
         Conflict(
             CreateProblem(
                 StatusCodes.Status409Conflict,
-                "Only a draft Knowledge Base can be modified or deleted.",
+                "Only a draft or failed Knowledge Base can be modified or deleted.",
                 "Create a new draft to make changes after indexing has started."
             )
         );

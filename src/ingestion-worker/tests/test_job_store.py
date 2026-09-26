@@ -73,18 +73,49 @@ async def test_claim_and_run_transitions_are_guarded():
 async def test_create_file_increments_total_and_fan_in_claims_once():
     engine = await _store_engine()
     async with AsyncSession(engine) as session:
-        await _insert_job(session)
+        await _insert_job(session, status="running")
         store = IndexJobStore(session)
 
         file_row_id = await store.create_file("job-1", "kb-1")
         job = await store.get_job("job-1")
         assert job.total_files == 1
 
-        await store.mark_file_extracted(file_row_id)
-        assert await store.increment_and_check_fan_in("job-1") is True
+        assert await store.complete_file(file_row_id) is True
+        await store.record_file_done("job-1")
+        assert await store.claim_graph_dispatch("job-1") is True
         # The one-shot gate must never fire twice.
-        assert await store.increment_and_check_fan_in("job-1") is False
+        assert await store.claim_graph_dispatch("job-1") is False
         await session.commit()
+
+    await engine.dispose()
+
+
+async def test_complete_file_is_guarded_and_reports_the_transition():
+    engine = await _store_engine()
+    async with AsyncSession(engine) as session:
+        await _insert_job(session, status="running")
+        store = IndexJobStore(session)
+        file_row_id = await store.create_file("job-1", "kb-1")
+
+        assert await store.complete_file(file_row_id) is True
+        # A redelivered completion of the same file must not re-transition it.
+        assert await store.complete_file(file_row_id) is False
+        await session.commit()
+
+    await engine.dispose()
+
+
+async def test_list_files_returns_every_file_row_for_a_job():
+    engine = await _store_engine()
+    async with AsyncSession(engine) as session:
+        await _insert_job(session, status="running")
+        store = IndexJobStore(session)
+        first = await store.create_file("job-1", "kb-1")
+        second = await store.create_file("job-1", "kb-2")
+        await session.commit()
+
+        rows = await store.list_files("job-1")
+        assert {row.id for row in rows} == {first, second}
 
     await engine.dispose()
 
@@ -92,14 +123,17 @@ async def test_create_file_increments_total_and_fan_in_claims_once():
 async def test_mark_job_completed_sets_processed_from_total():
     engine = await _store_engine()
     async with AsyncSession(engine) as session:
-        await _insert_job(session, total_files=2)
+        await _insert_job(session, status="running", total_files=2)
         store = IndexJobStore(session)
 
-        await store.mark_job_completed("job-1")
+        assert await store.mark_job_completed("job-1") is True
         job = await store.get_job("job-1")
         assert job.status == JOB_COMPLETED
         assert job.processed_files == 2
         assert job.completed_at is not None
+
+        # Guarded on `running`: a redelivered completion is a no-op.
+        assert await store.mark_job_completed("job-1") is False
 
     await engine.dispose()
 

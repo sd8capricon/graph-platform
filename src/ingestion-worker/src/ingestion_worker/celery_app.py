@@ -1,9 +1,11 @@
 """Celery application and RabbitMQ topology for the ingestion pipeline.
 
 One topic exchange `ingestion` with a routing key per stage into per-stage
-queues, plus a retry and dead-letter variant per stage. Phase 1 routes its single
-combined task to `q.ontology`; the other stage queues are declared now so the
-Phase 2 fan-out does not require a broker-topology change.
+queues, plus a retry and dead-letter variant per stage. Each of the four ADR-0005
+stage tasks (`extract_ontology`, `extract_entities`, `construct_graph`,
+`embed_nodes`) routes to its own `q.<stage>`; the stub stages walk the full
+ontology -> per-file entity fan-out -> guarded fan-in graph construction ->
+embedding DAG (real extraction/graph work is ADR-0005 Phase 2).
 
 No result backend is configured (`task_ignore_result=True`): all durable state
 lives in `index_job`/`index_file` (ADR-0005), so RabbitMQ + Celery + Postgres is
@@ -19,8 +21,7 @@ from ingestion_worker.config import rabbitmq_url
 
 INGESTION_EXCHANGE = Exchange("ingestion", type="topic")
 
-# Stage -> (queue name, routing key). Phase 1 uses ontology; the rest are
-# declared for the Phase 2 fan-out/fan-in.
+# Stage -> (queue name, routing key), one per ADR-0005 DAG stage.
 STAGES = ("ontology", "entity", "graph", "embedding")
 
 # Default retry delay for the TTL+DLX retry queues (ms). The durable delayed
@@ -80,9 +81,21 @@ app.conf.update(
     task_default_queue="q.ontology",
     task_default_routing_key="ingestion.ontology",
     task_routes={
-        "ingestion_worker.tasks.ingest_knowledge_base": {
+        "ingestion_worker.tasks.extract_ontology": {
             "queue": "q.ontology",
             "routing_key": "ingestion.ontology",
+        },
+        "ingestion_worker.tasks.extract_entities": {
+            "queue": "q.entity",
+            "routing_key": "ingestion.entity",
+        },
+        "ingestion_worker.tasks.construct_graph": {
+            "queue": "q.graph",
+            "routing_key": "ingestion.graph",
+        },
+        "ingestion_worker.tasks.embed_nodes": {
+            "queue": "q.embedding",
+            "routing_key": "ingestion.embedding",
         },
         "ingestion_worker.dispatcher.dispatch_queued_jobs": {
             "queue": "q.ontology",

@@ -130,6 +130,7 @@ export function KnowledgeBasesPage() {
                 <SelectItem value={KnowledgeBaseState.Draft}>Draft</SelectItem>
                 <SelectItem value={KnowledgeBaseState.Indexing}>Indexing</SelectItem>
                 <SelectItem value={KnowledgeBaseState.Published}>Published</SelectItem>
+                <SelectItem value={KnowledgeBaseState.Failed}>Failed</SelectItem>
               </SelectContent>
             </Select>
           </DataToolbar>

@@ -26,7 +26,7 @@ export function RenameKnowledgeBaseDialog({
       open
       onOpenChange={(open) => !open && onClose()}
       title="Rename knowledge base"
-      description="Only a draft knowledge base can be renamed."
+      description="Only a draft or failed knowledge base can be renamed."
       submitLabel="Save"
       initialName={knowledgeBase.name}
       onSubmit={async (name) => {
