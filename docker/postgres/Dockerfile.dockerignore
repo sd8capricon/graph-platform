@@ -1,0 +1,10 @@
+**/.git
+**/.venv
+**/node_modules
+**/bin
+**/obj
+**/TestResults
+**/__pycache__
+**/*.pyc
+data
+src/api/GraphPlatform.Api/appsettings.Development.json

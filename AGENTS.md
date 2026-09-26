@@ -1508,10 +1508,10 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
 ## Docker (`docker/`)
 
 All Docker-related files live in `docker/`; the build context for every image is the repository
-root (`context: ..`). The Compose stack runs the ASP.NET API, the nginx-served SPA, RabbitMQ, the
-Celery worker and Beat, plus a one-shot initializer for the Python-owned tables. PostgreSQL stays
-**external** — it must support both Apache AGE and pgvector, and nothing in `docker/compose.yaml`
-starts one. Full runbook: `docker/README.md`.
+root (`context: ..`). The Compose stack runs the ASP.NET API, the nginx-served SPA, a self-built
+PostgreSQL 18 with Apache AGE and pgvector (`postgres`), RabbitMQ, the Celery worker and Beat, plus
+a one-shot initializer for the Python-owned tables. `postgres` is the only PostgreSQL service, shared
+by the API and the Python services. Full runbook: `docker/README.md`.
 
 ### Images
 
@@ -1526,14 +1526,29 @@ starts one. Full runbook: `docker/README.md`.
 - `Dockerfile.frontend`: Node 22 build (`npm ci` + `npm run build`) then `nginx:alpine` serving
   `/usr/share/nginx/html/` with `docker/nginx.conf`'s SPA fallback
   (`try_files $uri $uri/ /index.html`).
-- One `Dockerfile.<name>.dockerignore` per image; all four are currently identical (`.venv`,
-  `node_modules`, `bin`/`obj`, `data/`, `appsettings.Development.json`).
+- `docker/postgres/Dockerfile`: two stages from the official `postgres:18.6-trixie`. The builder
+  compiles **Apache AGE 1.8.0** (tag `PG18/v1.8.0-rc0`, release tarball SHA-256 verified) and
+  **pgvector 0.8.6** (tag `v0.8.6`, SHA-256 verified) from their official upstream sources with
+  `build-essential`/`flex`/`bison`/`perl`/`postgresql-server-dev-18`, installing both into a staging
+  `DESTDIR`; the runtime stage copies only `/usr/lib/postgresql/18/lib/` and
+  `/usr/share/postgresql/18/extension/` plus `docker/postgres/init/` into
+  `/docker-entrypoint-initdb.d/`. No third-party combined PostgreSQL/AGE/vector image is used — only
+  official upstream PostgreSQL, AGE and pgvector. `docker/postgres/init/10-extensions.sql` runs
+  `CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS age; LOAD 'age';
+  SET search_path = ag_catalog, "$user", public;` on first initialization (per-session only, per the
+  AGE docs; `common/database/connection.py` repeats it on every connection).
+- One `Dockerfile.<name>.dockerignore` per image (`docker/postgres/Dockerfile.dockerignore` for the
+  postgres image); all five are currently identical (`.venv`, `node_modules`, `bin`/`obj`, `data/`,
+  `appsettings.Development.json`).
 
 ### Configuration (`docker/.env`)
 
 - `cp docker/.env.example docker/.env`; the file is gitignored via `docker/.gitignore` — never
-  commit it. `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` and `API_PG_CONNECTION_STRING`
-  must point at the **same** database (libpq vars for Python, Npgsql string for the API).
+  commit it. `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` are the Compose `postgres`
+  service's credentials (also fed to its `POSTGRES_*` variables); containers reach it at
+  `postgres:5432`. `API_PG_CONNECTION_STRING` must point at the **same** database and uses the
+  service hostname `postgres`. `POSTGRES_HOST_PORT` is the host-only published port, used by the
+  host-side `dotnet ef` migration via `localhost`.
 - Use URI-safe alphanumeric characters for `RABBITMQ_PASSWORD` — it is interpolated into the
   workers' `RABBITMQ_URL=amqp://<user>:<pass>@rabbitmq:5672//`.
 - Provider secrets (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OLLAMA_API_KEY`) are
@@ -1548,8 +1563,8 @@ starts one. Full runbook: `docker/README.md`.
 ### Database ownership in containers
 
 The shared-database split is preserved, not bypassed: EF migrations are **never** run by Compose.
-Apply them from the host before the first `up` (`ConnectionStrings__PgConnectionString` from
-`docker/.env`, `dotnet ef database update`). `python-schema-init`
+Start `postgres` first, then apply them from the host (build `ConnectionStrings__PgConnectionString`
+with `Host=localhost;Port=${POSTGRES_HOST_PORT}`, then `dotnet ef database update`). `python-schema-init`
 (`docker/init_python_schema.py`) then runs `Base.metadata.create_all` plus the per-model embedding
 indexes for the first `EMBEDDING`-typed model, touching only Python-owned tables. It is
 `restart: "no"`, and `ingestion-worker`/`ingestion-beat` gate on
@@ -1558,20 +1573,25 @@ and guarded-transition conventions as the pipeline itself.
 
 ### Runtime shape
 
-- Ports: `8080:80` frontend, `5087:5087` API, `5672`/`15672` RabbitMQ (AMQP + management UI).
-  The browser calls the API directly at the runtime `FRONTEND_API_BASE_URL`, not through nginx.
+- Ports: `8080:80` frontend, `5087:5087` API, `127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432`
+  PostgreSQL (localhost only), `5672`/`15672` RabbitMQ (AMQP + management UI). The browser calls
+  the API directly at the runtime `FRONTEND_API_BASE_URL`, not through nginx.
+- `data/volumes/postgres` is mounted at `/var/lib/postgresql` and persists PostgreSQL. PG18 moved
+  `PGDATA` to `/var/lib/postgresql/18/docker`, so the mount is the parent directory, **not** the
+  pre-18 `/var/lib/postgresql/data`.
 - `data/volumes/storage` (`/data/storage`) is shared by `api`, `python-schema-init` and
   `ingestion-worker`; compose pins `Storage__Provider=filesystem`, and both stacks implement the
   same ADR-0006 on-disk layout so they can share the directory.
 - `configs/local.yaml` is mounted read-only into the Python services, so config edits apply on
   container restart with no rebuild. `data/volumes/rabbitmq` persists the broker; Beat's
   `--schedule=/tmp/celerybeat-schedule` is deliberately ephemeral.
-- No custom networks: everything uses the Compose default network, workers reach the broker at
-  hostname `rabbitmq`.
+- No custom networks: everything uses the Compose default network, services reach the broker at
+  hostname `rabbitmq` and PostgreSQL at `postgres:5432`.
 
 ```sh
-cp docker/.env.example docker/.env   # then fill in PG*, connection string, JWT key, secrets
+cp docker/.env.example docker/.env   # then fill in PG*, POSTGRES_HOST_PORT, connection string, JWT key, secrets
+docker compose --env-file docker/.env -f docker/compose.yaml up -d postgres   # start DB, then migrate
 docker compose --env-file docker/.env -f docker/compose.yaml up --build
 docker compose --env-file docker/.env -f docker/compose.yaml config   # validate without starting
-docker compose --env-file docker/.env -f docker/compose.yaml logs -f api ingestion-worker ingestion-beat
+docker compose --env-file docker/.env -f docker/compose.yaml logs -f postgres api ingestion-worker ingestion-beat
 ```

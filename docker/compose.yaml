@@ -1,6 +1,28 @@
 name: graph-platform
 
 services:
+  postgres:
+    image: graph-platform/postgres-age-vector:local
+    build:
+      context: ..
+      dockerfile: docker/postgres/Dockerfile
+    environment:
+      POSTGRES_USER: ${PGUSER:-graphplatform}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-replace-me}
+      POSTGRES_DB: ${PGDATABASE:-graph_platform}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - ../data/volumes/postgres:/var/lib/postgresql
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
   rabbitmq:
     image: rabbitmq:4-management-alpine
     environment:
@@ -46,7 +68,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:5087
-      ConnectionStrings__PgConnectionString: ${API_PG_CONNECTION_STRING:-}
+      ConnectionStrings__PgConnectionString: ${API_PG_CONNECTION_STRING:-Host=postgres;Port=5432;Database=graph_platform;Username=graphplatform;Password=replace-me}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
       Redis__ConnectionString: ${REDIS_CONNECTION_STRING:-redis://redis:6379/0}
       Cors__AllowedOrigins__0: ${CORS_ALLOWED_ORIGIN:-http://localhost:8080}
@@ -56,6 +78,8 @@ services:
       - "5087:5087"
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     volumes:
       - ../data/volumes/storage:/data/storage
@@ -68,11 +92,11 @@ services:
       dockerfile: docker/Dockerfile.ingestion-worker
     command: ["python", "/app/docker/init_python_schema.py"]
     environment:
-      PGHOST: ${PGHOST:-}
+      PGHOST: ${PGHOST:-postgres}
       PGPORT: ${PGPORT:-5432}
-      PGDATABASE: ${PGDATABASE:-}
-      PGUSER: ${PGUSER:-}
-      PGPASSWORD: ${PGPASSWORD:-}
+      PGDATABASE: ${PGDATABASE:-graph_platform}
+      PGUSER: ${PGUSER:-graphplatform}
+      PGPASSWORD: ${PGPASSWORD:-replace-me}
       INGESTION_CONFIG_PATH: /app/configs/local.yaml
       STORAGE_PROVIDER: filesystem
       STORAGE_FILESYSTEM_ROOT: /data/storage
@@ -83,6 +107,9 @@ services:
     volumes:
       - ../configs/local.yaml:/app/configs/local.yaml:ro
       - ../data/volumes/storage:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: "no"
 
   ingestion-worker:
@@ -97,11 +124,11 @@ services:
       - worker
       - --loglevel=info
     environment:
-      PGHOST: ${PGHOST:-}
+      PGHOST: ${PGHOST:-postgres}
       PGPORT: ${PGPORT:-5432}
-      PGDATABASE: ${PGDATABASE:-}
-      PGUSER: ${PGUSER:-}
-      PGPASSWORD: ${PGPASSWORD:-}
+      PGDATABASE: ${PGDATABASE:-graph_platform}
+      PGUSER: ${PGUSER:-graphplatform}
+      PGPASSWORD: ${PGPASSWORD:-replace-me}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-graphplatform}:${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}@rabbitmq:5672//
       INGESTION_CONFIG_PATH: /app/configs/local.yaml
       REDIS_CONNECTION_STRING: ${REDIS_CONNECTION_STRING:-redis://redis:6379/0}
@@ -136,11 +163,11 @@ services:
       - --loglevel=info
       - --schedule=/tmp/celerybeat-schedule
     environment:
-      PGHOST: ${PGHOST:-}
+      PGHOST: ${PGHOST:-postgres}
       PGPORT: ${PGPORT:-5432}
-      PGDATABASE: ${PGDATABASE:-}
-      PGUSER: ${PGUSER:-}
-      PGPASSWORD: ${PGPASSWORD:-}
+      PGDATABASE: ${PGDATABASE:-graph_platform}
+      PGUSER: ${PGUSER:-graphplatform}
+      PGPASSWORD: ${PGPASSWORD:-replace-me}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-graphplatform}:${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}@rabbitmq:5672//
       INGESTION_CONFIG_PATH: /app/configs/local.yaml
       REDIS_CONNECTION_STRING: ${REDIS_CONNECTION_STRING:-redis://redis:6379/0}
