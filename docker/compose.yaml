@@ -10,7 +10,7 @@ services:
       - "5672:5672"
       - "15672:15672"
     volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
+      - ../data/volumes/rabbitmq:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
@@ -58,7 +58,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - storage-data:/data/storage
+      - ../data/volumes/storage:/data/storage
     restart: unless-stopped
 
   python-schema-init:
@@ -82,7 +82,7 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
     volumes:
       - ../configs/local.yaml:/app/configs/local.yaml:ro
-      - storage-data:/data/storage
+      - ../data/volumes/storage:/data/storage
     restart: "no"
 
   ingestion-worker:
@@ -113,7 +113,7 @@ services:
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
     volumes:
       - ../configs/local.yaml:/app/configs/local.yaml:ro
-      - storage-data:/data/storage
+      - ../data/volumes/storage:/data/storage
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -172,7 +172,3 @@ services:
     depends_on:
       - api
     restart: unless-stopped
-
-volumes:
-  rabbitmq-data:
-  storage-data:

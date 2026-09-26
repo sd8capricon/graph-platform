@@ -84,7 +84,7 @@ only source of truth for API resources and ingestion job state.
 
 - `Dockerfile.api`: .NET 10 SDK publish stage and ASP.NET 10 runtime.
 - `Dockerfile.ingestion-worker`: Python 3.14 + uv; used by schema-init, worker
-  and Beat. `storage-data` is shared with the API for object storage.
+  and Beat. `data/volumes/storage` is shared with the API for object storage.
 - `redis`: Redis 7, used only for API read-model caching and worker invalidation;
   its port is published on localhost for development.
 - `Dockerfile.agent-runtime`: buildable developer smoke-test image, not started
@@ -94,8 +94,8 @@ only source of truth for API resources and ingestion job state.
 
 The worker and Beat mount `configs/local.yaml` read-only so configuration edits
 do not require rebuilding the images. RabbitMQ data and uploaded files persist
-in named volumes. Beat's schedule is kept in `/tmp` and is recreated with its
-container.
+in bind mounts under `data/volumes/` (`rabbitmq/`, `storage/`). Beat's schedule
+is kept in `/tmp` and is recreated with its container.
 
 Useful commands:
 

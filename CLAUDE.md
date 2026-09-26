@@ -1656,11 +1656,11 @@ and guarded-transition conventions as the pipeline itself.
 
 - Ports: `8080:80` frontend, `5087:5087` API, `5672`/`15672` RabbitMQ (AMQP + management UI).
   The browser calls the API directly at `VITE_API_BASE_URL`, not through nginx.
-- `storage-data` (`/data/storage`) is shared by `api`, `python-schema-init` and
+- `data/volumes/storage` (`/data/storage`) is shared by `api`, `python-schema-init` and
   `ingestion-worker`; compose pins `Storage__Provider=filesystem`, and both stacks implement the
-  same ADR-0006 on-disk layout so they can share the volume.
+  same ADR-0006 on-disk layout so they can share the directory.
 - `configs/local.yaml` is mounted read-only into the Python services, so config edits apply on
-  container restart with no rebuild. `rabbitmq-data` persists the broker; Beat's
+  container restart with no rebuild. `data/volumes/rabbitmq` persists the broker; Beat's
   `--schedule=/tmp/celerybeat-schedule` is deliberately ephemeral.
 - No custom networks: everything uses the Compose default network, workers reach the broker at
   hostname `rabbitmq`.

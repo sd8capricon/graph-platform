@@ -66,8 +66,8 @@ Fixed (not overridable via `.env`): `ASPNETCORE_ENVIRONMENT=Production`, `ASPNET
 
 | Volume / mount                                     | Purpose                                                                                  |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `rabbitmq-data:/var/lib/rabbitmq`                  | RabbitMQ persistence (named volume)                                                      |
-| `storage-data:/data/storage`                       | Object storage, shared by `api`, `python-schema-init`, `ingestion-worker` (named volume) |
+| `../data/volumes/rabbitmq:/var/lib/rabbitmq`    | RabbitMQ persistence (bind mount)                                                        |
+| `../data/volumes/storage:/data/storage`          | Object storage, shared by `api`, `python-schema-init`, `ingestion-worker` (bind mount)   |
 | `../configs/local.yaml:/app/configs/local.yaml:ro` | Worker/Beat/schema-init config; edits need no image rebuild                              |
 | Beat `--schedule=/tmp/celerybeat-schedule`         | Ephemeral; recreated with the container                                                  |
 
