@@ -1602,3 +1602,72 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
   not move focus by itself), one `Toaster` plus a separate `aria-live` announcer for filter counts and
   upload/indexing transitions, `DialogTitle` on every dialog, and `AlertDialog` for destructive
   confirmations. Status is never conveyed by colour alone.
+
+## Docker (`docker/`)
+
+All Docker-related files live in `docker/`; the build context for every image is the repository
+root (`context: ..`). The Compose stack runs the ASP.NET API, the nginx-served SPA, RabbitMQ, the
+Celery worker and Beat, plus a one-shot initializer for the Python-owned tables. PostgreSQL stays
+**external** — it must support both Apache AGE and pgvector, and nothing in `docker/compose.yaml`
+starts one. Full runbook: `docker/README.md`.
+
+### Images
+
+- `Dockerfile.api`: .NET 10 SDK `dotnet publish --configuration Release --output /app/publish`,
+  then ASP.NET 10 runtime on `:5087`, running as the `app` user.
+- `Dockerfile.ingestion-worker`: `python:3.14-slim` + `uv:0.12.10`; copies `src/common/`,
+  `src/ingestion-worker/`, `configs/local.yaml` and `docker/init_python_schema.py`, then
+  `uv sync --locked --no-dev`. Default `CMD` is the Celery worker; one image serves three Compose
+  services (`python-schema-init`, `ingestion-worker`, `ingestion-beat`) via per-service `command`.
+- `Dockerfile.agent-runtime`: same Python+uv shape for `src/agent-runtime/`; a buildable developer
+  smoke-test image with **no Compose service**, because the agent package exposes no HTTP server.
+- `Dockerfile.frontend`: Node 22 build (`npm ci` + `npm run build`) then `nginx:alpine` serving
+  `/usr/share/nginx/html/` with `docker/nginx.conf`'s SPA fallback
+  (`try_files $uri $uri/ /index.html`).
+- One `Dockerfile.<name>.dockerignore` per image; all four are currently identical (`.venv`,
+  `node_modules`, `bin`/`obj`, `data/storage`, `appsettings.Development.json`).
+
+### Configuration (`docker/.env`)
+
+- `cp docker/.env.example docker/.env`; the file is gitignored via `docker/.gitignore` — never
+  commit it. `PGHOST`/`PGPORT`/`PGDATABASE`/`PGUSER`/`PGPASSWORD` and `API_PG_CONNECTION_STRING`
+  must point at the **same** database (libpq vars for Python, Npgsql string for the API).
+- Use URI-safe alphanumeric characters for `RABBITMQ_PASSWORD` — it is interpolated into the
+  workers' `RABBITMQ_URL=amqp://<user>:<pass>@rabbitmq:5672//`.
+- Provider secrets (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OLLAMA_API_KEY`) are
+  resolved by `configs/local.yaml`'s `*_env` entries; if a configured key is missing, either set it
+  in `docker/.env` or trim the model list — never paste secrets into the YAML.
+- `VITE_APP_NAME`/`VITE_API_BASE_URL`/`VITE_MAX_UPLOAD_BYTES` are baked into the frontend assets at
+  image-build time (Docker `ARG`), so changing one requires `build frontend`, not just a restart.
+  `CORS_ALLOWED_ORIGIN` must be the browser-visible frontend origin (default `http://localhost:8080`).
+
+### Database ownership in containers
+
+The shared-database split is preserved, not bypassed: EF migrations are **never** run by Compose.
+Apply them from the host before the first `up` (`ConnectionStrings__PgConnectionString` from
+`docker/.env`, `dotnet ef database update`). `python-schema-init`
+(`docker/init_python_schema.py`) then runs `Base.metadata.create_all` plus the per-model embedding
+indexes for the first `EMBEDDING`-typed model, touching only Python-owned tables. It is
+`restart: "no"`, and `ingestion-worker`/`ingestion-beat` gate on
+`service_completed_successfully` plus `rabbitmq: service_healthy` — the same commit-before-publish
+and guarded-transition conventions as the pipeline itself.
+
+### Runtime shape
+
+- Ports: `8080:80` frontend, `5087:5087` API, `5672`/`15672` RabbitMQ (AMQP + management UI).
+  The browser calls the API directly at `VITE_API_BASE_URL`, not through nginx.
+- `storage-data` (`/data/storage`) is shared by `api`, `python-schema-init` and
+  `ingestion-worker`; compose pins `Storage__Provider=filesystem`, and both stacks implement the
+  same ADR-0006 on-disk layout so they can share the volume.
+- `configs/local.yaml` is mounted read-only into the Python services, so config edits apply on
+  container restart with no rebuild. `rabbitmq-data` persists the broker; Beat's
+  `--schedule=/tmp/celerybeat-schedule` is deliberately ephemeral.
+- No custom networks: everything uses the Compose default network, workers reach the broker at
+  hostname `rabbitmq`.
+
+```sh
+cp docker/.env.example docker/.env   # then fill in PG*, connection string, JWT key, secrets
+docker compose --env-file docker/.env -f docker/compose.yaml up --build
+docker compose --env-file docker/.env -f docker/compose.yaml config   # validate without starting
+docker compose --env-file docker/.env -f docker/compose.yaml logs -f api ingestion-worker ingestion-beat
+```
