@@ -7,7 +7,7 @@ import { qk } from '@/queries/keys'
 
 const POLL_MS = 5_000
 
-const IN_FLIGHT: FileStatus[] = [FileStatus.Uploaded, FileStatus.Processing]
+const IN_FLIGHT: FileStatus[] = [FileStatus.Processing]
 
 export function useFilesQuery(
   organizationId: string | undefined,

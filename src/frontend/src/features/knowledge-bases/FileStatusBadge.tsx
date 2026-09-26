@@ -1,4 +1,4 @@
-import { AlertCircle, Check, Clock, Loader2 } from 'lucide-react'
+import { AlertCircle, Check, CheckCircle2, Loader2 } from 'lucide-react'
 
 import { FileStatus } from '@/api/types'
 import { Badge } from '@/components/ui/badge'
@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 const PRESENTATION = {
   [FileStatus.Uploaded]: {
     label: 'Uploaded',
-    icon: Clock,
+    icon: Check,
     variant: 'secondary' as const,
     spin: false,
   },
@@ -18,7 +18,7 @@ const PRESENTATION = {
   },
   [FileStatus.Processed]: {
     label: 'Processed',
-    icon: Check,
+    icon: CheckCircle2,
     variant: 'default' as const,
     spin: false,
   },
