@@ -73,6 +73,116 @@
                 "Ingestion Worker: celery beat"
             ],
             "problemMatcher": []
+        },
+        {
+            "label": "Docker: Build API",
+            "type": "docker-build",
+            "dockerBuild": {
+                "context": "${workspaceFolder}",
+                "dockerfile": "${workspaceFolder}/docker/Dockerfile.api",
+                "tag": "graph-platform/api:local",
+                "pull": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Docker: Build Frontend",
+            "type": "docker-build",
+            "dockerBuild": {
+                "context": "${workspaceFolder}",
+                "dockerfile": "${workspaceFolder}/docker/Dockerfile.frontend",
+                "tag": "graph-platform/frontend:local",
+                "pull": true,
+                "buildArgs": {
+                    "VITE_APP_NAME": "GraphForge",
+                    "VITE_API_BASE_URL": "http://localhost:5087",
+                    "VITE_MAX_UPLOAD_BYTES": "104857600"
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Docker: Build Ingestion Worker",
+            "type": "docker-build",
+            "dockerBuild": {
+                "context": "${workspaceFolder}",
+                "dockerfile": "${workspaceFolder}/docker/Dockerfile.ingestion-worker",
+                "tag": "graph-platform/ingestion-worker:local",
+                "pull": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Docker: Build Agent Runtime",
+            "type": "docker-build",
+            "dockerBuild": {
+                "context": "${workspaceFolder}",
+                "dockerfile": "${workspaceFolder}/docker/Dockerfile.agent-runtime",
+                "tag": "graph-platform/agent-runtime:local",
+                "pull": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Docker: Build All",
+            "dependsOn": [
+                "Docker: Build API",
+                "Docker: Build Frontend",
+                "Docker: Build Ingestion Worker",
+                "Docker: Build Agent Runtime"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Docker Compose: Up (build)",
+            "type": "docker-compose",
+            "dockerCompose": {
+                "files": [
+                    "${workspaceFolder}/docker/compose.yaml"
+                ],
+                "envFile": "${workspaceFolder}/docker/.env",
+                "up": {
+                    "detached": true,
+                    "build": true
+                }
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
+        },
+        {
+            "label": "Docker Compose: Down",
+            "type": "docker-compose",
+            "dockerCompose": {
+                "files": [
+                    "${workspaceFolder}/docker/compose.yaml"
+                ],
+                "envFile": "${workspaceFolder}/docker/.env",
+                "down": {}
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "group": "graph-platform"
+            }
         }
     ]
 }
