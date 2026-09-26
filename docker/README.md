@@ -139,8 +139,11 @@ only source of truth for API resources and ingestion job state.
 - `docker/postgres/Dockerfile`: official PostgreSQL 18.6 with Apache AGE 1.8.0
   and pgvector 0.8.6 compiled from their official sources.
 - `Dockerfile.api`: .NET 10 SDK publish stage and ASP.NET 10 runtime.
-- `Dockerfile.ingestion-worker`: Python 3.14 + uv; used by schema-init, worker
-  and Beat. `data/volumes/storage` is shared with the API for object storage.
+- `Dockerfile.ingestion-worker`: Python 3.14 + uv; built once (by the
+  `ingestion-worker` service) and reused by schema-init, worker and Beat, which
+  never pull it. `data/volumes/storage` is shared with the API for object storage.
+  Starting schema-init or Beat on its own requires `docker compose build
+  ingestion-worker` first.
 - `redis`: Redis 8.2 LTS, used only for API read-model caching and worker invalidation;
   its port is published on localhost for development.
 - `Dockerfile.agent-runtime`: buildable developer smoke-test image, not started
