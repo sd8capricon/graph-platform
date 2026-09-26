@@ -3,6 +3,7 @@ name: graph-platform
 services:
   postgres:
     image: graph-platform/postgres-age-vector:latest
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/postgres/Dockerfile
@@ -63,6 +64,7 @@ services:
 
   api:
     image: graph-platform/api:latest
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
@@ -88,9 +90,6 @@ services:
 
   python-schema-init:
     image: graph-platform/ingestion-worker:latest
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.ingestion-worker
     command: ["python", "/app/docker/init_python_schema.py"]
     environment:
       PGHOST: ${PGHOST:-postgres}
@@ -115,6 +114,7 @@ services:
 
   ingestion-worker:
     image: graph-platform/ingestion-worker:latest
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/Dockerfile.ingestion-worker
@@ -153,9 +153,6 @@ services:
 
   ingestion-beat:
     image: graph-platform/ingestion-worker:latest
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.ingestion-worker
     command:
       - celery
       - -A
@@ -189,6 +186,7 @@ services:
 
   frontend:
     image: graph-platform/frontend:latest
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
