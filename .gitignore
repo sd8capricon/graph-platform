@@ -28,3 +28,8 @@ TestResults/
 # a bare `data/` would also ignore the API's EF `Data/` folder.
 /data/
 src/api/GraphPlatform.Api/App_Data/
+
+# Celery Beat's local schedule database (created wherever the beat process is launched from)
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
