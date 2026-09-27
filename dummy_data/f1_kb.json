@@ -1,6 +1,52 @@
 {
   "id": "b7c9e1a4-3f28-4d65-9e07-1a2b3c4d5e6f",
   "name": "F1 kb",
+  "schema": {
+    "labels": [
+      {
+        "name": "Driver",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "nationality": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "name": "Team",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          }
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "name": "RACED_FOR",
+        "properties": {
+          "relationship_id": {
+            "type": "string"
+          },
+          "season": {
+            "type": "integer"
+          }
+        }
+      }
+    ],
+    "triplets": [
+      {
+        "source": "Driver",
+        "relationship": "RACED_FOR",
+        "target": "Team"
+      }
+    ]
+  },
   "nodes": [
     {
       "id": "9f1c3d72-5a84-4b16-8e29-1c6d7f0a3b55",
