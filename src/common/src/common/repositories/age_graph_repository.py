@@ -297,7 +297,7 @@ class AgeGraphRepository:
         props_literal = self._age_properties_literal(properties)
         query = (
             f"SELECT * FROM cypher('{graph_name}', $$ "
-            f"MERGE (n:{label}{identity_literal}) SET n = n + {props_literal} "
+            f"MERGE (n:{label}{identity_literal}) SET n += {props_literal} "
             "RETURN n $$) AS (n agtype);"
         )
         cursor = self.pg_connection.cursor()
@@ -322,7 +322,7 @@ class AgeGraphRepository:
         props = self._age_properties_literal(properties)
         query = (
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{id:"{node_id}"}}) '
-            f"SET n = n + {props} RETURN n $$) AS (v agtype);"
+            f"SET n += {props} RETURN n $$) AS (v agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -690,7 +690,7 @@ class AgeGraphRepository:
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}}), '
             f'(b {{id:"{target_node_id}"}}) '
             f"MERGE (a)-[r:{label}{identity_literal}]->(b) "
-            f"SET r = r + {props_literal} RETURN r $$) AS (r agtype);"
+            f"SET r += {props_literal} RETURN r $$) AS (r agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -721,7 +721,7 @@ class AgeGraphRepository:
         props = self._age_properties_literal(properties)
         query = (
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}})-[r:{label}]->'
-            f'(b {{id:"{target_node_id}"}}) SET r = r + {props} RETURN r $$) AS (v agtype);'
+            f'(b {{id:"{target_node_id}"}}) SET r += {props} RETURN r $$) AS (v agtype);'
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)

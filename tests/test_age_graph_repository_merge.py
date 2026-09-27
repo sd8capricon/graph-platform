@@ -30,7 +30,7 @@ async def test_merge_node_emits_merge_on_id_and_set():
     )
 
     assert "MERGE (n:Driver {id: 'driver-1'})" in query
-    assert "SET n = n +" in query
+    assert "SET n +=" in query
     assert "{id: 'driver-1', name: 'Max Verstappen'}" in query
     assert "CREATE" not in query
 
@@ -64,7 +64,7 @@ async def test_merge_relationship_uses_relationship_id_as_identity():
     )
 
     assert "MERGE (a)-[r:DRIVES_FOR {relationship_id: 'rel-1'}]->(b)" in query
-    assert "SET r = r +" in query
+    assert "SET r +=" in query
     assert "{relationship_id: 'rel-1', season: 2024}" in query
     assert "CREATE" not in query
 
@@ -85,3 +85,29 @@ async def test_merge_relationship_rejects_unsafe_labels():
 
     with pytest.raises(ValueError):
         await repository.merge_relationship("demo_graph", "a", "b", "", {})
+
+
+async def test_update_node_uses_compound_set_operator():
+    connection = _RecordingConnection()
+    repository = AgeGraphRepository(connection)
+
+    query = await repository.update_node(
+        "demo_graph", "driver-1", {"name": "Max Verstappen"}
+    )
+
+    assert "SET n +=" in query
+    assert "SET n = n +" not in query
+    assert "{name: 'Max Verstappen'}" in query
+
+
+async def test_update_relationship_uses_compound_set_operator():
+    connection = _RecordingConnection()
+    repository = AgeGraphRepository(connection)
+
+    query = await repository.update_relationship(
+        "demo_graph", "driver-1", "team-1", "DRIVES_FOR", {"season": 2024}
+    )
+
+    assert "SET r +=" in query
+    assert "SET r = r +" not in query
+    assert "{season: 2024}" in query
