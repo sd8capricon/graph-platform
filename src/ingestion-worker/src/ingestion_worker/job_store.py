@@ -115,6 +115,23 @@ class IndexJobStore:
         )
         return result.rowcount > 0
 
+    async def find_stale_running_jobs(
+        self, older_than: datetime, limit: int = 10
+    ) -> list[tuple[str, bool]]:
+        """Find `running` jobs whose `started_at` predates `older_than`.
+
+        Returns `(job_id, graph_dispatched)` pairs so a reconciler can decide
+        which stage to redeliver. No row locking: redelivery is idempotent, so
+        two reconcilers racing on the same stale job is harmless.
+        """
+        stmt = (
+            select(IndexJob.id, IndexJob.graph_dispatched)
+            .where(IndexJob.status == JOB_RUNNING, IndexJob.started_at < older_than)
+            .order_by(IndexJob.started_at)
+            .limit(limit)
+        )
+        return [tuple(row) for row in (await self.session.execute(stmt)).all()]
+
     async def mark_job_completed(self, job_id: str) -> bool:
         """Mark a `running` job completed, treating every file as processed.
 

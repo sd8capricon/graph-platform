@@ -1,6 +1,6 @@
 """Tests for the ingestion job-state store (ADR-0005)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import insert
 from sqlalchemy.dialects import postgresql
@@ -66,6 +66,49 @@ async def test_claim_and_run_transitions_are_guarded():
         job = await store.get_job("job-1")
         assert job is not None
         assert job.status == JOB_RUNNING
+
+    await engine.dispose()
+
+
+async def test_find_stale_running_jobs_filters_status_and_age():
+    engine = await _store_engine()
+    now = datetime.now(UTC)
+    async with AsyncSession(engine) as session:
+        await _insert_job(
+            session,
+            id="stale-not-dispatched",
+            status="running",
+            started_at=now - timedelta(seconds=1000),
+            graph_dispatched=False,
+        )
+        await _insert_job(
+            session,
+            id="stale-dispatched",
+            status="running",
+            started_at=now - timedelta(seconds=1000),
+            graph_dispatched=True,
+        )
+        await _insert_job(
+            session,
+            id="fresh",
+            status="running",
+            started_at=now - timedelta(seconds=10),
+        )
+        await _insert_job(
+            session,
+            id="stale-but-completed",
+            status="completed",
+            started_at=now - timedelta(seconds=1000),
+        )
+
+        store = IndexJobStore(session)
+        cutoff = now - timedelta(seconds=900)
+        stale = await store.find_stale_running_jobs(cutoff)
+
+        assert sorted(stale) == [
+            ("stale-dispatched", True),
+            ("stale-not-dispatched", False),
+        ]
 
     await engine.dispose()
 

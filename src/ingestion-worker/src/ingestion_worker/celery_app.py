@@ -10,6 +10,10 @@ embedding DAG (real extraction/graph work is ADR-0005 Phase 2).
 No result backend is configured (`task_ignore_result=True`): all durable state
 lives in `index_job`/`index_file` (ADR-0005), so RabbitMQ + Celery + Postgres is
 the whole stack.
+
+A crash between a stage's commit and its next-stage publish (see `dispatcher.py`
+and `stages.py`) leaves a job durably `running` with nothing to redeliver it;
+the `reconciler` module's periodic Beat task redelivers those orphaned jobs.
 """
 
 import os
@@ -71,6 +75,7 @@ app = Celery(
     include=[
         "ingestion_worker.tasks",
         "ingestion_worker.dispatcher",
+        "ingestion_worker.reconciler",
     ],
 )
 
@@ -101,6 +106,10 @@ app.conf.update(
             "queue": "q.ontology",
             "routing_key": "ingestion.ontology",
         },
+        "ingestion_worker.reconciler.reconcile_stale_jobs": {
+            "queue": "q.ontology",
+            "routing_key": "ingestion.ontology",
+        },
     },
     # At-least-once: ack only after success, redeliver if the worker dies.
     task_acks_late=True,
@@ -114,11 +123,23 @@ app.conf.update(
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,
+    # RabbitMQ 4.x removed the "transient_nonexcl_queues" deprecated feature
+    # that kombu's default pidbox reply queue (auto_delete, non-exclusive)
+    # relies on; declaring it exclusive instead avoids Queue.declare errors.
+    control_queue_exclusive=True,
+    # Same deprecated feature also breaks the gossip/events receiver queue
+    # (celery.events.Receiver), which defaults to the same non-exclusive,
+    # auto_delete combination.
+    event_queue_exclusive=True,
     beat_schedule={
         "dispatch-queued-jobs": {
             "task": "ingestion_worker.dispatcher.dispatch_queued_jobs",
             "schedule": float(os.environ.get("INGESTION_DISPATCH_INTERVAL_SECONDS", "5")),
-        }
+        },
+        "reconcile-stale-jobs": {
+            "task": "ingestion_worker.reconciler.reconcile_stale_jobs",
+            "schedule": float(os.environ.get("INGESTION_RECONCILE_INTERVAL_SECONDS", "300")),
+        },
     },
 )
 
