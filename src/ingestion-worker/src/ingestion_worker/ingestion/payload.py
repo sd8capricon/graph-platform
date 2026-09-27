@@ -1,18 +1,17 @@
 """Worker-owned parsing for pre-extracted upload JSON.
 
-The uploaded file (see ``dummy_data/f1_kb.json``) already contains the complete
-``nodes``/``relationships`` payload plus a temporary ``schema`` block
-(``labels``/``relationships``/``triplets``). That ``schema`` block is **not**
-part of the shared ``common.schemas.knowledge_base.KnowledgeBase`` contract and
-must never be added there: it is transient ingestion input, consumed here to
-build ``GraphSchemaRegistryDTO`` rows and then discarded.
-
-``nodes``/``relationships`` *are* the knowledge-base contract, so this module
-reuses ``common``'s ``KnowledgeNode``/``KnowledgeRelationship`` shapes only via
-strict worker-local file models (required ids) and converts them into the
-shared ``KnowledgeBase``/``NodeEmbeddingDTO`` types. Nothing in ``common`` is
-modified.
+TODO(ADR-0005 Phase 2): REMOVE this module. It exists only for the temporary
+pre-extracted upload format (see ``dummy_data/f1_kb.json``) whose file already
+contains the complete ``nodes``/``relationships`` payload plus an inline
+``schema`` block. Real file ingestion will not include ``schema`` in the
+upload -- ontology/entity extraction will produce it -- so when the real
+extractors land, delete this module together with
+``tests/test_payload.py`` and rewire ``stages.py`` (``construct_graph`` /
+``embed_nodes``) to consume the extraction output instead of this envelope.
 """
+
+# TODO(ADR-0005 Phase 2): REMOVE - temporary pre-extracted-format scaffolding
+# (see module docstring).
 
 import json
 from typing import Any
