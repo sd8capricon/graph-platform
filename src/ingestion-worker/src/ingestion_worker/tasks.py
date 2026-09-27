@@ -88,7 +88,7 @@ def extract_entities(self, job_id: str, file_row_id: str) -> None:
     max_retries=MAX_RETRIES,
 )
 def construct_graph(self, job_id: str) -> None:
-    """Graph-construction stage; publishes a single stub embedding batch."""
+    """Graph-construction stage; merges pre-extracted nodes/edges and schema, then publishes embedding."""
     load_worker_config()
     asyncio.run(run_stage(stages.construct_graph, _publish, job_id))
 
@@ -103,7 +103,7 @@ def construct_graph(self, job_id: str) -> None:
     max_retries=MAX_RETRIES,
 )
 def embed_nodes(self, job_id: str, batch_id: str) -> None:
-    """Embedding stage; completes the job and publishes the knowledge base."""
+    """Embedding stage; upserts node embeddings from pre-extracted nodes and completes the job."""
     load_worker_config()
     asyncio.run(run_stage(stages.embed_nodes, _publish, job_id, batch_id))
 

@@ -36,16 +36,32 @@ async def run_stage(fn, publish, *args) -> None:
     """Open the worker's DB resources and run one stage function.
 
     `fn` is one of `stages.py`'s Celery-free stage coroutines, called as
-    `fn(session, publish, *args)`. This is the Celery entrypoint each task in
-    `tasks.py` awaits via `asyncio.run`.
+    `fn(session, publish, *args, cache=..., repository=..., storage=...)`.
+    Provider/storage errors are classified into retryable vs terminal via
+    `errors.classify_exception`, so Celery's `autoretry_for` policy applies.
+    This is the Celery entrypoint each task in `tasks.py` awaits via
+    `asyncio.run`.
     """
     from ingestion_worker.db import open_job_resources
+    from ingestion_worker.errors import classify_exception
 
     from ingestion_worker.cache import open_cache_invalidator
+    from ingestion_worker.storage import open_storage_service
 
     async with open_cache_invalidator() as cache:
-        async with open_job_resources() as (session, _repository):
-            await fn(session, publish, *args, cache=cache)
+        async with open_job_resources() as (session, repository):
+            async with open_storage_service() as storage:
+                try:
+                    await fn(
+                        session,
+                        publish,
+                        *args,
+                        cache=cache,
+                        repository=repository,
+                        storage=storage,
+                    )
+                except Exception as exc:
+                    raise classify_exception(exc) from exc
 
 
 __all__ = ["fail_job", "run_stage"]

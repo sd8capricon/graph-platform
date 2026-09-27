@@ -15,6 +15,7 @@ from uuid import uuid4
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from common.models.file import File
 from common.models.knowledge_base import KnowledgeBase
 from common.schemas.knowledge_base import KnowledgeBaseRecordDTO
 
@@ -310,6 +311,25 @@ class IndexJobStore:
         if row is None:
             return None
         return KnowledgeBaseRecordDTO.model_validate(row)
+
+    async def get_file_storage_key(
+        self, file_id: str, organization_id: str
+    ) -> str | None:
+        """Return the object key for one uploaded file, or None when unknown.
+
+        ``index_file.file_id`` references ``file.Id``; the content lives in
+        object storage under ``file.StorageKey``. Scoped by organization so a
+        job can never read another organization's bytes.
+        """
+        row = (
+            await self.session.execute(
+                select(File.storage_key).where(
+                    File.id == file_id,
+                    File.organization_id == organization_id,
+                )
+            )
+        ).scalars().first()
+        return row
 
     async def set_knowledge_base_state(self, knowledge_base_id: str, state: str) -> None:
         """Set the KB's coarse user-facing `State` column."""
