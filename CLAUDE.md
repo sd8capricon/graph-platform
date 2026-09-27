@@ -1615,9 +1615,11 @@ module per resource, plus `keys.ts`) · `src/schemas` (Zod) · `src/components`
 
 All Docker-related files live in `docker/`; the build context for every image is the repository
 root (`context: ..`). The Compose stack runs the ASP.NET API, the nginx-served SPA, a self-built
-PostgreSQL 18 with Apache AGE and pgvector (`postgres`), RabbitMQ, the Celery worker and Beat, plus
+PostgreSQL 18 with Apache AGE and pgvector (`postgres`), RabbitMQ, Redis, the Celery worker and Beat, plus
 a one-shot initializer for the Python-owned tables. `postgres` is the only PostgreSQL service, shared
-by the API and the Python services. Full runbook: `docker/README.md`.
+by the API and the Python services. `docker/compose.infra.yaml` holds the infra-only services
+(`postgres`, `rabbitmq`, `redis`) and is `include`d by `docker/compose.yaml` (full stack), so they
+are defined exactly once. Full runbook: `docker/README.md`.
 
 ### Images
 
@@ -1698,7 +1700,7 @@ and guarded-transition conventions as the pipeline itself.
 
 ```sh
 cp docker/.env.example docker/.env   # then fill in PG*, POSTGRES_HOST_PORT, connection string, JWT key, secrets
-docker compose --env-file docker/.env -f docker/compose.yaml up -d postgres   # start DB, then migrate
+docker compose --env-file docker/.env -f docker/compose.infra.yaml up -d   # start infra (postgres/rabbitmq/redis), then migrate
 docker compose --env-file docker/.env -f docker/compose.yaml up --build
 docker compose --env-file docker/.env -f docker/compose.yaml config   # validate without starting
 docker compose --env-file docker/.env -f docker/compose.yaml logs -f postgres api ingestion-worker ingestion-beat

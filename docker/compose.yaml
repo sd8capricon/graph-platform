@@ -1,67 +1,13 @@
 name: graph-platform
 
+# Infra services (postgres, rabbitmq, redis) live in compose.infra.yaml and are
+# included here, so they are defined exactly once. `docker compose -f
+# docker/compose.infra.yaml up -d` starts just the infra for host-side dev;
+# this file starts the full stack.
+include:
+  - compose.infra.yaml
+
 services:
-  postgres:
-    image: graph-platform/postgres-age-vector:latest
-    pull_policy: build
-    build:
-      context: ..
-      dockerfile: docker/postgres/Dockerfile
-    environment:
-      POSTGRES_USER: ${PGUSER:-graphplatform}
-      POSTGRES_PASSWORD: ${PGPASSWORD:-replace-me}
-      POSTGRES_DB: ${PGDATABASE:-graph_platform}
-    ports:
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
-    volumes:
-      - ../data/volumes/postgres:/var/lib/postgresql
-    shm_size: 256mb
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-    restart: unless-stopped
-
-  rabbitmq:
-    image: rabbitmq:4-management-alpine
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-graphplatform}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-replaceWithRandomAlphanumericValue}
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    volumes:
-      - ../data/volumes/rabbitmq:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
-  redis:
-    image: redis:8.2-alpine
-    command:
-      - redis-server
-      - --save
-      - ""
-      - --appendonly
-      - "no"
-      - --maxmemory
-      - 128mb
-      - --maxmemory-policy
-      - allkeys-lru
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   api-migrations:
     image: graph-platform/api:latest
     pull_policy: never

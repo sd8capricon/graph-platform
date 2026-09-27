@@ -7,6 +7,14 @@ Redis is a disposable cache, not the Celery broker (RabbitMQ) or the source of
 truth for ingestion state (PostgreSQL). All Docker-related files are kept in
 this folder.
 
+Two Compose files share one service definition:
+
+- `docker/compose.infra.yaml` — infrastructure only (`postgres`, `rabbitmq`,
+  `redis`), for local development with the API / worker / frontend running on
+  the host.
+- `docker/compose.yaml` — the full stack. It `include`s `compose.infra.yaml`,
+  so the infra services are defined exactly once.
+
 ## First run
 
 1. Create the ignored environment file and fill in the database credentials, API
@@ -32,7 +40,7 @@ this folder.
    `docker/.env` or edit the model list in that config. Do not put secrets in
    the YAML file or commit `docker/.env`.
 
-2. Start the database, then the rest of the stack from the repository root.
+2. Start the infrastructure, then the rest of the stack from the repository root.
    API-owned tables are migrated by the one-shot `api-migrations` service (the API image run
    with `--migrate`, migrate-and-exit), which runs once the `postgres` healthcheck passes and
    gates the API via `service_completed_successfully`. The host reaches the container's
@@ -41,7 +49,7 @@ this folder.
    them before the stack starts — run:
 
    ```sh
-   docker compose --env-file docker/.env -f docker/compose.yaml up -d postgres
+   docker compose --env-file docker/.env -f docker/compose.infra.yaml up -d
 
    set -a
    . docker/.env
@@ -55,6 +63,13 @@ this folder.
    ```sh
    docker compose --env-file docker/.env -f docker/compose.yaml up --build
    ```
+
+   For host-side development (API / worker / frontend on the host, infra in
+   containers), stop after step 2: `postgres` is on
+   `127.0.0.1:${POSTGRES_HOST_PORT}`, RabbitMQ on `5672`/`15672`, Redis on
+   `127.0.0.1:6379`. Both Compose files declare `name: graph-platform`, so
+   container names and bind-mount paths are identical whichever file started
+   the infra.
 
    The `postgres` service creates the `age` and `vector` extensions in
    `POSTGRES_DB` the first time its data directory is initialized. The Python
@@ -169,6 +184,8 @@ container.
 Useful commands:
 
 ```sh
+docker compose --env-file docker/.env -f docker/compose.infra.yaml up -d   # infra only
+docker compose --env-file docker/.env -f docker/compose.infra.yaml logs -f postgres rabbitmq redis
 docker compose --env-file docker/.env -f docker/compose.yaml config
 docker compose --env-file docker/.env -f docker/compose.yaml logs -f postgres api ingestion-worker ingestion-beat
 docker compose --env-file docker/.env -f docker/compose.yaml down
