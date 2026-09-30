@@ -16,6 +16,7 @@ from common.config import DEFAULT_CONFIG_PATH, load_config, settings
 from common.logging_setup import configure_logging
 from common.schemas.logging import LoggingSettings
 from common.schemas.model import Model, ModelType
+from ingestion_worker.errors import NonRetryableIngestionError
 
 RABBITMQ_URL_ENV = "RABBITMQ_URL"
 DEFAULT_RABBITMQ_URL = "amqp://guest:guest@localhost:5672//"
@@ -76,19 +77,34 @@ def rabbitmq_url() -> str:
     return os.environ.get(RABBITMQ_URL_ENV, DEFAULT_RABBITMQ_URL)
 
 
-def embedding_model_for_job(embedding_model_id: str | None) -> Model | None:
+def embedding_model_for_job(embedding_model_id: str | None) -> Model:
     """Resolve the embedding provider for a job.
 
-    Prefers the job's recorded `embedding_model_id`; falls back to the first
-    embedding-capable model when the job did not record one (a legacy row).
-    Returns None when no embedding provider is configured, in which case the
-    side-table writes store rows without vectors.
+    The API stamps the organization's active embedding model onto the job at
+    publish time (ADR-0001/0002 provenance). There is no fallback to "first
+    embedding model": vectors from a different model than the organization's
+    active one could not be searched with it.
+
+    Raises:
+        NonRetryableIngestionError: If the job recorded no embedding model (the
+            organization has none set), the id is not in the worker's
+            configuration, or the configured model is not embedding-capable.
     """
-    if embedding_model_id:
-        for model in settings.models:
-            if model.id == embedding_model_id:
-                return model
-    return next((m for m in settings.models if ModelType.EMBEDDING in m.type), None)
+    if not embedding_model_id:
+        raise NonRetryableIngestionError(
+            "organization has no embedding model set; "
+            "configure an active embedding model before indexing"
+        )
+    for model in settings.models:
+        if model.id == embedding_model_id:
+            if ModelType.EMBEDDING not in model.type:
+                raise NonRetryableIngestionError(
+                    f"model {embedding_model_id!r} is not an embedding model"
+                )
+            return model
+    raise NonRetryableIngestionError(
+        f"embedding model {embedding_model_id!r} is not configured on the worker"
+    )
 
 
 __all__ = [

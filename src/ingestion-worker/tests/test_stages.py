@@ -8,13 +8,19 @@ remain stubs; construct/embed consume pre-extracted JSON from fake storage.
 
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from common.config import settings
 from common.models.base import Base
 from common.models.graph_schema_registry import GraphSchemaRegistry
 from common.models.node_embedding import NodeEmbedding
+from common.schemas.model import AuthMode, Model, ModelType
+from common.services import embedding_service
+from ingestion_worker.errors import NonRetryableIngestionError
 from ingestion_worker.job_store import IndexJobStore
 from ingestion_worker.jobs import fail_job
 from ingestion_worker.models.base import create_job_tables
@@ -30,6 +36,34 @@ from ingestion_worker.stages import (
 )
 
 
+EMBEDDING_MODEL_ID = "550e8400-e29b-41d4-a716-446655440000"
+
+
+@pytest.fixture(autouse=True)
+def _embedding_model(monkeypatch):
+    model = Model.model_validate(
+        {
+            "id": EMBEDDING_MODEL_ID,
+            "display_name": "Embedding",
+            "name": "text-embedding-3-small",
+            "provider": "openai",
+            "connection_string": "https://api.openai.com/v1",
+            "auth_mode": AuthMode.API_KEY,
+            "api_key": "test-key",
+            "type": [ModelType.EMBEDDING],
+            "embedding_dimension": 3,
+        }
+    )
+    monkeypatch.setattr(settings, "models", [model])
+
+    async def fake_aembedding(*, input, **kwargs):
+        return SimpleNamespace(
+            data=[{"embedding": [0.1, 0.2, 0.3]} for _ in input]
+        )
+
+    monkeypatch.setattr(embedding_service.litellm, "aembedding", fake_aembedding)
+
+
 async def _engine():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -40,7 +74,14 @@ async def _engine():
     return engine
 
 
-async def _seed_job(session, *, job_id="job-1", status="running", knowledge_base_id="kb-1"):
+async def _seed_job(
+    session,
+    *,
+    job_id="job-1",
+    status="running",
+    knowledge_base_id="kb-1",
+    embedding_model_id=EMBEDDING_MODEL_ID,
+):
     now = datetime.now(UTC)
     await session.execute(
         insert(IndexJob).values(
@@ -53,6 +94,7 @@ async def _seed_job(session, *, job_id="job-1", status="running", knowledge_base
             processed_files=0,
             failed_files=0,
             graph_dispatched=False,
+            embedding_model_id=embedding_model_id,
             created_at=now,
         )
     )
@@ -413,5 +455,28 @@ async def test_fail_job_sets_the_job_and_knowledge_base_to_failed(monkeypatch):
         kb = await store.read_knowledge_base("kb-1")
         assert kb.state == "failed"
     assert cache.calls == [("knowledge_base", "org-1", "kb-1", "job-1")]
+
+    await engine.dispose()
+
+
+async def test_stages_raise_when_organization_has_no_embedding_model():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        await _seed_job(session, embedding_model_id=None)
+        await _seed_file(session, file_id="file-1", storage_key="k/file-1")
+        await IndexJobStore(session).create_file("job-1", "file-1")
+        await session.commit()
+
+        publish = _RecordingPublisher()
+        storage = _FakeStorage({"k/file-1": _demo_file_bytes()})
+        with pytest.raises(NonRetryableIngestionError, match="no embedding model"):
+            await extract_ontology(session, publish, "job-1")
+        with pytest.raises(NonRetryableIngestionError, match="no embedding model"):
+            await construct_graph(
+                session, publish, "job-1", repository=_FakeRepository(), storage=storage
+            )
+        with pytest.raises(NonRetryableIngestionError, match="no embedding model"):
+            await embed_nodes(session, publish, "job-1", "0", storage=storage)
+        assert publish.calls == []
 
     await engine.dispose()

@@ -61,6 +61,11 @@ async def extract_ontology(
         logger.info("extract_ontology: job %s missing or not running; skipping", job_id)
         return
 
+    from ingestion_worker.config import embedding_model_for_job
+
+    # Fail before fanning out: later stages need the organization's model.
+    embedding_model_for_job(job.embedding_model_id)
+
     logger.info("extract_ontology stub running for job %s", job_id)
 
     files = await store.list_files(job_id)
