@@ -45,11 +45,9 @@ class KnowledgeBaseService:
            knowledge base's id is dropped from those lists and the elements it
            alone contributed are deleted - nodes via `DETACH DELETE`, taking
            their remaining relationships with them. An element another
-           knowledge base also contributed survives.
-        2. Deletes nodes written before contributor lists existed, which carry
-           no list: they are found through the knowledge base's `NodeEmbedding`
-           rows and deleted only if still unstamped. Then deletes those
-           `NodeEmbedding` rows.
+           knowledge base also contributed survives. Only this knowledge base's
+           elements are read, through the per-label GIN index.
+        2. Deletes the knowledge base's `NodeEmbedding` rows.
         3. Adjusts `GraphSchemaRegistry`: drops this knowledge base's id from every
            schema row it contributed to, and deletes the rows left with no
            contributing knowledge base. Rows still claimed by another knowledge base
@@ -60,9 +58,8 @@ class KnowledgeBaseService:
            the remaining knowledge bases if an exact schema is needed.
 
         Because claims live on the graph elements themselves, nodes merged by a
-        publish that failed before embedding are released too. Only unstamped
-        (pre-existing) data still relies on `NodeEmbedding`, and an unstamped
-        relationship between two surviving nodes is not removed.
+        publish that failed before embedding are released too. Elements written
+        without a claim are not found.
 
         A missing graph is not an error: there are no nodes to delete, but the
         side-tables are still cleaned up, as in `delete_graph()`. Replaying this
@@ -95,28 +92,9 @@ class KnowledgeBaseService:
 
         queries: list[str] = []
         if await self.repository.graph_exists(graph_name):
-            node_ids = list(
-                (
-                    await session.execute(
-                        select(NodeEmbedding.node_id).where(
-                            NodeEmbedding.organization_id == organization_id,
-                            NodeEmbedding.graph_name == graph_name,
-                            NodeEmbedding.knowledge_base_id == knowledge_base_id,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-
             queries = await self.repository.release_knowledge_base(
                 graph_name, knowledge_base_id
             )
-            legacy_query = await self.repository.delete_unclaimed_nodes(
-                graph_name, node_ids
-            )
-            if legacy_query is not None:
-                queries.append(legacy_query)
             await self.repository.commit()
 
         await session.execute(

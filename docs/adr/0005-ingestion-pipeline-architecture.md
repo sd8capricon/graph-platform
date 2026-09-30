@@ -586,17 +586,31 @@ failure goes through `fail_job` to `Failed`.
 
 Graph claims: `construct_graph` merges every node and relationship with the knowledge base's id
 appended (idempotently) to a `knowledge_base_ids` list property, mirroring the schema registry's
-`knowledge_base_ids`. Releasing drops the id from every relationship and then every node, and deletes
-elements whose list became empty (nodes by `DETACH DELETE`). So a node or edge another knowledge
-base also contributed survives. Graph data from a publish that failed before `embed_nodes` is
-still found. Release and delete are separate statements, because Apache Age 1.8 silently skips a
-`SET ... WITH ... WHERE ... DELETE` chain. The split also makes a replay safe: it deletes anything
-a crashed run left emptied. Nodes written before claims existed have no list; they are found
-through `NodeEmbedding` and deleted only while unstamped. Remaining gaps:
-- An unstamped relationship between two surviving nodes is left behind.
+`knowledge_base_ids`. Releasing handles relationships and then nodes. For each, it deletes the
+elements whose list is only this knowledge base (nodes by `DETACH DELETE`), then drops the id from
+the lists of elements another knowledge base also contributed, which survive. Graph data from a
+publish that failed before `embed_nodes` is still found. Elements written without a claim are
+never found; there is no pre-claim data to migrate.
+
+Every new label table gets a `gin (properties) WITH (fastupdate = off)` index when the ingestion
+preflight creates the label. The release statements match with inline property maps
+(`MATCH (n {knowledge_base_ids: [kb]})`), which Apache Age compiles to an indexable
+`properties @> ...`. A `WHERE kb IN ...` or `WHERE ... @>` form scans every element instead.
+- `fastupdate = off` is needed: with the default, fresh rows sit in GIN's pending list and the
+  planner ignores the index until a VACUUM. The price is slower inserts, about 20 µs per row locally.
+- Deleting before releasing keeps every step indexed, because an emptied list cannot be looked up
+  (every list contains `[]`).
+- Each statement is a single clause, because Apache Age 1.8 silently skips a
+  `SET ... WITH ... WHERE ... DELETE` chain.
+- A replay is safe: sole-owned elements are gone, so the release step finishes the job.
+- The same index serves the `{id: ...}` endpoint lookups in `merge_relationship`.
+
+Measured locally at 100k nodes and 20k edges, releasing 400 shared edges took about 65 ms. The
+planner joins those edges to the vertex tables' id indexes with a merge join (about 13 ms of
+that). Remaining gaps:
 - A relationship from another knowledge base disappears with an endpoint only this knowledge base
   claimed.
-- Each release scans the whole graph, since there is no property index.
+- Graphs created before the index existed have none and must be rebuilt.
 
 ## Scaling Strategy
 

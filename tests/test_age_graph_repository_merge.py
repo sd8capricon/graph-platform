@@ -152,27 +152,32 @@ async def test_merge_relationship_claims_the_edge_and_tolerates_no_properties():
     assert "MERGE (a)-[r:KNOWS]->(b) SET r.knowledge_base_ids = CASE" in query
 
 
-async def test_release_knowledge_base_releases_edges_then_nodes_in_separate_statements():
+async def test_release_knowledge_base_deletes_sole_owned_then_releases_via_the_index():
     connection = _RecordingConnection()
     repository = AgeGraphRepository(connection)
 
     queries = await repository.release_knowledge_base("demo_graph", "kb-1")
 
     assert queries == connection.cursor_obj.queries
-    assert len(queries) == 4
-    release_edges, delete_edges, release_nodes, delete_nodes = queries
+    delete_edges, release_edges, delete_nodes, release_nodes = queries
+    claimed = "{knowledge_base_ids: ['kb-1']}"
     assert (
-        "MATCH ()-[r]->() WHERE 'kb-1' IN r.knowledge_base_ids "
+        f"MATCH ()-[r {claimed}]->() WHERE size(r.knowledge_base_ids) = 1 DELETE r"
+    ) in delete_edges
+    assert (
+        f"MATCH ()-[r {claimed}]->() "
         "SET r.knowledge_base_ids = [x IN r.knowledge_base_ids WHERE x <> 'kb-1']"
     ) in release_edges
-    assert "WHERE r.knowledge_base_ids = [] DELETE r" in delete_edges
     assert (
-        "MATCH (n) WHERE 'kb-1' IN n.knowledge_base_ids "
+        f"MATCH (n {claimed}) WHERE size(n.knowledge_base_ids) = 1 DETACH DELETE n"
+    ) in delete_nodes
+    assert (
+        f"MATCH (n {claimed}) "
         "SET n.knowledge_base_ids = [x IN n.knowledge_base_ids WHERE x <> 'kb-1']"
     ) in release_nodes
-    assert "WHERE n.knowledge_base_ids = [] DETACH DELETE n" in delete_nodes
-    # Apache Age 1.8 silently skips a SET ... WITH ... DELETE chain.
-    assert not any("WITH" in query for query in queries)
+    # Only the inline property map uses the GIN index (`WHERE ... IN` scans the
+    # graph), and Apache Age 1.8 silently skips a SET ... WITH ... DELETE chain.
+    assert not any("WHERE 'kb-1' IN" in q or " WITH " in q for q in queries)
 
 
 async def test_release_knowledge_base_requires_an_id():
@@ -180,17 +185,3 @@ async def test_release_knowledge_base_requires_an_id():
 
     with pytest.raises(ValueError):
         await repository.release_knowledge_base("demo_graph", "")
-
-
-async def test_delete_unclaimed_nodes_only_matches_nodes_without_a_claim():
-    connection = _RecordingConnection()
-    repository = AgeGraphRepository(connection)
-
-    query = await repository.delete_unclaimed_nodes("demo_graph", ["d1", "it's"])
-
-    assert (
-        "MATCH (n) WHERE n.id IN ['d1', 'it\\'s'] AND n.knowledge_base_ids IS NULL "
-        "DETACH DELETE n"
-    ) in query
-    assert await repository.delete_unclaimed_nodes("demo_graph", []) is None
-    assert connection.cursor_obj.queries == [query]

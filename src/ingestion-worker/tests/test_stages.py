@@ -250,12 +250,7 @@ class _FakeRepository:
         self.queries.append(query)
         return [query]
 
-    async def delete_unclaimed_nodes(self, graph_name, node_ids):
-        if not node_ids:
-            return None
-        query = f"unclaimed {','.join(sorted(node_ids))}"
-        self.queries.append(query)
-        return query
+
 
     async def commit(self):
         return None
@@ -547,8 +542,8 @@ async def test_unpublish_removes_graph_data_and_returns_the_knowledge_base_to_dr
             session, publish, "job-2", cache=cache, repository=repository
         )
 
-        # The knowledge base's graph claim is released, plus any unstamped nodes.
-        assert repository.queries == ["release kb-1", "unclaimed d1,t1"]
+        # The knowledge base's claim on the graph is released.
+        assert repository.queries == ["release kb-1"]
         assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
         assert (await session.execute(select(GraphSchemaRegistry))).scalars().all() == []
 

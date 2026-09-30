@@ -280,8 +280,8 @@ class _QueuedFetchOneCursor:
     """Cursor recording every query, serving a queued fetchone result per call.
 
     `_ensure_label` issues an existence-check SELECT (consuming one fetchone)
-    and then, only when the label is missing, a second SELECT that creates it
-    (no fetchone call) - so only the existence check's result needs queuing.
+    and then, only when the label is missing, statements that create it and its
+    index (no fetchone call) - so only the existence check's result needs queuing.
     """
 
     def __init__(self, fetchone_results=()):
@@ -311,10 +311,16 @@ async def test_age_graph_repository_ensure_vertex_label_creates_when_missing():
 
     await repository.ensure_vertex_label("demo_graph", "Driver")
 
-    exists_query, create_query = connection.cursor_obj.queries
+    exists_query, create_query, index_query = connection.cursor_obj.queries
     assert "ag_catalog.ag_label" in exists_query
     assert "demo_graph" in exists_query and "Driver" in exists_query
     assert create_query == "SELECT ag_catalog.create_vlabel('demo_graph', 'Driver');"
+    # Inline property-map matches compile to `properties @> ...`, which this serves;
+    # fastupdate=off keeps fresh rows visible to the planner without a VACUUM.
+    assert index_query == (
+        'CREATE INDEX ON "demo_graph"."Driver" USING gin (properties) '
+        "WITH (fastupdate = off);"
+    )
 
 
 async def test_age_graph_repository_ensure_vertex_label_skips_when_already_exists():
@@ -336,8 +342,20 @@ async def test_age_graph_repository_ensure_edge_label_creates_when_missing():
 
     await repository.ensure_edge_label("demo_graph", "DRIVES_FOR")
 
-    _, create_query = connection.cursor_obj.queries
+    _, create_query, index_query = connection.cursor_obj.queries
     assert create_query == "SELECT ag_catalog.create_elabel('demo_graph', 'DRIVES_FOR');"
+    assert index_query.startswith('CREATE INDEX ON "demo_graph"."DRIVES_FOR" USING gin')
+
+
+async def test_age_graph_repository_ensure_label_rejects_unsafe_labels():
+    from common.repositories.age_graph_repository import AgeGraphRepository
+
+    connection = _QueuedFetchOneConnection()
+    repository = AgeGraphRepository(connection)
+
+    with pytest.raises(ValueError):
+        await repository.ensure_vertex_label("demo_graph", 'Driver"; DROP TABLE x; --')
+    assert connection.cursor_obj.queries == []
 
 
 async def test_age_graph_repository_ensure_edge_label_skips_when_already_exists():
@@ -694,13 +712,6 @@ class _RecordingAgeRepository:
         self.queries.append(query)
         return [query]
 
-    async def delete_unclaimed_nodes(self, graph_name, node_ids):
-        if not node_ids:
-            return None
-        query = f"unclaimed:{','.join(sorted(node_ids))}"
-        self.queries.append(query)
-        return query
-
     async def commit(self):
         self.commits += 1
 
@@ -834,9 +845,8 @@ async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows(
         )
         await session.commit()
 
-        # The knowledge base's claim on the graph is released, then any of its
-        # nodes written before claims existed are removed by id.
-        assert queries == ["release:kb-1", "unclaimed:kb-1-node-1,kb-1-node-2"]
+        # The knowledge base's claim on the graph is released in the graph itself.
+        assert queries == ["release:kb-1"]
         assert repository.commits == 1
 
         remaining_embeddings = (

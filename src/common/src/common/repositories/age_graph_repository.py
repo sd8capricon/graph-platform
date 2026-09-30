@@ -212,12 +212,27 @@ class AgeGraphRepository:
         before any `CREATE` touches it, avoids the race — a bulk load of many
         same-label nodes/relationships in one transaction is exactly this case.
 
+        A newly created label also gets a GIN index on its `properties` column.
+        Apache Age compiles an inline property map - `MATCH (n {id: 'x'})` or
+        `MATCH (n {knowledge_base_ids: ['kb']})` - to `properties @> ...`, which
+        this index serves; a `WHERE` comparison does not use it. Each label is
+        its own table, so each needs its own index. `fastupdate = off` keeps new
+        entries out of GIN's pending list: otherwise the planner won't use the index
+        for freshly written rows until a VACUUM (so neither `merge_relationship()`'s
+        endpoint lookups nor a prompt unpublish would). The cost is slower inserts
+        (about 20 µs per row locally). An existing label is left as is: graphs
+        created before this index must be rebuilt to get it.
+
         Args:
             graph_name: The name of the graph the label belongs to.
-            label: The vertex/edge label to ensure exists.
+            label: The vertex/edge label to ensure exists. Must be a valid identifier.
             create_function: The `ag_catalog` function to call when the label is
                 missing — `"create_vlabel"` or `"create_elabel"`.
+
+        Raises:
+            ValueError: If `label` is not a valid identifier.
         """
+        self._validate_label(label)
         exists_query = (
             "SELECT 1 FROM ag_catalog.ag_label l "
             "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
@@ -229,6 +244,10 @@ class AgeGraphRepository:
             return
         await cursor.execute(
             f"SELECT ag_catalog.{create_function}('{graph_name}', '{label}');"
+        )
+        await cursor.execute(
+            f'CREATE INDEX ON "{graph_name}"."{label}" USING gin (properties) '
+            "WITH (fastupdate = off);"
         )
 
     async def ensure_vertex_label(self, graph_name: str, label: str) -> None:
@@ -396,21 +415,26 @@ class AgeGraphRepository:
     ) -> list[str]:
         """Remove one knowledge base's claim on the graph, deleting what it alone owned.
 
-        Drops `knowledge_base_id` from every relationship's and node's
-        `knowledge_base_ids` list, then deletes the elements left with an empty
-        list; nodes are `DETACH DELETE`d, so any relationship still attached to
-        a deleted node goes with it. Elements another knowledge base also
-        contributed survive with that knowledge base's claim. Relationships are
-        released before nodes.
+        Deletes every relationship and node whose `knowledge_base_ids` is just
+        this knowledge base, then drops its id from the lists of elements that
+        another knowledge base also contributed. Nodes are `DETACH DELETE`d, so
+        any relationship still attached to a deleted node goes with it.
+        Relationships are handled before nodes.
 
-        Apache Age 1.8 silently skips a `SET ... WITH ... WHERE ... DELETE`
-        chain, so each release is a `SET` followed by a separate `DELETE` of
-        emptied elements. That split also makes a replay safe: a crash between
-        the two leaves emptied elements that the next run's `DELETE` removes.
-        Elements written without `knowledge_base_id` have no list and are never
-        matched; see `delete_unclaimed_nodes()`.
+        Every statement matches claims with an inline property map,
+        `{knowledge_base_ids: [kb]}`. Apache Age compiles that to a containment
+        test (`properties @> ...`, true for any list including `kb`) that the
+        per-label GIN index serves (see `_ensure_label()`), so only this knowledge
+        base's elements are read. Don't rewrite it as `WHERE kb IN ...`: that
+        scans every element of the graph.
 
-        Every relationship and node in the graph is scanned. Callers commit.
+        Deleting before releasing matters too. The reverse order would have to
+        find emptied lists, which the index cannot do because every list
+        contains `[]`. Each step is also a single clause, because Apache Age 1.8
+        silently skips a `SET ... WITH ... WHERE ... DELETE` chain. A replay is
+        safe: once the sole-owned elements are deleted, the release step
+        finishes the job. Elements written without `knowledge_base_id` have no
+        list and are never matched. Callers commit.
 
         Args:
             graph_name: The name of the graph.
@@ -423,13 +447,19 @@ class AgeGraphRepository:
             raise ValueError("knowledge_base_id is required to release a knowledge base")
         kb = self._age_literal(knowledge_base_id)
         prop = KNOWLEDGE_BASE_IDS_PROPERTY
+        claimed = "{" + f"{prop}: [{kb}]" + "}"
+
+        def sole_owner(var: str) -> str:
+            return f"size({var}.{prop}) = 1"
+
+        def release(var: str) -> str:
+            return f"SET {var}.{prop} = [x IN {var}.{prop} WHERE x <> {kb}]"
+
         statements = [
-            f"MATCH ()-[r]->() WHERE {kb} IN r.{prop} "
-            f"SET r.{prop} = [x IN r.{prop} WHERE x <> {kb}] RETURN count(r)",
-            f"MATCH ()-[r]->() WHERE r.{prop} = [] DELETE r RETURN count(r)",
-            f"MATCH (n) WHERE {kb} IN n.{prop} "
-            f"SET n.{prop} = [x IN n.{prop} WHERE x <> {kb}] RETURN count(n)",
-            f"MATCH (n) WHERE n.{prop} = [] DETACH DELETE n RETURN count(n)",
+            f"MATCH ()-[r {claimed}]->() WHERE {sole_owner('r')} DELETE r RETURN count(r)",
+            f"MATCH ()-[r {claimed}]->() {release('r')} RETURN count(r)",
+            f"MATCH (n {claimed}) WHERE {sole_owner('n')} DETACH DELETE n RETURN count(n)",
+            f"MATCH (n {claimed}) {release('n')} RETURN count(n)",
         ]
         cursor = self.pg_connection.cursor()
         queries = []
@@ -441,36 +471,6 @@ class AgeGraphRepository:
             await cursor.execute(query)
             queries.append(query)
         return queries
-
-    async def delete_unclaimed_nodes(
-        self, graph_name: str, node_ids: list[str]
-    ) -> str | None:
-        """`DETACH DELETE` the given nodes, but only those with no `knowledge_base_ids`.
-
-        For nodes merged before contributor lists existed: they are invisible
-        to `release_knowledge_base()`, so a caller that knows their ids (e.g.
-        from `NodeEmbedding` rows) removes them here. A node that does carry a
-        list is left to `release_knowledge_base()`, so another knowledge base's
-        claim on it is respected.
-
-        Args:
-            graph_name: The name of the graph.
-            node_ids: App-level `id`s of candidate nodes.
-
-        Returns:
-            The SQL query string that was executed, or None if `node_ids` is empty.
-        """
-        if not node_ids:
-            return None
-        ids = "[" + ", ".join(self._age_literal(str(node_id)) for node_id in node_ids) + "]"
-        query = (
-            f"SELECT * FROM cypher('{graph_name}', $$ MATCH (n) WHERE n.id IN {ids} "
-            f"AND n.{KNOWLEDGE_BASE_IDS_PROPERTY} IS NULL DETACH DELETE n "
-            "RETURN count(n) $$) AS (count agtype);"
-        )
-        cursor = self.pg_connection.cursor()
-        await cursor.execute(query)
-        return query
 
     async def get_relationships(self, graph_name: str, label: str | None = None) -> str:
         """Query relationships in a graph, optionally filtered by label.
