@@ -43,9 +43,9 @@ redis:
 # Blank values fall back to the defaults; unknown keys or invalid values fail at startup.
 ingestion_worker:
   logging:
-    log_level: "" # DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive); default - INFO
-    log_output: "" #stdout, file; default - stdout
-    log_file_path: "" # required when log_output is file, e.g. data/logs/ingestion-worker.log
+    log_level: "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive); default - INFO
+    log_output: "file" #stdout, file; default - stdout
+    log_file_path: "/Users/sd8capricon/Developer/projects/graph-platform/data/logs/ingestion-worker/app.log" # required when log_output is file, e.g. data/logs/ingestion-worker.log
 
 agent_runtime:
   logging:
