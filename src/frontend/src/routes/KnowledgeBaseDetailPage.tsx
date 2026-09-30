@@ -256,28 +256,32 @@ export function KnowledgeBaseDetailPage() {
               </Button>
             </ActionTooltip>
 
-            <ActionTooltip reason={publishReason}>
-              <Button
-                disabled={!!publishReason}
-                aria-disabled={!!publishReason}
-                onClick={() => setPublishOpen(true)}
-              >
-                <Rocket aria-hidden="true" />
-                Publish
-              </Button>
-            </ActionTooltip>
+            {isEditable && (
+              <ActionTooltip reason={publishReason}>
+                <Button
+                  disabled={!!publishReason}
+                  aria-disabled={!!publishReason}
+                  onClick={() => setPublishOpen(true)}
+                >
+                  <Rocket aria-hidden="true" />
+                  Publish
+                </Button>
+              </ActionTooltip>
+            )}
 
-            <ActionTooltip reason={unpublishReason}>
-              <Button
-                variant="outline"
-                disabled={!!unpublishReason}
-                aria-disabled={!!unpublishReason}
-                onClick={() => setUnpublishOpen(true)}
-              >
-                <Undo2 aria-hidden="true" />
-                Unpublish
-              </Button>
-            </ActionTooltip>
+            {canUnpublishKnowledgeBaseState(knowledgeBase.state) && (
+              <ActionTooltip reason={unpublishReason}>
+                <Button
+                  variant="outline"
+                  disabled={!!unpublishReason}
+                  aria-disabled={!!unpublishReason}
+                  onClick={() => setUnpublishOpen(true)}
+                >
+                  <Undo2 aria-hidden="true" />
+                  Unpublish
+                </Button>
+              </ActionTooltip>
+            )}
 
             <ActionTooltip reason={mutateReason}>
               <Button
