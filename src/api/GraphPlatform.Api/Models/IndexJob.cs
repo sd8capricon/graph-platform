@@ -1,8 +1,8 @@
 namespace GraphPlatform.Api.Models;
 
 /// <summary>
-/// One ingestion request for a Knowledge Base, tracked through the worker's dispatch/fan-in
-/// lifecycle (ADR-0005).
+/// One ingestion (publish) or graph-removal (unpublish) request for a Knowledge Base, tracked
+/// through the worker's dispatch lifecycle (ADR-0005); see <see cref="Kind"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -15,7 +15,8 @@ namespace GraphPlatform.Api.Models;
 /// </para>
 /// <para>
 /// The API only ever writes <see cref="Status"/>=<see cref="IndexJobStatus.Queued"/> at creation
-/// time (<c>KnowledgeBasesController.PublishKnowledgeBase</c>); every other transition belongs to
+/// time (<c>KnowledgeBasesController.PublishKnowledgeBase</c> and
+/// <c>UnpublishKnowledgeBase</c>); every other transition belongs to
 /// the worker's <c>IndexJobStore</c>. The read endpoint
 /// (<c>GET .../knowledge-bases/{kbId}/index-jobs/{jobId}</c>) is this API's only other touch point.
 /// </para>
@@ -42,6 +43,9 @@ public class IndexJob
     /// <c>GraphNames.ForOrganization</c>.
     /// </summary>
     public string GraphName { get; set; } = string.Empty;
+
+    /// <summary>What the job does; the worker's dispatcher picks the first stage from it.</summary>
+    public IndexJobKind Kind { get; set; } = IndexJobKind.Publish;
 
     /// <summary>Current lifecycle status.</summary>
     public IndexJobStatus Status { get; set; } = IndexJobStatus.Queued;
@@ -83,6 +87,19 @@ public class IndexJob
 
     /// <summary>Files tracked under this job.</summary>
     public ICollection<IndexFile> Files { get; set; } = [];
+}
+
+/// <summary>What an <see cref="IndexJob"/> does.</summary>
+public enum IndexJobKind
+{
+    /// <summary>Ingest the Knowledge Base's files into the graph; completes as published.</summary>
+    Publish,
+
+    /// <summary>
+    /// Remove the Knowledge Base's nodes, relationships and embeddings from the graph; completes
+    /// as draft. Created with no files.
+    /// </summary>
+    Unpublish,
 }
 
 /// <summary>Lifecycle states for an <see cref="IndexJob"/> (ADR-0005).</summary>

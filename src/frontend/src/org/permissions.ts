@@ -27,6 +27,15 @@ export function isEditableKnowledgeBaseState(state: KnowledgeBaseState): boolean
   return state === KnowledgeBaseState.Draft || state === KnowledgeBaseState.Failed
 }
 
+/**
+ * A knowledge base's graph data can be removed (returning it to `draft`) while
+ * it is `published` or `failed` — a failed publish/unpublish may have left
+ * data behind. Mirrors the API's `CanUnpublish` rule.
+ */
+export function canUnpublishKnowledgeBaseState(state: KnowledgeBaseState): boolean {
+  return state === KnowledgeBaseState.Published || state === KnowledgeBaseState.Failed
+}
+
 export const ROLE_LABELS: Record<OrganizationRole, string> = {
   [OrganizationRole.OrganizationAdmin]: 'Organization admin',
   [OrganizationRole.Contributor]: 'Contributor',

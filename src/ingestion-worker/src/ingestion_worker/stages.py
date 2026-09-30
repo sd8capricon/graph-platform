@@ -18,8 +18,13 @@ Celery-free, like `dispatcher.dispatch_queued_jobs`: each function takes a
 `session` and an injected `publish(task_name, args)` callable, and commits
 before publishing - the same convention, and the same documented reconciler
 gap (a crash between commit and publish leaves state durable but the next
-stage never enqueued). Each stage skips a missing job, or one that isn't
-`running` (already completed/failed/redelivered after terminal state).
+stage never enqueued). Each stage skips a missing job, one that isn't
+`running` (already completed/failed/redelivered after terminal state), or one
+of the other `kind`.
+
+A `kind="unpublish"` job skips the ingestion DAG entirely: its single stage,
+``unpublish_knowledge_base``, removes the knowledge base's graph data and
+returns it to `draft`. `entry_task_name` maps a job's kind to its first task.
 """
 
 import logging
@@ -33,7 +38,10 @@ from ingestion_worker.ingestion.payload import (
 )
 from ingestion_worker.job_store import (
     FILE_TERMINAL_STATUSES,
+    JOB_KIND_PUBLISH,
+    JOB_KIND_UNPUBLISH,
     JOB_RUNNING,
+    KB_DRAFT,
     KB_PUBLISHED,
     IndexJobRow,
     IndexJobStore,
@@ -45,6 +53,36 @@ EXTRACT_ONTOLOGY_TASK_NAME = "ingestion_worker.tasks.extract_ontology"
 EXTRACT_ENTITIES_TASK_NAME = "ingestion_worker.tasks.extract_entities"
 CONSTRUCT_GRAPH_TASK_NAME = "ingestion_worker.tasks.construct_graph"
 EMBED_NODES_TASK_NAME = "ingestion_worker.tasks.embed_nodes"
+UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME = "ingestion_worker.tasks.unpublish_knowledge_base"
+
+_ENTRY_TASK_NAMES = {
+    JOB_KIND_PUBLISH: EXTRACT_ONTOLOGY_TASK_NAME,
+    JOB_KIND_UNPUBLISH: UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
+}
+
+
+def entry_task_name(kind: str) -> str:
+    """The first task of a job of `kind`, published by dispatcher/reconciler."""
+    try:
+        return _ENTRY_TASK_NAMES[kind]
+    except KeyError:
+        raise ValueError(f"unknown index job kind {kind!r}") from None
+
+
+async def _running_job(
+    store: IndexJobStore, job_id: str, kind: str, stage: str
+) -> IndexJobRow | None:
+    """Fetch a job for `stage`, or None when it's missing, not running or of another kind."""
+    job = await store.get_job(job_id)
+    if job is None or job.status != JOB_RUNNING or job.kind != kind:
+        logger.info(
+            "%s: job %s missing, not running or not a %s job; skipping",
+            stage,
+            job_id,
+            kind,
+        )
+        return None
+    return job
 
 
 async def extract_ontology(
@@ -56,9 +94,8 @@ async def extract_ontology(
     upload and is consumed by `construct_graph`.
     """
     store = IndexJobStore(session)
-    job = await store.get_job(job_id)
-    if job is None or job.status != JOB_RUNNING:
-        logger.info("extract_ontology: job %s missing or not running; skipping", job_id)
+    job = await _running_job(store, job_id, JOB_KIND_PUBLISH, "extract_ontology")
+    if job is None:
         return
 
     from ingestion_worker.config import embedding_model_for_job
@@ -98,11 +135,8 @@ async def extract_entities(
     and are consumed by `construct_graph`/`embed_nodes`.
     """
     store = IndexJobStore(session)
-    job = await store.get_job(job_id)
-    if job is None or job.status != JOB_RUNNING:
-        logger.info(
-            "extract_entities: job %s missing or not running; skipping", job_id
-        )
+    job = await _running_job(store, job_id, JOB_KIND_PUBLISH, "extract_entities")
+    if job is None:
         return
 
     logger.info(
@@ -156,9 +190,8 @@ async def construct_graph(
     from ingestion_worker.ingestion.writer import upsert_schema_registry
 
     store = IndexJobStore(session)
-    job = await store.get_job(job_id)
-    if job is None or job.status != JOB_RUNNING:
-        logger.info("construct_graph: job %s missing or not running; skipping", job_id)
+    job = await _running_job(store, job_id, JOB_KIND_PUBLISH, "construct_graph")
+    if job is None:
         return
     if repository is None:
         raise ValueError("construct_graph requires a graph repository")
@@ -218,9 +251,8 @@ async def embed_nodes(
     from ingestion_worker.ingestion.writer import upsert_node_embeddings
 
     store = IndexJobStore(session)
-    job = await store.get_job(job_id)
-    if job is None or job.status != JOB_RUNNING:
-        logger.info("embed_nodes: job %s missing or not running; skipping", job_id)
+    job = await _running_job(store, job_id, JOB_KIND_PUBLISH, "embed_nodes")
+    if job is None:
         return
     if storage is None:
         raise ValueError("embed_nodes requires object storage")
@@ -256,13 +288,61 @@ async def embed_nodes(
         )
 
 
+async def unpublish_knowledge_base(
+    session, publish, job_id: str, *, cache=None, repository=None, storage=None
+) -> None:
+    """Remove a knowledge base's nodes, relationships and embeddings, then complete the job.
+
+    `KnowledgeBaseService.delete_knowledge_base` detach-deletes the nodes found
+    through the knowledge base's `NodeEmbedding` rows (taking their edges with
+    them), deletes those rows and prunes its schema registry claims. A
+    redelivery re-reads whatever embedding rows remain, so replaying it after a
+    partial failure is safe. The guarded `running -> completed` transition
+    returns the knowledge base to `draft` exactly once.
+    """
+    from common.services.knowledge_base_service import KnowledgeBaseService
+
+    store = IndexJobStore(session)
+    job = await _running_job(store, job_id, JOB_KIND_UNPUBLISH, "unpublish_knowledge_base")
+    if job is None:
+        return
+    if repository is None:
+        raise ValueError("unpublish_knowledge_base requires a graph repository")
+
+    logger.info("unpublish_knowledge_base running for job %s", job_id)
+    try:
+        await KnowledgeBaseService(repository).delete_knowledge_base(
+            session, job.knowledge_base_id, job.graph_name, job.organization_id
+        )
+        completed = await store.mark_job_completed(job_id)
+        if completed:
+            await store.set_knowledge_base_state(job.knowledge_base_id, KB_DRAFT)
+        await session.commit()
+    except Exception:
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001 - rollback is best-effort before re-raise
+            logger.debug(
+                "unpublish_knowledge_base rollback failed for job %s", job_id, exc_info=True
+            )
+        raise
+
+    if completed and cache is not None:
+        await cache.invalidate_knowledge_base(
+            job.organization_id, job.knowledge_base_id, job_id=job.id
+        )
+
+
 __all__ = [
     "extract_ontology",
     "extract_entities",
     "construct_graph",
     "embed_nodes",
+    "unpublish_knowledge_base",
+    "entry_task_name",
     "EXTRACT_ONTOLOGY_TASK_NAME",
     "EXTRACT_ENTITIES_TASK_NAME",
     "CONSTRUCT_GRAPH_TASK_NAME",
     "EMBED_NODES_TASK_NAME",
+    "UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME",
 ]

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowLeft, Database, Pencil, Rocket, Trash2 } from 'lucide-react'
+import { ArrowLeft, Database, Pencil, Rocket, Trash2, Undo2 } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 
@@ -33,12 +33,16 @@ import { RenameKnowledgeBaseDialog } from '@/features/knowledge-bases/RenameKnow
 import { useDocumentTitle } from '@/hooks/use-document-title'
 import { formatBytes, formatDateTime } from '@/lib/format'
 import { newUuid } from '@/lib/uuid'
-import { isEditableKnowledgeBaseState } from '@/org/permissions'
+import {
+  canUnpublishKnowledgeBaseState,
+  isEditableKnowledgeBaseState,
+} from '@/org/permissions'
 import { useCurrentOrg } from '@/org/use-current-org'
 import {
   useDeleteKnowledgeBase,
   useKnowledgeBaseQuery,
   usePublishKnowledgeBase,
+  useUnpublishKnowledgeBase,
 } from '@/queries/use-knowledge-bases'
 import {
   useDeleteFile,
@@ -48,8 +52,10 @@ import {
 } from '@/queries/use-files'
 
 const NEEDS_ROLE = 'You need the Contributor or Organization Admin role.'
-const NOT_EDITABLE = 'A published or indexing knowledge base can no longer be changed.'
+const NOT_EDITABLE =
+  'Only a draft or failed knowledge base can be changed; unpublish a published one to edit it.'
 const NO_FILES = 'Upload at least one file before publishing.'
+const NOT_UNPUBLISHABLE = 'Only a published or failed knowledge base can be unpublished.'
 
 export function KnowledgeBaseDetailPage() {
   const { knowledgeBaseId = '' } = useParams<{ knowledgeBaseId: string }>()
@@ -68,12 +74,14 @@ export function KnowledgeBaseDetailPage() {
   const deleteFile = useDeleteFile(organizationId, knowledgeBaseId)
   const downloadFile = useDownloadFile(organizationId, knowledgeBaseId)
   const publish = usePublishKnowledgeBase(organizationId)
+  const unpublish = useUnpublishKnowledgeBase(organizationId)
   const removeKnowledgeBase = useDeleteKnowledgeBase(organizationId)
 
   const [tasks, setTasks] = React.useState<UploadTask[]>([])
   const controllers = React.useRef(new Map<string, AbortController>())
   const [renameOpen, setRenameOpen] = React.useState(false)
   const [publishOpen, setPublishOpen] = React.useState(false)
+  const [unpublishOpen, setUnpublishOpen] = React.useState(false)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [pendingFileDelete, setPendingFileDelete] = React.useState<FileDto | null>(null)
   const [downloadingId, setDownloadingId] = React.useState<string | null>(null)
@@ -211,6 +219,11 @@ export function KnowledgeBaseDetailPage() {
       : files.length === 0
         ? NO_FILES
         : null
+  const unpublishReason = !canAuthor
+    ? NEEDS_ROLE
+    : !canUnpublishKnowledgeBaseState(knowledgeBase.state)
+      ? NOT_UNPUBLISHABLE
+      : null
 
   return (
     <>
@@ -244,6 +257,18 @@ export function KnowledgeBaseDetailPage() {
               >
                 <Rocket aria-hidden="true" />
                 Publish
+              </Button>
+            </ActionTooltip>
+
+            <ActionTooltip reason={unpublishReason}>
+              <Button
+                variant="outline"
+                disabled={!!unpublishReason}
+                aria-disabled={!!unpublishReason}
+                onClick={() => setUnpublishOpen(true)}
+              >
+                <Undo2 aria-hidden="true" />
+                Unpublish
               </Button>
             </ActionTooltip>
 
@@ -290,7 +315,7 @@ export function KnowledgeBaseDetailPage() {
           <CardDescription>
             {isEditable
               ? 'Upload the source documents to be indexed.'
-              : 'A published or indexing knowledge base is read-only.'}
+              : 'A published knowledge base, or one with a job running, is read-only.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -300,7 +325,7 @@ export function KnowledgeBaseDetailPage() {
             <p className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
               {!canAuthor
                 ? 'You do not have permission to upload files here.'
-                : 'Files cannot be changed once indexing has started.'}
+                : 'Files cannot be changed until the knowledge base is back in draft.'}
             </p>
           )}
 
@@ -380,6 +405,33 @@ export function KnowledgeBaseDetailPage() {
                   : 'Could not publish.',
               )
               setPublishOpen(false)
+            },
+          })
+        }
+      />
+
+      <ConfirmDialog
+        open={unpublishOpen}
+        onOpenChange={setUnpublishOpen}
+        title={`Unpublish ${knowledgeBase.name}?`}
+        description="Removes this knowledge base's nodes, relationships and embeddings from the graph. Its files are kept and it returns to draft, so you can edit and publish it again."
+        confirmLabel="Unpublish"
+        destructive
+        pending={unpublish.isPending}
+        onConfirm={() =>
+          unpublish.mutate(knowledgeBase.id, {
+            onSuccess: () => {
+              toast.success('Unpublishing started')
+              announce('Unpublishing started')
+              setUnpublishOpen(false)
+            },
+            onError: (unpublishError) => {
+              toast.error(
+                isApiError(unpublishError)
+                  ? (unpublishError.detail ?? unpublishError.title)
+                  : 'Could not unpublish.',
+              )
+              setUnpublishOpen(false)
             },
           })
         }

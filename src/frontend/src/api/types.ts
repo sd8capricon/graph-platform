@@ -33,6 +33,7 @@ export const KnowledgeBaseState = {
   Indexing: 'indexing',
   Published: 'published',
   Failed: 'failed',
+  Unpublishing: 'unpublishing',
 } as const
 export type KnowledgeBaseState =
   (typeof KnowledgeBaseState)[keyof typeof KnowledgeBaseState]

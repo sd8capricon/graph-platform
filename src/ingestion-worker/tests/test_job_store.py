@@ -90,6 +90,13 @@ async def test_find_stale_running_jobs_filters_status_and_age():
         )
         await _insert_job(
             session,
+            id="stale-unpublish",
+            kind="unpublish",
+            status="running",
+            started_at=now - timedelta(seconds=1000),
+        )
+        await _insert_job(
+            session,
             id="fresh",
             status="running",
             started_at=now - timedelta(seconds=10),
@@ -106,8 +113,9 @@ async def test_find_stale_running_jobs_filters_status_and_age():
         stale = await store.find_stale_running_jobs(cutoff)
 
         assert sorted(stale) == [
-            ("stale-dispatched", True),
-            ("stale-not-dispatched", False),
+            ("stale-dispatched", "publish", True),
+            ("stale-not-dispatched", "publish", False),
+            ("stale-unpublish", "unpublish", False),
         ]
 
     await engine.dispose()

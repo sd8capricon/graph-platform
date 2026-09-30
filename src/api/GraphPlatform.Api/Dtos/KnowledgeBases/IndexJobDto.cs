@@ -2,7 +2,9 @@ using GraphPlatform.Api.Models;
 
 namespace GraphPlatform.Api.Dtos;
 
-/// <summary>One ingestion request for a Knowledge Base, and its current progress (ADR-0005).</summary>
+/// <summary>
+/// One publish or unpublish request for a Knowledge Base, and its current progress (ADR-0005).
+/// </summary>
 public sealed class IndexJobDto
 {
     /// <summary>Stable resource id.</summary>
@@ -13,6 +15,9 @@ public sealed class IndexJobDto
 
     /// <summary>Apache Age graph this job writes to.</summary>
     public string GraphName { get; init; } = string.Empty;
+
+    /// <summary>Whether the job publishes or unpublishes the Knowledge Base.</summary>
+    public IndexJobKind Kind { get; init; }
 
     /// <summary>Current lifecycle status.</summary>
     public IndexJobStatus Status { get; init; }

@@ -39,11 +39,17 @@ class KnowledgeBaseService:
 
         The inverse of the worker's ingestion write:
 
-        1. Deletes every node this knowledge base contributed to the graph, via
-           `DETACH DELETE`, so the relationships attached to those nodes go with
-           them. The node ids are read from the knowledge base's `NodeEmbedding`
-           rows, which are the record of what was written to the graph.
-        2. Deletes the knowledge base's `NodeEmbedding` rows.
+        1. Removes this knowledge base's claim on the graph: every node and
+           relationship records its contributing knowledge bases in
+           `knowledge_base_ids` (see `AgeGraphRepository.merge_node`), so this
+           knowledge base's id is dropped from those lists and the elements it
+           alone contributed are deleted - nodes via `DETACH DELETE`, taking
+           their remaining relationships with them. An element another
+           knowledge base also contributed survives.
+        2. Deletes nodes written before contributor lists existed, which carry
+           no list: they are found through the knowledge base's `NodeEmbedding`
+           rows and deleted only if still unstamped. Then deletes those
+           `NodeEmbedding` rows.
         3. Adjusts `GraphSchemaRegistry`: drops this knowledge base's id from every
            schema row it contributed to, and deletes the rows left with no
            contributing knowledge base. Rows still claimed by another knowledge base
@@ -52,6 +58,15 @@ class KnowledgeBaseService:
            properties this knowledge base contributed - they were merged in on
            upsert and cannot be attributed back to a single knowledge base. Re-upsert
            the remaining knowledge bases if an exact schema is needed.
+
+        Because claims live on the graph elements themselves, nodes merged by a
+        publish that failed before embedding are released too. Only unstamped
+        (pre-existing) data still relies on `NodeEmbedding`, and an unstamped
+        relationship between two surviving nodes is not removed.
+
+        A missing graph is not an error: there are no nodes to delete, but the
+        side-tables are still cleaned up, as in `delete_graph()`. Replaying this
+        after a partial failure is safe - already-deleted nodes match nothing.
 
         The graph connection is committed but `session` is not - committing it is
         the caller's responsibility.
@@ -64,12 +79,11 @@ class KnowledgeBaseService:
                 ADR-0002, Decision 1). Scopes every side-table read/delete below.
 
         Returns:
-            A list of SQL queries that were executed against the Apache Age graph,
-            one per deleted node.
+            The SQL queries that were executed against the Apache Age graph; empty
+            if the graph does not exist.
 
         Raises:
-            ValueError: If graph_name or knowledge_base_id is not provided, or if the
-                graph does not exist in the database.
+            ValueError: If graph_name or knowledge_base_id is not provided.
         """
         if not graph_name:
             raise ValueError(
@@ -79,30 +93,31 @@ class KnowledgeBaseService:
         if not knowledge_base_id:
             raise ValueError("knowledge_base_id is required when deleting a knowledge base")
 
-        if not await self.repository.graph_exists(graph_name):
-            raise ValueError(
-                f"Apache Age graph '{graph_name}' does not exist in the database"
-            )
-
-        node_ids = list(
-            (
-                await session.execute(
-                    select(NodeEmbedding.node_id).where(
-                        NodeEmbedding.organization_id == organization_id,
-                        NodeEmbedding.graph_name == graph_name,
-                        NodeEmbedding.knowledge_base_id == knowledge_base_id,
+        queries: list[str] = []
+        if await self.repository.graph_exists(graph_name):
+            node_ids = list(
+                (
+                    await session.execute(
+                        select(NodeEmbedding.node_id).where(
+                            NodeEmbedding.organization_id == organization_id,
+                            NodeEmbedding.graph_name == graph_name,
+                            NodeEmbedding.knowledge_base_id == knowledge_base_id,
+                        )
                     )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
 
-        queries: list[str] = [
-            await self.repository.delete_node(graph_name, node_id)
-            for node_id in node_ids
-        ]
-        await self.repository.commit()
+            queries = await self.repository.release_knowledge_base(
+                graph_name, knowledge_base_id
+            )
+            legacy_query = await self.repository.delete_unclaimed_nodes(
+                graph_name, node_ids
+            )
+            if legacy_query is not None:
+                queries.append(legacy_query)
+            await self.repository.commit()
 
         await session.execute(
             delete(NodeEmbedding).where(

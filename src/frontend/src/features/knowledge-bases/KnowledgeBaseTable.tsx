@@ -29,7 +29,8 @@ interface KnowledgeBaseTableProps {
   onDelete: (knowledgeBase: KnowledgeBaseDto) => void
 }
 
-const NOT_EDITABLE = 'A published or indexing knowledge base can no longer be changed.'
+const NOT_EDITABLE =
+  'Only a draft or failed knowledge base can be changed; unpublish a published one to edit it.'
 const NEEDS_ROLE = 'You need the Contributor or Organization Admin role.'
 
 function unavailableReason(

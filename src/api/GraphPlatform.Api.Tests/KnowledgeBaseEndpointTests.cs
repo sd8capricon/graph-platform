@@ -373,6 +373,154 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         Assert.Equal(HttpStatusCode.NotFound, missingJob.StatusCode);
     }
 
+    [Fact]
+    public async Task Unpublish_requires_a_published_or_failed_knowledge_base()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+
+        using var draft = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Conflict, draft.StatusCode);
+
+        // Still indexing: the publish job is active, so there is nothing to unpublish yet.
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+        using var indexing = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Conflict, indexing.StatusCode);
+    }
+
+    [Fact]
+    public async Task Unpublish_moves_a_published_knowledge_base_to_unpublishing_and_writes_a_job()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+        await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Published, IndexJobStatus.Completed);
+
+        using var unpublish = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Accepted, unpublish.StatusCode);
+        var accepted = (await unpublish.Content.ReadFromJsonAsync<KnowledgeBaseDto>(Api.Json))!;
+        Assert.Equal(KnowledgeBaseState.Unpublishing, accepted.State);
+        Assert.Single(accepted.Files);
+
+        using var jobResponse = await client.GetAsync(unpublish.Headers.Location!);
+        Assert.Equal(HttpStatusCode.OK, jobResponse.StatusCode);
+        var job = (await jobResponse.Content.ReadFromJsonAsync<IndexJobDto>(Api.Json))!;
+        Assert.Equal(IndexJobKind.Unpublish, job.Kind);
+        Assert.Equal(IndexJobStatus.Queued, job.Status);
+        Assert.Equal(0, job.TotalFiles);
+        Assert.Empty(job.Files);
+        Assert.Equal(admin.User.Id, job.RequestedBy);
+        Assert.Equal(GraphPlatform.Api.Services.GraphNames.ForOrganization(organization.Id), job.GraphName);
+
+        var baseUrl = $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}";
+        var update = await client.PutAsJsonAsync(baseUrl, new UpdateKnowledgeBaseRequest { Name = "Updated" }, Api.Json);
+        var delete = await client.DeleteAsync(baseUrl);
+        var publish = await client.PostAsync($"{baseUrl}/publish", content: null);
+        using var unpublishAgain = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+
+        Assert.Equal(HttpStatusCode.Conflict, update.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, delete.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, publish.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, unpublishAgain.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_failed_knowledge_base_can_be_unpublished()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+        await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Failed, IndexJobStatus.Failed);
+
+        using var unpublish = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Accepted, unpublish.StatusCode);
+    }
+
+    [Fact]
+    public async Task Unpublish_conflicts_while_another_job_is_active()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+
+        // The state says published but the publish job is still queued: only the partial unique
+        // index on index_job stands between this and a second active job.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.KnowledgeBases.FirstAsync(entity => entity.Id == knowledgeBase.Id);
+            row.State = KnowledgeBaseState.Published;
+            await db.SaveChangesAsync();
+        }
+
+        using var unpublish = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Conflict, unpublish.StatusCode);
+    }
+
+    [Fact]
+    public async Task Only_authors_can_unpublish_and_nonmembers_get_not_found()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+        await PublishAsync(client, organization.Id, knowledgeBase.Id);
+        await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Published, IndexJobStatus.Completed);
+
+        var member = await factory.SignupAsync();
+        using var added = await factory.AddMemberAsync(
+            admin.AccessToken,
+            organization.Id,
+            member.User.Email!,
+            OrganizationRole.User
+        );
+        added.EnsureSuccessStatusCode();
+        using var memberClient = factory.AuthedClient(member.AccessToken);
+        using var forbidden = await UnpublishRequestAsync(memberClient, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+
+        var outsider = await factory.SignupAsync();
+        using var outsiderClient = factory.AuthedClient(outsider.AccessToken);
+        using var notFound = await UnpublishRequestAsync(outsiderClient, organization.Id, knowledgeBase.Id);
+        Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+    }
+
+    private static Task<HttpResponseMessage> UnpublishRequestAsync(
+        HttpClient client,
+        string organizationId,
+        string knowledgeBaseId
+    ) =>
+        client.PostAsync(
+            $"/api/organizations/{organizationId}/knowledge-bases/{knowledgeBaseId}/unpublish",
+            content: null
+        );
+
+    /// <summary>Stands in for the worker finishing the Knowledge Base's active job.</summary>
+    private async Task CompleteActiveJobAsync(
+        string knowledgeBaseId,
+        KnowledgeBaseState state,
+        IndexJobStatus jobStatus
+    )
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.KnowledgeBases.FirstAsync(entity => entity.Id == knowledgeBaseId);
+        row.State = state;
+        var job = await db.IndexJobs.FirstAsync(entity =>
+            entity.KnowledgeBaseId == knowledgeBaseId && entity.Status == IndexJobStatus.Queued
+        );
+        job.Status = jobStatus;
+        await db.SaveChangesAsync();
+    }
+
     private async Task<KnowledgeBaseDto> CreateDraftWithFileAsync(HttpClient client, string organizationId)
     {
         using var create = await client.PostAsJsonAsync(

@@ -1,5 +1,6 @@
 from typing import Any
 
+from common.repositories.age_graph_repository import KNOWLEDGE_BASE_IDS_PROPERTY
 from common.schemas.graph_schema_registry import GraphSchemaRegistryDTO
 from common.schemas.node_embedding import NodeEmbeddingDTO
 
@@ -39,8 +40,15 @@ class AgentSerializer:
         }
 
     @staticmethod
-    def _age_vertex_to_dict(vertex: dict[str, Any]) -> dict[str, Any]:
-        properties = dict(vertex.get("properties", {}))
+    def _graph_properties(element: dict[str, Any]) -> dict[str, Any]:
+        """An AGE vertex/edge's properties without repository bookkeeping."""
+        properties = dict(element.get("properties", {}))
+        properties.pop(KNOWLEDGE_BASE_IDS_PROPERTY, None)
+        return properties
+
+    @classmethod
+    def _age_vertex_to_dict(cls, vertex: dict[str, Any]) -> dict[str, Any]:
+        properties = cls._graph_properties(vertex)
         node_id = properties.pop("id", None)
         return {"node_id": node_id, "label": vertex["label"], "properties": properties}
 
@@ -70,7 +78,7 @@ class AgentSerializer:
             relationships.append(
                 {
                     "label": relationship["label"],
-                    "properties": relationship.get("properties", {}),
+                    "properties": cls._graph_properties(relationship),
                     "direction": direction,
                     "neighbor": neighbor,
                 }
@@ -97,7 +105,7 @@ class AgentSerializer:
                 "source": cls._age_vertex_to_dict(source),
                 "relationship": {
                     "label": relationship["label"],
-                    "properties": relationship.get("properties", {}),
+                    "properties": cls._graph_properties(relationship),
                 },
                 "target": cls._age_vertex_to_dict(target),
             }

@@ -689,6 +689,18 @@ class _RecordingAgeRepository:
         self.queries.append(query)
         return query
 
+    async def release_knowledge_base(self, graph_name, knowledge_base_id):
+        query = f"release:{knowledge_base_id}"
+        self.queries.append(query)
+        return [query]
+
+    async def delete_unclaimed_nodes(self, graph_name, node_ids):
+        if not node_ids:
+            return None
+        query = f"unclaimed:{','.join(sorted(node_ids))}"
+        self.queries.append(query)
+        return query
+
     async def commit(self):
         self.commits += 1
 
@@ -822,13 +834,10 @@ async def test_delete_knowledge_base_removes_nodes_embeddings_and_registry_rows(
         )
         await session.commit()
 
-        # Every node this knowledge base wrote is detach-deleted from the graph;
-        # its relationships go with the nodes.
-        assert len(queries) == 2
-        assert all("DETACH DELETE" in query for query in queries)
-        assert {"kb-1-node-1", "kb-1-node-2"} == {
-            query.split('"')[1] for query in queries
-        }
+        # The knowledge base's claim on the graph is released, then any of its
+        # nodes written before claims existed are removed by id.
+        assert queries == ["release:kb-1", "unclaimed:kb-1-node-1,kb-1-node-2"]
+        assert repository.commits == 1
 
         remaining_embeddings = (
             (await session.execute(select(NodeEmbedding))).scalars().all()
@@ -884,13 +893,30 @@ async def test_delete_knowledge_base_validates_graph_name_and_knowledge_base_id(
         await service.delete_knowledge_base(None, "", "demo_graph", "org-1")
 
 
-async def test_delete_knowledge_base_raises_error_if_graph_does_not_exist():
+async def test_delete_knowledge_base_clears_side_tables_when_graph_does_not_exist():
+    # Unpublishing a knowledge base whose publish failed before the graph was
+    # created must still clean up its side-table rows rather than fail forever.
     from common.services.knowledge_base_service import KnowledgeBaseService
+    from common.models.node_embedding import NodeEmbedding
 
-    service = KnowledgeBaseService(_RecordingAgeRepository(graph_exists=False))
+    repository = _RecordingAgeRepository()
+    service = KnowledgeBaseService(repository)
 
-    with pytest.raises(ValueError, match="does not exist in the database"):
-        await service.delete_knowledge_base(None, "kb-1", "demo_graph", "org-1")
+    async with await _sqlite_session() as session:
+        await _seed_side_tables(session, _demo_knowledge_base("kb-1"), "demo_graph", "org-1")
+        await session.commit()
+
+        repository._graph_exists = False
+        repository.queries.clear()
+        queries = await service.delete_knowledge_base(
+            session, "kb-1", "demo_graph", "org-1"
+        )
+        await session.commit()
+
+        assert queries == []
+        assert repository.queries == []
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+        assert (await session.execute(select(GraphSchemaRegistry))).scalars().all() == []
 
 
 async def test_delete_graph_drops_the_graph_and_all_its_side_table_rows():

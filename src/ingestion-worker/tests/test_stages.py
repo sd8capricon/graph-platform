@@ -29,10 +29,14 @@ from ingestion_worker.stages import (
     CONSTRUCT_GRAPH_TASK_NAME,
     EMBED_NODES_TASK_NAME,
     EXTRACT_ENTITIES_TASK_NAME,
+    EXTRACT_ONTOLOGY_TASK_NAME,
+    UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
     construct_graph,
     embed_nodes,
+    entry_task_name,
     extract_entities,
     extract_ontology,
+    unpublish_knowledge_base,
 )
 
 
@@ -81,7 +85,10 @@ async def _seed_job(
     status="running",
     knowledge_base_id="kb-1",
     embedding_model_id=EMBEDDING_MODEL_ID,
+    kind="publish",
+    knowledge_base_state="indexing",
 ):
+    """Seed a job, plus its knowledge base unless `knowledge_base_state` is None."""
     now = datetime.now(UTC)
     await session.execute(
         insert(IndexJob).values(
@@ -89,6 +96,7 @@ async def _seed_job(
             organization_id="org-1",
             knowledge_base_id=knowledge_base_id,
             graph_name="demo_graph",
+            kind=kind,
             status=status,
             total_files=0,
             processed_files=0,
@@ -100,16 +108,17 @@ async def _seed_job(
     )
     from common.models.knowledge_base import KnowledgeBase
 
-    await session.execute(
-        KnowledgeBase.__table__.insert().values(
-            Id=knowledge_base_id,
-            OrganizationId="org-1",
-            Name="demo",
-            State="indexing",
-            CreatedAtUtc=now,
-            UpdatedAtUtc=now,
+    if knowledge_base_state is not None:
+        await session.execute(
+            KnowledgeBase.__table__.insert().values(
+                Id=knowledge_base_id,
+                OrganizationId="org-1",
+                Name="demo",
+                State=knowledge_base_state,
+                CreatedAtUtc=now,
+                UpdatedAtUtc=now,
+            )
         )
-    )
     await session.commit()
 
 
@@ -217,15 +226,34 @@ class _FakeRepository:
     async def ensure_edge_label(self, graph_name, label):
         self.queries.append(f"elabel:{label}")
 
-    async def merge_node(self, graph_name, label, properties):
+    async def merge_node(self, graph_name, label, properties, *, knowledge_base_id=None):
         query = f"MERGE (n:{label} {properties})"
         self.queries.append(query)
         return query
 
     async def merge_relationship(
-        self, graph_name, source_node_id, target_node_id, label, properties
+        self,
+        graph_name,
+        source_node_id,
+        target_node_id,
+        label,
+        properties,
+        *,
+        knowledge_base_id=None,
     ):
         query = f"MERGE ({source_node_id})-[:{label}]->({target_node_id})"
+        self.queries.append(query)
+        return query
+
+    async def release_knowledge_base(self, graph_name, knowledge_base_id):
+        query = f"release {knowledge_base_id}"
+        self.queries.append(query)
+        return [query]
+
+    async def delete_unclaimed_nodes(self, graph_name, node_ids):
+        if not node_ids:
+            return None
+        query = f"unclaimed {','.join(sorted(node_ids))}"
         self.queries.append(query)
         return query
 
@@ -419,10 +447,11 @@ async def test_stage_skips_a_missing_job():
     await engine.dispose()
 
 
-async def test_fail_job_sets_the_job_and_knowledge_base_to_failed(monkeypatch):
+@pytest.mark.parametrize("kind", ["publish", "unpublish"])
+async def test_fail_job_sets_the_job_and_knowledge_base_to_failed(monkeypatch, kind):
     engine = await _engine()
     async with AsyncSession(engine) as session:
-        await _seed_job(session)
+        await _seed_job(session, kind=kind)
         await session.commit()
 
     from contextlib import asynccontextmanager
@@ -480,3 +509,151 @@ async def test_stages_raise_when_organization_has_no_embedding_model():
         assert publish.calls == []
 
     await engine.dispose()
+
+
+async def _publish_demo_knowledge_base(session, repository):
+    """Run a one-file publish job (`job-1`, `kb-1`) through to `published`."""
+    await _seed_job(session)
+    await _seed_file(session, file_id="file-1", storage_key="k/file-1")
+    store = IndexJobStore(session)
+    file_1 = await store.create_file("job-1", "file-1")
+    await session.commit()
+
+    storage = _FakeStorage({"k/file-1": _demo_file_bytes()})
+    ignore = lambda *args: None  # noqa: E731
+    await extract_entities(session, ignore, "job-1", file_1)
+    await construct_graph(session, ignore, "job-1", repository=repository, storage=storage)
+    await embed_nodes(session, ignore, "job-1", "0", storage=storage)
+    assert (await store.read_knowledge_base("kb-1")).state == "published"
+
+
+async def _seed_unpublish_job(session, job_id="job-2"):
+    await _seed_job(session, job_id=job_id, kind="unpublish", knowledge_base_state=None)
+    await IndexJobStore(session).set_knowledge_base_state("kb-1", "unpublishing")
+    await session.commit()
+
+
+async def test_unpublish_removes_graph_data_and_returns_the_knowledge_base_to_draft():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        repository = _FakeRepository()
+        await _publish_demo_knowledge_base(session, repository)
+        await _seed_unpublish_job(session)
+
+        repository.queries.clear()
+        publish = _RecordingPublisher()
+        cache = _RecordingCache()
+        await unpublish_knowledge_base(
+            session, publish, "job-2", cache=cache, repository=repository
+        )
+
+        # The knowledge base's graph claim is released, plus any unstamped nodes.
+        assert repository.queries == ["release kb-1", "unclaimed d1,t1"]
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+        assert (await session.execute(select(GraphSchemaRegistry))).scalars().all() == []
+
+        store = IndexJobStore(session)
+        assert (await store.get_job("job-2")).status == "completed"
+        assert (await store.read_knowledge_base("kb-1")).state == "draft"
+        assert publish.calls == []
+        assert cache.calls == [("knowledge_base", "org-1", "kb-1", "job-2")]
+
+        # A redelivery after completion is a no-op.
+        repository.queries.clear()
+        cache.calls.clear()
+        await unpublish_knowledge_base(
+            session, publish, "job-2", cache=cache, repository=repository
+        )
+        assert repository.queries == []
+        assert cache.calls == []
+
+    await engine.dispose()
+
+
+async def test_unpublish_replay_after_a_partial_failure_finishes_the_job():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        repository = _FakeRepository()
+        await _publish_demo_knowledge_base(session, repository)
+        await _seed_unpublish_job(session)
+
+        class _FailingSession:
+            """Delegates to `session` but fails the stage's commit once."""
+
+            def __getattr__(self, name):
+                return getattr(session, name)
+
+            async def commit(self):
+                raise RuntimeError("database went away")
+
+        with pytest.raises(RuntimeError):
+            await unpublish_knowledge_base(
+                _FailingSession(), _RecordingPublisher(), "job-2", repository=repository
+            )
+
+        store = IndexJobStore(session)
+        assert (await store.get_job("job-2")).status == "running"
+        assert len((await session.execute(select(NodeEmbedding))).scalars().all()) == 2
+
+        await unpublish_knowledge_base(
+            session, _RecordingPublisher(), "job-2", repository=repository
+        )
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+        assert (await store.get_job("job-2")).status == "completed"
+        assert (await store.read_knowledge_base("kb-1")).state == "draft"
+
+    await engine.dispose()
+
+
+async def test_unpublish_cleans_side_tables_when_the_graph_does_not_exist():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        repository = _FakeRepository()
+        await _publish_demo_knowledge_base(session, repository)
+        await _seed_unpublish_job(session)
+
+        repository.graphs.clear()
+        repository.queries.clear()
+        await unpublish_knowledge_base(
+            session, _RecordingPublisher(), "job-2", repository=repository
+        )
+
+        assert repository.queries == []
+        assert (await session.execute(select(NodeEmbedding))).scalars().all() == []
+        assert (await IndexJobStore(session).read_knowledge_base("kb-1")).state == "draft"
+
+    await engine.dispose()
+
+
+async def test_stages_skip_a_job_of_the_other_kind():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        # An unpublish job has no embedding model; an ingestion stage must skip
+        # it rather than fail on the missing model.
+        await _seed_job(session, kind="unpublish", embedding_model_id=None)
+        await _seed_job(session, job_id="job-publish", knowledge_base_state=None)
+        file_1 = await IndexJobStore(session).create_file("job-1", "file-1")
+        await session.commit()
+
+        publish = _RecordingPublisher()
+        repository = _FakeRepository()
+        await extract_ontology(session, publish, "job-1")
+        await extract_entities(session, publish, "job-1", file_1)
+        await construct_graph(session, publish, "job-1", repository=repository)
+        await embed_nodes(session, publish, "job-1", "0")
+        await unpublish_knowledge_base(session, publish, "job-publish", repository=repository)
+
+        assert publish.calls == []
+        assert repository.queries == []
+        store = IndexJobStore(session)
+        assert (await store.get_job("job-1")).status == "running"
+        assert (await store.get_job("job-publish")).status == "running"
+
+    await engine.dispose()
+
+
+def test_entry_task_name_maps_each_job_kind():
+    assert entry_task_name("publish") == EXTRACT_ONTOLOGY_TASK_NAME
+    assert entry_task_name("unpublish") == UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME
+    with pytest.raises(ValueError, match="unknown index job kind"):
+        entry_task_name("reindex")

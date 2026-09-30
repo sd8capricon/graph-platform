@@ -1,6 +1,7 @@
 """ORM model for the API-owned `index_job` table.
 
-One row per indexing request. Job lifecycle is management state: the API creates
+One row per indexing request: a publish (ingestion) or an unpublish (graph
+removal) of one knowledge base, per `kind`. Job lifecycle is management state: the API creates
 the row (and owns the DDL via its EF migration), while the worker claims it and
 advances its status through `ingestion_worker.job_store.IndexJobStore`. Column
 names are snake_case per ADR-0005; the API's EF mapping must use explicit
@@ -28,6 +29,10 @@ class IndexJob(IndexJobBase):
         String(255), nullable=False, index=True
     )
     graph_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # "publish" (ingest the KB's files) or "unpublish" (remove its graph data).
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="publish"
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     total_files: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"

@@ -15,9 +15,12 @@ namespace GraphPlatform.Api.Controllers;
 /// <see cref="KnowledgeBaseState.Failed"/>) Knowledge Base to
 /// <see cref="KnowledgeBaseState.Indexing"/> and writes an <see cref="IndexJob"/> row (plus one
 /// <see cref="IndexFile"/> per uploaded file) that the ingestion worker's Celery Beat dispatcher
-/// picks up — this API never talks to RabbitMQ directly, and worker completion back to
-/// <see cref="KnowledgeBaseState.Published"/>/<see cref="KnowledgeBaseState.Failed"/> is not wired
-/// yet. Files are managed by <see cref="KnowledgeBaseFilesController"/>; deleting a Knowledge Base
+/// picks up — this API never talks to RabbitMQ directly; the worker moves it on to
+/// <see cref="KnowledgeBaseState.Published"/> or <see cref="KnowledgeBaseState.Failed"/>. An
+/// unpublish request moves a published or failed Knowledge Base to
+/// <see cref="KnowledgeBaseState.Unpublishing"/> with an <see cref="IndexJobKind.Unpublish"/> job,
+/// which the worker completes by removing its graph data and returning it to
+/// <see cref="KnowledgeBaseState.Draft"/>. Files are managed by <see cref="KnowledgeBaseFilesController"/>; deleting a Knowledge Base
 /// deletes its files' stored content as well as their rows.
 /// </remarks>
 [Route("api/organizations/{organizationId}/knowledge-bases")]
@@ -331,18 +334,18 @@ public class KnowledgeBasesController(
             cancellationToken
         );
 
-        var now = DateTimeOffset.UtcNow;
         var job = new IndexJob
         {
             Id = Guid.NewGuid().ToString(),
             OrganizationId = organizationId,
             KnowledgeBaseId = knowledgeBase.Id,
             GraphName = GraphNames.ForOrganization(organizationId),
+            Kind = IndexJobKind.Publish,
             Status = IndexJobStatus.Queued,
             TotalFiles = knowledgeBase.Files.Count,
             EmbeddingModelId = organization.ActiveEmbeddingModelId,
             RequestedBy = UserId,
-            CreatedAt = now,
+            CreatedAt = DateTimeOffset.UtcNow,
         };
         job.Files =
         [
@@ -355,37 +358,94 @@ public class KnowledgeBasesController(
             }),
         ];
 
-        db.IndexJobs.Add(job);
-        knowledgeBase.State = KnowledgeBaseState.Indexing;
-        knowledgeBase.UpdatedAtUtc = now;
+        return await QueueJobAsync(
+            knowledgeBase,
+            job,
+            KnowledgeBaseState.Indexing,
+            cancellationToken
+        );
+    }
 
-        try
+    /// <summary>
+    /// Submits a published or failed Knowledge Base for removal of its graph data: moves it to
+    /// <c>unpublishing</c> and writes an <see cref="IndexJobKind.Unpublish"/> <see cref="IndexJob"/>
+    /// (with no files) that the ingestion worker's dispatcher polls for. The worker deletes the
+    /// Knowledge Base's nodes, relationships and embeddings, then returns it to <c>draft</c> with
+    /// its files kept, or to <c>failed</c>.
+    /// </summary>
+    /// <param name="organizationId">Owning organization.</param>
+    /// <param name="knowledgeBaseId">Knowledge Base to unpublish.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// 202 with the Knowledge Base (now <c>unpublishing</c>) and a <c>Location</c> header pointing at
+    /// the new job, 409 when the Knowledge Base is not published or failed, or 409 when another job
+    /// is already active for it.
+    /// </returns>
+    [HttpPost("{knowledgeBaseId}/unpublish")]
+    [ProducesResponseType<KnowledgeBaseDto>(StatusCodes.Status202Accepted)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<KnowledgeBaseDto>> UnpublishKnowledgeBase(
+        string organizationId,
+        string knowledgeBaseId,
+        CancellationToken cancellationToken
+    )
+    {
+        var role = await access.GetRoleAsync(UserId, organizationId, cancellationToken);
+        if (role is null)
         {
-            await db.SaveChangesAsync(cancellationToken);
+            return NotFound();
         }
-        catch (DbUpdateException)
+
+        if (!OrganizationAccessService.CanAuthor(role))
         {
-            // The partial unique index on index_job (one active job per Knowledge Base) rejects a
-            // concurrent second publish; treat it the same as the up-front editable/state check.
+            return Forbid();
+        }
+
+        var knowledgeBase = await FindKnowledgeBaseAsync(
+            organizationId,
+            knowledgeBaseId,
+            cancellationToken
+        );
+        if (knowledgeBase is null)
+        {
+            return NotFound();
+        }
+
+        if (!knowledgeBase.CanUnpublish)
+        {
             return Conflict(
                 CreateProblem(
                     StatusCodes.Status409Conflict,
-                    "An ingestion job is already active for this Knowledge Base.",
-                    "Wait for the current job to finish before publishing again."
+                    "Only a published or failed Knowledge Base can be unpublished.",
+                    "Unpublishing changes the state to unpublishing."
                 )
             );
         }
 
-        await InvalidateKnowledgeBaseReadsAsync(organizationId, knowledgeBaseId);
+        var job = new IndexJob
+        {
+            Id = Guid.NewGuid().ToString(),
+            OrganizationId = organizationId,
+            KnowledgeBaseId = knowledgeBase.Id,
+            GraphName = GraphNames.ForOrganization(organizationId),
+            Kind = IndexJobKind.Unpublish,
+            Status = IndexJobStatus.Queued,
+            TotalFiles = 0,
+            RequestedBy = UserId,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
 
-        return AcceptedAtAction(
-            nameof(GetIndexJob),
-            new { organizationId, knowledgeBaseId = knowledgeBase.Id, jobId = job.Id },
-            knowledgeBase.ToDto()
+        return await QueueJobAsync(
+            knowledgeBase,
+            job,
+            KnowledgeBaseState.Unpublishing,
+            cancellationToken
         );
     }
 
-    /// <summary>Returns one ingestion job's status and progress.</summary>
+    /// <summary>Returns one publish or unpublish job's status and progress.</summary>
     [HttpGet("{knowledgeBaseId}/index-jobs/{jobId}")]
     [ProducesResponseType<IndexJobDto>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -426,6 +486,52 @@ public class KnowledgeBasesController(
         var result = job.ToDto();
         await cache.SetAsync(cacheKey, result, JobCacheLifetime);
         return Ok(result);
+    }
+
+    /// <summary>
+    /// Saves a queued <paramref name="job"/> and moves <paramref name="knowledgeBase"/> to
+    /// <paramref name="state"/> in one save, then returns 202 pointing at the job.
+    /// </summary>
+    private async Task<ActionResult<KnowledgeBaseDto>> QueueJobAsync(
+        KnowledgeBase knowledgeBase,
+        IndexJob job,
+        KnowledgeBaseState state,
+        CancellationToken cancellationToken
+    )
+    {
+        db.IndexJobs.Add(job);
+        knowledgeBase.State = state;
+        knowledgeBase.UpdatedAtUtc = job.CreatedAt;
+
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            // The partial unique index on index_job (one active job per Knowledge Base) rejects a
+            // concurrent second publish/unpublish; treat it the same as the up-front state check.
+            return Conflict(
+                CreateProblem(
+                    StatusCodes.Status409Conflict,
+                    "A job is already active for this Knowledge Base.",
+                    "Wait for the current job to finish before trying again."
+                )
+            );
+        }
+
+        await InvalidateKnowledgeBaseReadsAsync(job.OrganizationId, knowledgeBase.Id);
+
+        return AcceptedAtAction(
+            nameof(GetIndexJob),
+            new
+            {
+                organizationId = job.OrganizationId,
+                knowledgeBaseId = knowledgeBase.Id,
+                jobId = job.Id,
+            },
+            knowledgeBase.ToDto()
+        );
     }
 
     private Task<KnowledgeBase?> FindKnowledgeBaseAsync(

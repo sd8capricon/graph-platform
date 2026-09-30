@@ -1,6 +1,7 @@
 """Celery task wrappers for the ADR-0005 ingestion stage pipeline.
 
-Four thin, synchronous Celery tasks around the async, Celery-free stage
+Thin, synchronous Celery tasks - the four ingestion stages plus the single
+unpublish stage - around the async, Celery-free stage
 functions in `stages.py`. Celery is synchronous, so each task bridges with
 `asyncio.run`. Retry policy lives here: retryable failures use Celery's
 exponential backoff with jitter; when retries are exhausted (or a
@@ -25,6 +26,7 @@ EXTRACT_ONTOLOGY_TASK_NAME = "ingestion_worker.tasks.extract_ontology"
 EXTRACT_ENTITIES_TASK_NAME = "ingestion_worker.tasks.extract_entities"
 CONSTRUCT_GRAPH_TASK_NAME = "ingestion_worker.tasks.construct_graph"
 EMBED_NODES_TASK_NAME = "ingestion_worker.tasks.embed_nodes"
+UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME = "ingestion_worker.tasks.unpublish_knowledge_base"
 
 MAX_RETRIES = 5
 
@@ -108,14 +110,31 @@ def embed_nodes(self, job_id: str, batch_id: str) -> None:
     asyncio.run(run_stage(stages.embed_nodes, _publish, job_id, batch_id))
 
 
+@app.task(
+    bind=True,
+    base=IngestionTask,
+    name=UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
+    autoretry_for=(RetryableIngestionError,),
+    retry_backoff=True,
+    retry_jitter=True,
+    max_retries=MAX_RETRIES,
+)
+def unpublish_knowledge_base(self, job_id: str) -> None:
+    """Unpublish stage; removes the knowledge base's graph data and returns it to draft."""
+    load_worker_config()
+    asyncio.run(run_stage(stages.unpublish_knowledge_base, _publish, job_id))
+
+
 __all__ = [
     "extract_ontology",
     "extract_entities",
     "construct_graph",
     "embed_nodes",
+    "unpublish_knowledge_base",
     "IngestionTask",
     "EXTRACT_ONTOLOGY_TASK_NAME",
     "EXTRACT_ENTITIES_TASK_NAME",
     "CONSTRUCT_GRAPH_TASK_NAME",
     "EMBED_NODES_TASK_NAME",
+    "UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME",
 ]

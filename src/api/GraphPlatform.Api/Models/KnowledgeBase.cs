@@ -47,6 +47,15 @@ public class KnowledgeBase
     /// <c>State != Draft</c> check at every mutation.
     /// </remarks>
     public bool IsEditable => State is KnowledgeBaseState.Draft or KnowledgeBaseState.Failed;
+
+    /// <summary>
+    /// Whether this Knowledge Base's graph data can be removed, returning it to draft.
+    /// </summary>
+    /// <remarks>
+    /// True for <see cref="KnowledgeBaseState.Published"/> and <see cref="KnowledgeBaseState.Failed"/>:
+    /// a failed publish or unpublish may have left graph data behind, so unpublishing it cleans up.
+    /// </remarks>
+    public bool CanUnpublish => State is KnowledgeBaseState.Published or KnowledgeBaseState.Failed;
 }
 
 /// <summary>The lifecycle states for a knowledge base.</summary>
@@ -62,8 +71,11 @@ public enum KnowledgeBaseState
     Published,
 
     /// <summary>
-    /// Ingestion failed. Editable, like a draft: the author can fix the files/metadata and
-    /// republish (ADR-0005).
+    /// Ingestion or unpublishing failed. Editable, like a draft: the author can fix the
+    /// files/metadata and republish, or unpublish again (ADR-0005).
     /// </summary>
     Failed,
+
+    /// <summary>Submitted for removal of its graph data; returns to draft when done.</summary>
+    Unpublishing,
 }

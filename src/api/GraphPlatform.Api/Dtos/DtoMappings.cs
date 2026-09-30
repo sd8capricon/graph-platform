@@ -128,6 +128,7 @@ public static class DtoMappings
             Id = job.Id,
             KnowledgeBaseId = job.KnowledgeBaseId,
             GraphName = job.GraphName,
+            Kind = job.Kind,
             Status = job.Status,
             TotalFiles = job.TotalFiles,
             ProcessedFiles = job.ProcessedFiles,

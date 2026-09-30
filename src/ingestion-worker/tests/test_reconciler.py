@@ -20,13 +20,22 @@ async def _engine():
     return engine
 
 
-async def _insert_job(session, job_id, *, started_at, status="running", graph_dispatched=False):
+async def _insert_job(
+    session,
+    job_id,
+    *,
+    started_at,
+    status="running",
+    graph_dispatched=False,
+    kind="publish",
+):
     await session.execute(
         insert(IndexJob).values(
             id=job_id,
             organization_id="org-1",
             knowledge_base_id=f"kb-{job_id}",
             graph_name="demo_graph",
+            kind=kind,
             status=status,
             total_files=1,
             processed_files=0,
@@ -39,20 +48,24 @@ async def _insert_job(session, job_id, *, started_at, status="running", graph_di
     await session.commit()
 
 
+def _recorder(published):
+    return lambda job_id, kind, dispatched: published.append((job_id, kind, dispatched))
+
+
 async def test_reconcile_republishes_ontology_for_stale_not_dispatched_job():
     engine = await _engine()
     now = datetime.now(UTC)
     async with AsyncSession(engine) as session:
         await _insert_job(session, "stale-1", started_at=now - timedelta(seconds=1000))
 
-        published: list[tuple[str, bool]] = []
+        published: list[tuple[str, str, bool]] = []
         job_ids = await reconcile_stale_jobs(
-            session, lambda job_id, dispatched: published.append((job_id, dispatched)),
+            session, _recorder(published),
             stale_after_seconds=900,
         )
 
         assert job_ids == ["stale-1"]
-        assert published == [("stale-1", False)]
+        assert published == [("stale-1", "publish", False)]
 
     await engine.dispose()
 
@@ -65,14 +78,14 @@ async def test_reconcile_republishes_construct_graph_for_stale_dispatched_job():
             session, "stale-2", started_at=now - timedelta(seconds=1000), graph_dispatched=True
         )
 
-        published: list[tuple[str, bool]] = []
+        published: list[tuple[str, str, bool]] = []
         job_ids = await reconcile_stale_jobs(
-            session, lambda job_id, dispatched: published.append((job_id, dispatched)),
+            session, _recorder(published),
             stale_after_seconds=900,
         )
 
         assert job_ids == ["stale-2"]
-        assert published == [("stale-2", True)]
+        assert published == [("stale-2", "publish", True)]
 
     await engine.dispose()
 
@@ -86,9 +99,9 @@ async def test_reconcile_ignores_fresh_and_non_running_jobs():
             session, "stale-completed", started_at=now - timedelta(seconds=1000), status="completed"
         )
 
-        published: list[tuple[str, bool]] = []
+        published: list[tuple[str, str, bool]] = []
         job_ids = await reconcile_stale_jobs(
-            session, lambda job_id, dispatched: published.append((job_id, dispatched)),
+            session, _recorder(published),
             stale_after_seconds=900,
         )
 
@@ -105,9 +118,9 @@ async def test_reconcile_honours_the_batch_limit():
         for index in range(3):
             await _insert_job(session, f"stale-{index}", started_at=now - timedelta(seconds=1000))
 
-        published: list[tuple[str, bool]] = []
+        published: list[tuple[str, str, bool]] = []
         job_ids = await reconcile_stale_jobs(
-            session, lambda job_id, dispatched: published.append((job_id, dispatched)),
+            session, _recorder(published),
             stale_after_seconds=900,
             limit=2,
         )
@@ -116,3 +129,46 @@ async def test_reconcile_honours_the_batch_limit():
         assert len(published) == 2
 
     await engine.dispose()
+
+
+async def test_reconcile_passes_the_kind_of_a_stale_unpublish_job():
+    engine = await _engine()
+    now = datetime.now(UTC)
+    async with AsyncSession(engine) as session:
+        await _insert_job(
+            session, "stale-unpublish", started_at=now - timedelta(seconds=1000), kind="unpublish"
+        )
+
+        published: list[tuple[str, str, bool]] = []
+        job_ids = await reconcile_stale_jobs(
+            session, _recorder(published), stale_after_seconds=900
+        )
+
+        assert job_ids == ["stale-unpublish"]
+        assert published == [("stale-unpublish", "unpublish", False)]
+
+    await engine.dispose()
+
+
+def test_reconciler_redelivers_the_right_task_per_kind(monkeypatch):
+    from ingestion_worker import reconciler
+    from ingestion_worker.stages import (
+        CONSTRUCT_GRAPH_TASK_NAME,
+        EXTRACT_ONTOLOGY_TASK_NAME,
+        UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
+    )
+
+    sent: list[tuple[str, list]] = []
+    monkeypatch.setattr(
+        reconciler.app, "send_task", lambda name, args: sent.append((name, args))
+    )
+
+    reconciler._publish("job-1", "publish", False)
+    reconciler._publish("job-2", "publish", True)
+    reconciler._publish("job-3", "unpublish", False)
+
+    assert sent == [
+        (EXTRACT_ONTOLOGY_TASK_NAME, ["job-1"]),
+        (CONSTRUCT_GRAPH_TASK_NAME, ["job-2"]),
+        (UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME, ["job-3"]),
+    ]

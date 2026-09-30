@@ -265,6 +265,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : IdentityUser
                 .HasColumnName("graph_name")
                 .HasMaxLength(IndexJob.IdMaxLength)
                 .IsRequired();
+            job.Property(entity => entity.Kind)
+                .HasColumnName("kind")
+                .HasMaxLength(Converters.EnumMaxLength)
+                .HasConversion(Converters.SnakeCaseEnum<IndexJobKind>())
+                .IsRequired();
             job.Property(entity => entity.Status)
                 .HasColumnName("status")
                 .HasMaxLength(Converters.EnumMaxLength)

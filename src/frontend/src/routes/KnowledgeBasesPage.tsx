@@ -131,6 +131,7 @@ export function KnowledgeBasesPage() {
                 <SelectItem value={KnowledgeBaseState.Indexing}>Indexing</SelectItem>
                 <SelectItem value={KnowledgeBaseState.Published}>Published</SelectItem>
                 <SelectItem value={KnowledgeBaseState.Failed}>Failed</SelectItem>
+                <SelectItem value={KnowledgeBaseState.Unpublishing}>Unpublishing</SelectItem>
               </SelectContent>
             </Select>
           </DataToolbar>

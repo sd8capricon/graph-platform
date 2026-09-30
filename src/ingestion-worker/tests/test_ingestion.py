@@ -85,15 +85,25 @@ class _RecordingRepository:
     async def ensure_edge_label(self, graph_name, label):
         self.queries.append(f"elabel:{label}")
 
-    async def merge_node(self, graph_name, label, properties):
-        query = f"MERGE (n:{label} {properties})"
+    async def merge_node(self, graph_name, label, properties, *, knowledge_base_id=None):
+        query = f"MERGE (n:{label} {properties}) claim={knowledge_base_id}"
         self.queries.append(query)
         return query
 
     async def merge_relationship(
-        self, graph_name, source_node_id, target_node_id, label, properties
+        self,
+        graph_name,
+        source_node_id,
+        target_node_id,
+        label,
+        properties,
+        *,
+        knowledge_base_id=None,
     ):
-        query = f"MERGE ({source_node_id})-[:{label}]->({target_node_id})"
+        query = (
+            f"MERGE ({source_node_id})-[:{label}]->({target_node_id}) "
+            f"claim={knowledge_base_id}"
+        )
         self.queries.append(query)
         return query
 
@@ -213,6 +223,8 @@ async def test_merge_knowledge_base_merges_children_and_commits():
     assert len(queries) == 3
     assert any(query.startswith("MERGE (n:Driver") for query in queries)
     assert any("DRIVES_FOR" in query for query in queries)
+    # Every node and relationship is claimed for the knowledge base.
+    assert all(query.endswith("claim=kb-1") for query in queries)
 
 
 async def test_ingest_knowledge_base_writes_graph_and_both_side_tables():

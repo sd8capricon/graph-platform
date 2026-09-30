@@ -1,6 +1,8 @@
 """The dispatcher: claims queued jobs and publishes the first-stage task.
 
-Runs as a Celery Beat periodic task. Claiming uses `FOR UPDATE SKIP LOCKED`
+Runs as a Celery Beat periodic task. The first-stage task depends on the job's
+`kind`: `extract_ontology` for a publish, `unpublish_knowledge_base` for an
+unpublish (see `stages.entry_task_name`). Claiming uses `FOR UPDATE SKIP LOCKED`
 (see `ingestion_worker.job_store.IndexJobStore.claim_queued_jobs`) and a guarded
 `queued -> running` transition, so two dispatchers racing, or a dispatcher that
 crashes and restarts, never start a second pipeline for the same job. The API
@@ -30,8 +32,8 @@ async def dispatch_queued_jobs(
     be claimed again, so a crash between commit and publish leaves the job
     `running` (visible for the future reconciler) rather than lost.
 
-    `publish` is a callable taking a job id - injected so this is testable
-    without a broker.
+    `publish` is a callable taking a job id and its kind - injected so this is
+    testable without a broker.
     """
     from ingestion_worker.job_store import IndexJobStore
 
@@ -51,15 +53,15 @@ async def dispatch_queued_jobs(
                 job.organization_id, job.knowledge_base_id, job.id
             )
 
-    for job_id in job_ids:
-        publish(job_id)
+    for job in jobs:
+        publish(job.id, job.kind)
     return job_ids
 
 
-def _publish(job_id: str) -> None:
-    from ingestion_worker.tasks import EXTRACT_ONTOLOGY_TASK_NAME
+def _publish(job_id: str, kind: str) -> None:
+    from ingestion_worker.stages import entry_task_name
 
-    app.send_task(EXTRACT_ONTOLOGY_TASK_NAME, args=[job_id])
+    app.send_task(entry_task_name(kind), args=[job_id])
 
 
 @app.task(name=DISPATCH_TASK_NAME)

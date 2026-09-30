@@ -570,6 +570,34 @@ on operator retry. See the state diagram above. The coarse `knowledge_base.State
 `Draft → Indexing → Published`, gaining `Failed` (and/or `Cancelled`) so a client can distinguish
 "never indexed" from "indexing failed."
 
+### Addendum: unpublish jobs
+
+An `index_job.kind` column (`publish` | `unpublish`, default `publish`) lets the same
+Postgres-row-plus-dispatcher boundary remove a knowledge base's graph data. `POST
+.../knowledge-bases/{kbId}/unpublish` accepts a `Published` or `Failed` knowledge base, writes a
+`queued` `unpublish` job with no `index_file` rows, and sets the state to `Unpublishing` in one save;
+the partial unique active-job index still allows only one active job of either kind. The
+dispatcher and reconciler choose the first task from the kind (`stages.entry_task_name`). The single
+`unpublish_knowledge_base` stage runs on `q.graph`. It calls
+`KnowledgeBaseService.delete_knowledge_base`, which releases the knowledge base's claim on the
+graph, deletes its `NodeEmbedding` rows and prunes its schema-registry claims. A guarded
+`running → completed` then returns the knowledge base to `Draft`, keeping its files; a terminal
+failure goes through `fail_job` to `Failed`.
+
+Graph claims: `construct_graph` merges every node and relationship with the knowledge base's id
+appended (idempotently) to a `knowledge_base_ids` list property, mirroring the schema registry's
+`knowledge_base_ids`. Releasing drops the id from every relationship and then every node, and deletes
+elements whose list became empty (nodes by `DETACH DELETE`). So a node or edge another knowledge
+base also contributed survives. Graph data from a publish that failed before `embed_nodes` is
+still found. Release and delete are separate statements, because Apache Age 1.8 silently skips a
+`SET ... WITH ... WHERE ... DELETE` chain. The split also makes a replay safe: it deletes anything
+a crashed run left emptied. Nodes written before claims existed have no list; they are found
+through `NodeEmbedding` and deleted only while unstamped. Remaining gaps:
+- An unstamped relationship between two surviving nodes is left behind.
+- A relationship from another knowledge base disappears with an endpoint only this knowledge base
+  claimed.
+- Each release scans the whole graph, since there is no property index.
+
 ## Scaling Strategy
 
 Each stage is an independent Celery worker deployment consuming its own queue, so scaling is

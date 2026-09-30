@@ -5,7 +5,8 @@ queues, plus a retry and dead-letter variant per stage. Each of the four ADR-000
 stage tasks (`extract_ontology`, `extract_entities`, `construct_graph`,
 `embed_nodes`) routes to its own `q.<stage>`; the stub stages walk the full
 ontology -> per-file entity fan-out -> guarded fan-in graph construction ->
-embedding DAG (real extraction/graph work is ADR-0005 Phase 2).
+embedding DAG (real extraction/graph work is ADR-0005 Phase 2). The unpublish
+task, a graph mutation, shares `q.graph`.
 
 No result backend is configured (`task_ignore_result=True`): all durable state
 lives in `index_job`/`index_file` (ADR-0005), so RabbitMQ + Celery + Postgres is
@@ -101,6 +102,12 @@ app.conf.update(
         "ingestion_worker.tasks.embed_nodes": {
             "queue": "q.embedding",
             "routing_key": "ingestion.embedding",
+        },
+        # Unpublishing is a graph mutation; sharing q.graph keeps the worker's
+        # `-Q` list unchanged.
+        "ingestion_worker.tasks.unpublish_knowledge_base": {
+            "queue": "q.graph",
+            "routing_key": "ingestion.graph",
         },
         "ingestion_worker.dispatcher.dispatch_queued_jobs": {
             "queue": "q.ontology",

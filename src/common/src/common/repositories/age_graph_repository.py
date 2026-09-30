@@ -3,6 +3,11 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+# Node/edge property listing the knowledge bases that contributed the element.
+# Owned by this repository: `merge_node`/`merge_relationship` maintain it and
+# `release_knowledge_base` consumes it, so a caller-supplied value is ignored.
+KNOWLEDGE_BASE_IDS_PROPERTY = "knowledge_base_ids"
+
 
 class AgeGraphRepository:
     """Repository for Apache Age graph operations.
@@ -70,6 +75,29 @@ class AgeGraphRepository:
             f"{key}: {cls._age_literal(value)}" for key, value in properties.items()
         ]
         return " {" + ", ".join(entries) + "}"
+
+    @classmethod
+    def _claim_clause(cls, variable: str, knowledge_base_id: str) -> str:
+        """A `SET` adding `knowledge_base_id` to an element's contributor list, once.
+
+        Idempotent: a replayed merge finds the id already present and leaves the
+        list unchanged, so a redelivered ingestion task cannot duplicate it.
+        """
+        kb = cls._age_literal(knowledge_base_id)
+        ids = f"{variable}.{KNOWLEDGE_BASE_IDS_PROPERTY}"
+        return (
+            f"SET {ids} = CASE WHEN {kb} IN coalesce({ids}, []) THEN {ids} "
+            f"ELSE coalesce({ids}, []) + [{kb}] END"
+        )
+
+    @staticmethod
+    def _without_claims(properties: dict[str, Any]) -> dict[str, Any]:
+        """Drop the repository-owned contributor list from caller properties."""
+        return {
+            key: value
+            for key, value in properties.items()
+            if key != KNOWLEDGE_BASE_IDS_PROPERTY
+        }
 
     @staticmethod
     def _validate_label(label: str) -> str:
@@ -264,7 +292,12 @@ class AgeGraphRepository:
         return query
 
     async def merge_node(
-        self, graph_name: str, label: str, properties: dict[str, Any]
+        self,
+        graph_name: str,
+        label: str,
+        properties: dict[str, Any],
+        *,
+        knowledge_base_id: str | None = None,
     ) -> str:
         """Idempotently create-or-update a node, keyed on its `id` property.
 
@@ -275,11 +308,18 @@ class AgeGraphRepository:
         into it. This is the write path the ingestion pipeline needs before any
         retry can be enabled (see ADR-0005's "Idempotency" section).
 
+        With `knowledge_base_id`, the id is added (once) to the node's
+        `knowledge_base_ids` list, recording every knowledge base that
+        contributed the node so `release_knowledge_base()` can later remove
+        exactly one knowledge base's claim.
+
         Args:
             graph_name: The name of the graph.
             label: The label (type) of the node. Must be a valid identifier.
             properties: A dictionary of node properties. Must contain a non-empty
-                `id`, since that is the merge key.
+                `id`, since that is the merge key. A `knowledge_base_ids` entry is
+                ignored: that property belongs to this repository.
+            knowledge_base_id: Knowledge base contributing this node, if any.
 
         Returns:
             The SQL query string that was executed.
@@ -294,11 +334,14 @@ class AgeGraphRepository:
         if not node_id:
             raise ValueError("merge_node requires an 'id' property to merge on")
         identity_literal = self._age_properties_literal({"id": node_id})
-        props_literal = self._age_properties_literal(properties)
+        props_literal = self._age_properties_literal(self._without_claims(properties))
+        claim = (
+            f"{self._claim_clause('n', knowledge_base_id)} " if knowledge_base_id else ""
+        )
         query = (
             f"SELECT * FROM cypher('{graph_name}', $$ "
             f"MERGE (n:{label}{identity_literal}) SET n += {props_literal} "
-            "RETURN n $$) AS (n agtype);"
+            f"{claim}RETURN n $$) AS (n agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -343,6 +386,87 @@ class AgeGraphRepository:
         query = (
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (n {{id:"{node_id}"}}) '
             "DETACH DELETE n RETURN count(n) $$) AS (count agtype);"
+        )
+        cursor = self.pg_connection.cursor()
+        await cursor.execute(query)
+        return query
+
+    async def release_knowledge_base(
+        self, graph_name: str, knowledge_base_id: str
+    ) -> list[str]:
+        """Remove one knowledge base's claim on the graph, deleting what it alone owned.
+
+        Drops `knowledge_base_id` from every relationship's and node's
+        `knowledge_base_ids` list, then deletes the elements left with an empty
+        list; nodes are `DETACH DELETE`d, so any relationship still attached to
+        a deleted node goes with it. Elements another knowledge base also
+        contributed survive with that knowledge base's claim. Relationships are
+        released before nodes.
+
+        Apache Age 1.8 silently skips a `SET ... WITH ... WHERE ... DELETE`
+        chain, so each release is a `SET` followed by a separate `DELETE` of
+        emptied elements. That split also makes a replay safe: a crash between
+        the two leaves emptied elements that the next run's `DELETE` removes.
+        Elements written without `knowledge_base_id` have no list and are never
+        matched; see `delete_unclaimed_nodes()`.
+
+        Every relationship and node in the graph is scanned. Callers commit.
+
+        Args:
+            graph_name: The name of the graph.
+            knowledge_base_id: The knowledge base whose claim to remove.
+
+        Returns:
+            The SQL query strings that were executed, in order.
+        """
+        if not knowledge_base_id:
+            raise ValueError("knowledge_base_id is required to release a knowledge base")
+        kb = self._age_literal(knowledge_base_id)
+        prop = KNOWLEDGE_BASE_IDS_PROPERTY
+        statements = [
+            f"MATCH ()-[r]->() WHERE {kb} IN r.{prop} "
+            f"SET r.{prop} = [x IN r.{prop} WHERE x <> {kb}] RETURN count(r)",
+            f"MATCH ()-[r]->() WHERE r.{prop} = [] DELETE r RETURN count(r)",
+            f"MATCH (n) WHERE {kb} IN n.{prop} "
+            f"SET n.{prop} = [x IN n.{prop} WHERE x <> {kb}] RETURN count(n)",
+            f"MATCH (n) WHERE n.{prop} = [] DETACH DELETE n RETURN count(n)",
+        ]
+        cursor = self.pg_connection.cursor()
+        queries = []
+        for statement in statements:
+            query = (
+                f"SELECT * FROM cypher('{graph_name}', $$ {statement} $$) "
+                "AS (count agtype);"
+            )
+            await cursor.execute(query)
+            queries.append(query)
+        return queries
+
+    async def delete_unclaimed_nodes(
+        self, graph_name: str, node_ids: list[str]
+    ) -> str | None:
+        """`DETACH DELETE` the given nodes, but only those with no `knowledge_base_ids`.
+
+        For nodes merged before contributor lists existed: they are invisible
+        to `release_knowledge_base()`, so a caller that knows their ids (e.g.
+        from `NodeEmbedding` rows) removes them here. A node that does carry a
+        list is left to `release_knowledge_base()`, so another knowledge base's
+        claim on it is respected.
+
+        Args:
+            graph_name: The name of the graph.
+            node_ids: App-level `id`s of candidate nodes.
+
+        Returns:
+            The SQL query string that was executed, or None if `node_ids` is empty.
+        """
+        if not node_ids:
+            return None
+        ids = "[" + ", ".join(self._age_literal(str(node_id)) for node_id in node_ids) + "]"
+        query = (
+            f"SELECT * FROM cypher('{graph_name}', $$ MATCH (n) WHERE n.id IN {ids} "
+            f"AND n.{KNOWLEDGE_BASE_IDS_PROPERTY} IS NULL DETACH DELETE n "
+            "RETURN count(n) $$) AS (count agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)
@@ -654,6 +778,8 @@ class AgeGraphRepository:
         target_node_id: str,
         label: str,
         properties: dict[str, Any] | None = None,
+        *,
+        knowledge_base_id: str | None = None,
     ) -> str:
         """Idempotently create-or-update a relationship between two nodes.
 
@@ -665,13 +791,18 @@ class AgeGraphRepository:
         one it falls back to matching on the type alone, which collapses
         parallel edges to a single edge.
 
+        With `knowledge_base_id`, the id is added (once) to the relationship's
+        `knowledge_base_ids` list, as in `merge_node()`.
+
         Args:
             graph_name: The name of the graph.
             source_node_id: The `id` property of the source node.
             target_node_id: The `id` property of the target node.
             label: The label (type) of the relationship. Must be a valid identifier.
             properties: Optional dictionary of relationship properties. When it
-                contains `relationship_id`, that is used as the merge key.
+                contains `relationship_id`, that is used as the merge key. A
+                `knowledge_base_ids` entry is ignored.
+            knowledge_base_id: Knowledge base contributing this relationship, if any.
 
         Returns:
             The SQL query string that was executed.
@@ -680,17 +811,22 @@ class AgeGraphRepository:
             ValueError: If `label` is not a valid identifier.
         """
         self._validate_label(label)
-        properties = properties or {}
+        properties = self._without_claims(properties or {})
         identity: dict[str, Any] = {}
         if properties.get("relationship_id"):
             identity["relationship_id"] = properties["relationship_id"]
         identity_literal = self._age_properties_literal(identity)
         props_literal = self._age_properties_literal(properties)
+        # `_age_properties_literal({})` is "", and a bare `SET r +=` is a syntax error.
+        set_properties = f"SET r += {props_literal} " if props_literal else ""
+        claim = (
+            f"{self._claim_clause('r', knowledge_base_id)} " if knowledge_base_id else ""
+        )
         query = (
             f'SELECT * FROM cypher(\'{graph_name}\', $$ MATCH (a {{id:"{source_node_id}"}}), '
             f'(b {{id:"{target_node_id}"}}) '
             f"MERGE (a)-[r:{label}{identity_literal}]->(b) "
-            f"SET r += {props_literal} RETURN r $$) AS (r agtype);"
+            f"{set_properties}{claim}RETURN r $$) AS (r agtype);"
         )
         cursor = self.pg_connection.cursor()
         await cursor.execute(query)

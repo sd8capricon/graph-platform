@@ -30,6 +30,10 @@ JOB_PARTIALLY_FAILED = "partially_failed"
 JOB_FAILED = "failed"
 JOB_CANCELLED = "cancelled"
 
+# index_job.kind values
+JOB_KIND_PUBLISH = "publish"
+JOB_KIND_UNPUBLISH = "unpublish"
+
 # index_file.status values
 FILE_PENDING = "pending"
 FILE_EXTRACTING = "extracting"
@@ -40,6 +44,7 @@ FILE_SKIPPED = "skipped"
 FILE_TERMINAL_STATUSES = frozenset({FILE_EXTRACTED, FILE_FAILED, FILE_SKIPPED})
 
 # knowledge_base.State values this worker sets
+KB_DRAFT = "draft"
 KB_PUBLISHED = "published"
 KB_FAILED = "failed"
 
@@ -54,6 +59,7 @@ class IndexJobRow:
     organization_id: str
     knowledge_base_id: str
     graph_name: str
+    kind: str
     status: str
     total_files: int
     processed_files: int
@@ -117,15 +123,15 @@ class IndexJobStore:
 
     async def find_stale_running_jobs(
         self, older_than: datetime, limit: int = 10
-    ) -> list[tuple[str, bool]]:
+    ) -> list[tuple[str, str, bool]]:
         """Find `running` jobs whose `started_at` predates `older_than`.
 
-        Returns `(job_id, graph_dispatched)` pairs so a reconciler can decide
-        which stage to redeliver. No row locking: redelivery is idempotent, so
+        Returns `(job_id, kind, graph_dispatched)` triples so a reconciler can
+        decide which stage to redeliver. No row locking: redelivery is idempotent, so
         two reconcilers racing on the same stale job is harmless.
         """
         stmt = (
-            select(IndexJob.id, IndexJob.graph_dispatched)
+            select(IndexJob.id, IndexJob.kind, IndexJob.graph_dispatched)
             .where(IndexJob.status == JOB_RUNNING, IndexJob.started_at < older_than)
             .order_by(IndexJob.started_at)
             .limit(limit)
@@ -173,6 +179,7 @@ class IndexJobStore:
             organization_id=row.organization_id,
             knowledge_base_id=row.knowledge_base_id,
             graph_name=row.graph_name,
+            kind=row.kind,
             status=row.status,
             total_files=row.total_files,
             processed_files=row.processed_files,
@@ -367,12 +374,15 @@ __all__ = [
     "JOB_PARTIALLY_FAILED",
     "JOB_FAILED",
     "JOB_CANCELLED",
+    "JOB_KIND_PUBLISH",
+    "JOB_KIND_UNPUBLISH",
     "FILE_PENDING",
     "FILE_EXTRACTING",
     "FILE_EXTRACTED",
     "FILE_FAILED",
     "FILE_SKIPPED",
     "FILE_TERMINAL_STATUSES",
+    "KB_DRAFT",
     "KB_PUBLISHED",
     "KB_FAILED",
 ]

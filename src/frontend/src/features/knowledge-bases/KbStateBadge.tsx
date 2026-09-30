@@ -28,6 +28,12 @@ const PRESENTATION = {
     variant: 'destructive' as const,
     spin: false,
   },
+  [KnowledgeBaseState.Unpublishing]: {
+    label: 'Unpublishing',
+    icon: Loader2,
+    variant: 'outline' as const,
+    spin: true,
+  },
 }
 
 /** Colour is always paired with an icon and a word, never used on its own. */

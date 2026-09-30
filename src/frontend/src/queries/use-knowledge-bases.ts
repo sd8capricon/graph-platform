@@ -12,6 +12,11 @@ import { qk } from '@/queries/keys'
 /** Poll only while something is actually in flight, so an idle list is free. */
 const POLL_MS = 5_000
 
+/** States a worker job will move on from without user action. */
+function isInFlight(state: KnowledgeBaseState): boolean {
+  return state === KnowledgeBaseState.Indexing || state === KnowledgeBaseState.Unpublishing
+}
+
 export function useKnowledgeBasesQuery(organizationId: string | undefined) {
   return useQuery({
     queryKey: qk.knowledgeBases.list(organizationId ?? ''),
@@ -19,9 +24,7 @@ export function useKnowledgeBasesQuery(organizationId: string | undefined) {
     enabled: !!organizationId,
     staleTime: 15_000,
     refetchInterval: (query) =>
-      query.state.data?.some((kb) => kb.state === KnowledgeBaseState.Indexing)
-        ? POLL_MS
-        : false,
+      query.state.data?.some((kb) => isInFlight(kb.state)) ? POLL_MS : false,
   })
 }
 
@@ -36,7 +39,7 @@ export function useKnowledgeBaseQuery(
     enabled: !!organizationId && !!knowledgeBaseId,
     staleTime: 10_000,
     refetchInterval: (query) =>
-      query.state.data?.state === KnowledgeBaseState.Indexing ? POLL_MS : false,
+      query.state.data && isInFlight(query.state.data.state) ? POLL_MS : false,
   })
 }
 
@@ -97,6 +100,24 @@ export function usePublishKnowledgeBase(organizationId: string) {
       knowledgeBasesApi.publish(organizationId, knowledgeBaseId),
     // Not optimistic: this is a server-authoritative state machine, and rolling
     // `indexing` back to `draft` on failure would be more confusing than a wait.
+    onSuccess: (knowledgeBase: KnowledgeBaseDto) => {
+      queryClient.setQueryData(
+        qk.knowledgeBases.detail(organizationId, knowledgeBase.id),
+        knowledgeBase,
+      )
+      void queryClient.invalidateQueries({
+        queryKey: qk.knowledgeBases.list(organizationId),
+      })
+    },
+  })
+}
+
+export function useUnpublishKnowledgeBase(organizationId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (knowledgeBaseId: string) =>
+      knowledgeBasesApi.unpublish(organizationId, knowledgeBaseId),
+    // Not optimistic, for the same reason as publishing.
     onSuccess: (knowledgeBase: KnowledgeBaseDto) => {
       queryClient.setQueryData(
         qk.knowledgeBases.detail(organizationId, knowledgeBase.id),

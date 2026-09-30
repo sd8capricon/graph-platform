@@ -2,7 +2,9 @@
 
 Uses the repository's `merge_node`/`merge_relationship` (Cypher `MERGE` on the
 app-level `id`) instead of `create_*`, so a retried or redelivered task does not
-duplicate nodes or edges (ADR-0005, "Idempotency").
+duplicate nodes or edges (ADR-0005, "Idempotency"). Every node and edge is
+claimed for the knowledge base, so unpublishing can later release exactly that
+knowledge base's contribution.
 """
 
 from common.repositories.age_graph_repository import AgeGraphRepository
@@ -45,7 +47,14 @@ async def merge_knowledge_base(
         node_properties = dict(node.properties)
         if node.id is not None:
             node_properties["id"] = node.id
-        queries.append(await repository.merge_node(graph_name, node.label, node_properties))
+        queries.append(
+            await repository.merge_node(
+                graph_name,
+                node.label,
+                node_properties,
+                knowledge_base_id=knowledge_base.id,
+            )
+        )
 
     for relationship in knowledge_base.relationships:
         queries.append(
@@ -55,6 +64,7 @@ async def merge_knowledge_base(
                 relationship.target_id,
                 relationship.label,
                 relationship.properties,
+                knowledge_base_id=knowledge_base.id,
             )
         )
 

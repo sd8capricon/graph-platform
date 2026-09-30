@@ -20,13 +20,14 @@ async def _engine():
     return engine
 
 
-async def _insert_job(session, job_id, status="queued"):
+async def _insert_job(session, job_id, status="queued", kind="publish"):
     await session.execute(
         insert(IndexJob).values(
             id=job_id,
             organization_id="org-1",
             knowledge_base_id=f"kb-{job_id}",
             graph_name="demo_graph",
+            kind=kind,
             status=status,
             total_files=0,
             processed_files=0,
@@ -53,12 +54,14 @@ async def test_dispatch_claims_queued_jobs_marks_running_and_publishes():
         await _insert_job(session, "job-2")
         await _insert_job(session, "job-done", status="completed")
 
-        published: list[str] = []
+        published: list[tuple[str, str]] = []
         cache = _RecordingCache()
-        dispatched = await dispatch_queued_jobs(session, published.append, cache=cache)
+        dispatched = await dispatch_queued_jobs(
+            session, lambda job_id, kind: published.append((job_id, kind)), cache=cache
+        )
 
         assert sorted(dispatched) == ["job-1", "job-2"]
-        assert sorted(published) == ["job-1", "job-2"]
+        assert sorted(published) == [("job-1", "publish"), ("job-2", "publish")]
         assert sorted(cache.jobs) == [
             ("org-1", "kb-job-1", "job-1"),
             ("org-1", "kb-job-2", "job-2"),
@@ -77,8 +80,13 @@ async def test_dispatch_claims_queued_jobs_marks_running_and_publishes():
 async def test_dispatch_returns_empty_when_nothing_is_queued():
     engine = await _engine()
     async with AsyncSession(engine) as session:
-        published: list[str] = []
-        assert await dispatch_queued_jobs(session, published.append) == []
+        published: list[tuple[str, str]] = []
+        assert (
+            await dispatch_queued_jobs(
+                session, lambda job_id, kind: published.append((job_id, kind))
+            )
+            == []
+        )
         assert published == []
 
     await engine.dispose()
@@ -90,10 +98,55 @@ async def test_dispatch_honours_the_batch_limit():
         for index in range(3):
             await _insert_job(session, f"job-{index}")
 
-        published: list[str] = []
-        dispatched = await dispatch_queued_jobs(session, published.append, limit=2)
+        published: list[tuple[str, str]] = []
+        dispatched = await dispatch_queued_jobs(
+            session, lambda job_id, kind: published.append((job_id, kind)), limit=2
+        )
 
         assert len(dispatched) == 2
         assert len(published) == 2
 
     await engine.dispose()
+
+
+async def test_dispatch_passes_each_job_kind_to_publish():
+    engine = await _engine()
+    async with AsyncSession(engine) as session:
+        await _insert_job(session, "job-publish")
+        await _insert_job(session, "job-unpublish", kind="unpublish")
+
+        published: list[tuple[str, str]] = []
+        await dispatch_queued_jobs(
+            session, lambda job_id, kind: published.append((job_id, kind))
+        )
+
+        assert sorted(published) == [
+            ("job-publish", "publish"),
+            ("job-unpublish", "unpublish"),
+        ]
+
+    async with AsyncSession(engine) as session:
+        assert (await IndexJobStore(session).get_job("job-unpublish")).status == "running"
+
+    await engine.dispose()
+
+
+def test_dispatcher_publishes_the_entry_task_for_the_job_kind(monkeypatch):
+    from ingestion_worker import dispatcher
+    from ingestion_worker.stages import (
+        EXTRACT_ONTOLOGY_TASK_NAME,
+        UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
+    )
+
+    sent: list[tuple[str, list]] = []
+    monkeypatch.setattr(
+        dispatcher.app, "send_task", lambda name, args: sent.append((name, args))
+    )
+
+    dispatcher._publish("job-1", "publish")
+    dispatcher._publish("job-2", "unpublish")
+
+    assert sent == [
+        (EXTRACT_ONTOLOGY_TASK_NAME, ["job-1"]),
+        (UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME, ["job-2"]),
+    ]

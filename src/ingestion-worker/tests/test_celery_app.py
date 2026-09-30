@@ -7,6 +7,7 @@ from ingestion_worker.tasks import (
     EMBED_NODES_TASK_NAME,
     EXTRACT_ENTITIES_TASK_NAME,
     EXTRACT_ONTOLOGY_TASK_NAME,
+    UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME,
 )
 
 
@@ -32,6 +33,7 @@ def test_each_stage_task_routes_to_its_own_queue():
         EXTRACT_ENTITIES_TASK_NAME: ("q.entity", "ingestion.entity"),
         CONSTRUCT_GRAPH_TASK_NAME: ("q.graph", "ingestion.graph"),
         EMBED_NODES_TASK_NAME: ("q.embedding", "ingestion.embedding"),
+        UNPUBLISH_KNOWLEDGE_BASE_TASK_NAME: ("q.graph", "ingestion.graph"),
     }
     for task_name, (queue, routing_key) in expected.items():
         route = app.conf.task_routes[task_name]

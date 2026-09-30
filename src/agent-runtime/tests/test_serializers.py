@@ -175,3 +175,23 @@ def test_node_schema_to_dict_omits_node_id_key_entirely_in_label_mode():
     assert "node_id" not in result["node"]
     assert result["node"] == {"label": "Driver", "properties": ["name", "number"]}
     assert result["relationships"][0]["count"] == 20
+
+
+def test_graph_serializers_hide_the_knowledge_base_claim_property():
+    claim = {"knowledge_base_ids": ["kb-1"]}
+    triplets = [
+        (
+            {"id": 1, "label": "Driver", "properties": {"id": "driver-1", "name": "Lewis", **claim}},
+            {"id": 10, "start_id": 1, "end_id": 2, "label": "DRIVES_FOR", "properties": {"season": 2025, **claim}},
+            {"id": 2, "label": "Team", "properties": {"id": "team-1", **claim}},
+        ),
+    ]
+
+    neighbours = AgentSerializer.node_neighbours_to_dict("driver-1", "Driver", {}, triplets)
+    matches = AgentSerializer.relationship_matches_to_dict(triplets)
+
+    relationship = neighbours["relationships"][0]
+    assert relationship["properties"] == {"season": 2025}
+    assert relationship["neighbor"]["properties"] == {}
+    assert matches[0]["source"]["properties"] == {"name": "Lewis"}
+    assert matches[0]["relationship"]["properties"] == {"season": 2025}

@@ -43,4 +43,16 @@ export const knowledgeBasesApi = {
     apiJson<KnowledgeBaseDto>(`${base(organizationId)}/${knowledgeBaseId}/publish`, {
       method: 'POST',
     }),
+
+  /**
+   * Moves a published/failed knowledge base to `unpublishing`; the worker then
+   * removes its nodes, relationships and embeddings from the graph and returns
+   * it to `draft`, keeping its files. Returns 202 Accepted with the updated
+   * `KnowledgeBaseDto` (and a `Location` header for the job, not yet followed),
+   * or 409 when it isn't published/failed or another job is already active.
+   */
+  unpublish: (organizationId: string, knowledgeBaseId: string) =>
+    apiJson<KnowledgeBaseDto>(`${base(organizationId)}/${knowledgeBaseId}/unpublish`, {
+      method: 'POST',
+    }),
 }

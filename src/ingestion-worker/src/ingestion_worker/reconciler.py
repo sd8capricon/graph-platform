@@ -4,14 +4,17 @@ Every ADR-0005 stage commits its state before publishing the next Celery
 message (see `dispatcher.py` and `stages.py`). A crash in that gap leaves a
 job durably `running` with no in-flight task and nothing to redeliver it.
 This runs as a Celery Beat periodic task, on a longer interval than the
-dispatcher, and re-publishes one of two idempotent entry points for any job
-whose `started_at` predates the staleness cutoff:
+dispatcher, and re-publishes an idempotent entry point for any job whose
+`started_at` predates the staleness cutoff. For a publish job:
 
 - not yet `graph_dispatched` -> republish `extract_ontology`, which re-fans-out
   only non-terminal files and is a no-op for files already `extracted`.
 - already `graph_dispatched` -> republish `construct_graph`, whose upserts are
   idempotent and which ends by republishing `embed_nodes` (itself a no-op once
   the job is `completed`).
+
+An unpublish job republishes `unpublish_knowledge_base`, which re-reads the
+knowledge base's remaining embedding rows and deletes only what is left.
 
 Known limitation: there is no per-job "last activity" timestamp, only
 `started_at`, so a job still legitimately mid-retry-backoff can be redelivered
@@ -41,7 +44,7 @@ async def reconcile_stale_jobs(
 ) -> list[str]:
     """Redeliver the next-stage message for jobs stuck `running` past the cutoff.
 
-    `publish(job_id, graph_dispatched)` is injected so this is testable
+    `publish(job_id, kind, graph_dispatched)` is injected so this is testable
     without a broker, matching `dispatcher.dispatch_queued_jobs`'s shape.
     """
     from ingestion_worker.job_store import IndexJobStore
@@ -50,19 +53,19 @@ async def reconcile_stale_jobs(
     cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
     stale = await store.find_stale_running_jobs(cutoff, limit)
 
-    for job_id, graph_dispatched in stale:
-        publish(job_id, graph_dispatched)
-    return [job_id for job_id, _ in stale]
+    for job_id, kind, graph_dispatched in stale:
+        publish(job_id, kind, graph_dispatched)
+    return [job_id for job_id, _, _ in stale]
 
 
-def _publish(job_id: str, graph_dispatched: bool) -> None:
-    from ingestion_worker.stages import CONSTRUCT_GRAPH_TASK_NAME
-    from ingestion_worker.tasks import EXTRACT_ONTOLOGY_TASK_NAME
+def _publish(job_id: str, kind: str, graph_dispatched: bool) -> None:
+    from ingestion_worker.job_store import JOB_KIND_PUBLISH
+    from ingestion_worker.stages import CONSTRUCT_GRAPH_TASK_NAME, entry_task_name
 
-    if graph_dispatched:
+    if kind == JOB_KIND_PUBLISH and graph_dispatched:
         app.send_task(CONSTRUCT_GRAPH_TASK_NAME, args=[job_id])
     else:
-        app.send_task(EXTRACT_ONTOLOGY_TASK_NAME, args=[job_id])
+        app.send_task(entry_task_name(kind), args=[job_id])
 
 
 @app.task(name=RECONCILE_TASK_NAME)
