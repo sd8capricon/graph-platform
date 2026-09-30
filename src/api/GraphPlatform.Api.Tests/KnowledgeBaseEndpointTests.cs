@@ -5,6 +5,7 @@ using System.Text;
 using GraphPlatform.Api.Data;
 using GraphPlatform.Api.Dtos;
 using GraphPlatform.Api.Models;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -234,24 +235,39 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
     }
 
     [Fact]
+    public async Task Publish_requires_an_active_embedding_model()
+    {
+        var admin = await factory.SignupAsync();
+        var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
+        using var client = factory.AuthedClient(admin.AccessToken);
+        var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
+
+        using var publish = await client.PostAsync(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}/publish",
+            content: null
+        );
+
+        Assert.Equal(HttpStatusCode.Conflict, publish.StatusCode);
+        var problem = (await publish.Content.ReadFromJsonAsync<ProblemDetails>(Api.Json))!;
+        Assert.Equal("The organization has no active embedding model.", problem.Title);
+
+        var reloaded = await client.GetFromJsonAsync<KnowledgeBaseDto>(
+            $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}",
+            Api.Json
+        );
+        Assert.Equal(KnowledgeBaseState.Draft, reloaded!.State);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.False(await db.IndexJobs.AnyAsync(row => row.KnowledgeBaseId == knowledgeBase.Id));
+    }
+
+    [Fact]
     public async Task Publish_moves_a_draft_to_indexing_writes_a_job_and_locks_crud_mutations()
     {
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
-        var model = await factory.CreateModelAsync(
-            admin.AccessToken,
-            organization.Id,
-            Api.EmbeddingModel()
-        );
-        model.EnsureSuccessStatusCode();
-        var embeddingModel = (await model.Content.ReadFromJsonAsync<ModelDto>(Api.Json))!;
-        using var setActiveClient = factory.AuthedClient(admin.AccessToken);
-        using var setActive = await setActiveClient.PutAsJsonAsync(
-            $"/api/organizations/{organization.Id}/embedding-model",
-            new SetActiveEmbeddingModelRequest { ModelId = embeddingModel.Id },
-            Api.Json
-        );
-        setActive.EnsureSuccessStatusCode();
+        var embeddingModel = await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
 
         using var client = factory.AuthedClient(admin.AccessToken);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
@@ -307,6 +323,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
 
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
@@ -326,6 +343,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
 
@@ -357,6 +375,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         var location = await PublishAsync(client, organization.Id, knowledgeBase.Id);
 
@@ -379,6 +398,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
 
         using var draft = await UnpublishRequestAsync(client, organization.Id, knowledgeBase.Id);
@@ -396,6 +416,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
         await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Published, IndexJobStatus.Completed);
@@ -434,6 +455,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
         await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Failed, IndexJobStatus.Failed);
@@ -448,6 +470,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
 
@@ -471,6 +494,7 @@ public class KnowledgeBaseEndpointTests(GraphPlatformApiFactory factory)
         var admin = await factory.SignupAsync();
         var organization = await factory.CreateOrganizationAsync(admin.AccessToken);
         using var client = factory.AuthedClient(admin.AccessToken);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
         var knowledgeBase = await CreateDraftWithFileAsync(client, organization.Id);
         await PublishAsync(client, organization.Id, knowledgeBase.Id);
         await CompleteActiveJobAsync(knowledgeBase.Id, KnowledgeBaseState.Published, IndexJobStatus.Completed);

@@ -37,7 +37,8 @@ export const knowledgeBasesApi = {
    * with the updated `KnowledgeBaseDto` body (`apiJson` reads the body off any
    * `response.ok` status, so 202 is handled the same as 200) and a `Location`
    * header pointing at the new index job's status endpoint, which this client
-   * does not yet follow. Returns 409 when the knowledge base has no files.
+   * does not yet follow. Returns 409 when the knowledge base has no files or
+   * the organization has no active embedding model.
    */
   publish: (organizationId: string, knowledgeBaseId: string) =>
     apiJson<KnowledgeBaseDto>(`${base(organizationId)}/${knowledgeBaseId}/publish`, {

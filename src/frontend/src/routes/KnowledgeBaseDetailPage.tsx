@@ -44,6 +44,7 @@ import {
   usePublishKnowledgeBase,
   useUnpublishKnowledgeBase,
 } from '@/queries/use-knowledge-bases'
+import { useOrganizationQuery } from '@/queries/use-organizations'
 import {
   useDeleteFile,
   useDownloadFile,
@@ -55,6 +56,8 @@ const NEEDS_ROLE = 'You need the Contributor or Organization Admin role.'
 const NOT_EDITABLE =
   'Only a draft or failed knowledge base can be changed; unpublish a published one to edit it.'
 const NO_FILES = 'Upload at least one file before publishing.'
+const NO_EMBEDDING_MODEL =
+  'An Organization Admin must set an active embedding model in organization settings before publishing.'
 const NOT_UNPUBLISHABLE = 'Only a published or failed knowledge base can be unpublished.'
 
 export function KnowledgeBaseDetailPage() {
@@ -64,6 +67,7 @@ export function KnowledgeBaseDetailPage() {
 
   const knowledgeBaseQuery = useKnowledgeBaseQuery(organizationId, knowledgeBaseId)
   const knowledgeBase = knowledgeBaseQuery.data
+  const organizationQuery = useOrganizationQuery(organizationId)
 
   useDocumentTitle(knowledgeBase?.name ?? 'Knowledge base')
 
@@ -218,7 +222,10 @@ export function KnowledgeBaseDetailPage() {
       ? NOT_EDITABLE
       : files.length === 0
         ? NO_FILES
-        : null
+        : // Only block once the organization is known; the API rejects the publish anyway.
+          organizationQuery.data && !organizationQuery.data.activeEmbeddingModelId
+          ? NO_EMBEDDING_MODEL
+          : null
   const unpublishReason = !canAuthor
     ? NEEDS_ROLE
     : !canUnpublishKnowledgeBaseState(knowledgeBase.state)

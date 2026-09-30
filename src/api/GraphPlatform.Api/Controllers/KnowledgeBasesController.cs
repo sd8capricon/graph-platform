@@ -272,8 +272,9 @@ public class KnowledgeBasesController(
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// 202 with the Knowledge Base (now <c>indexing</c>) and a <c>Location</c> header pointing at the
-    /// new job, 409 when the Knowledge Base is not editable or has no files, or 409 when another job
-    /// is already active for it (the partial unique index on <c>index_job</c>).
+    /// new job, 409 when the Knowledge Base is not editable or has no files, 409 when the organization
+    /// has no active embedding model, or 409 when another job is already active for it (the partial
+    /// unique index on <c>index_job</c>).
     /// </returns>
     [HttpPost("{knowledgeBaseId}/publish")]
     [ProducesResponseType<KnowledgeBaseDto>(StatusCodes.Status202Accepted)]
@@ -333,6 +334,19 @@ public class KnowledgeBasesController(
             candidate => candidate.Id == organizationId,
             cancellationToken
         );
+
+        // The worker needs the embedding model stamped on the job; reject here rather than let the
+        // job fail asynchronously. Deleting the active model is refused, so a set id always resolves.
+        if (organization.ActiveEmbeddingModelId is null)
+        {
+            return Conflict(
+                CreateProblem(
+                    StatusCodes.Status409Conflict,
+                    "The organization has no active embedding model.",
+                    "An Organization Admin must choose an active embedding model in organization settings before publishing."
+                )
+            );
+        }
 
         var job = new IndexJob
         {

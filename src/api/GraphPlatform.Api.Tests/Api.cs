@@ -143,6 +143,34 @@ internal static class Api
         );
     }
 
+    /// <summary>
+    /// Creates an embedding model and makes it the organization's active one, which publishing
+    /// requires.
+    /// </summary>
+    /// <param name="factory">The test host factory.</param>
+    /// <param name="accessToken">Token of an Organization Admin.</param>
+    /// <param name="organizationId">Organization to configure.</param>
+    /// <returns>The created, now active, embedding model.</returns>
+    internal static async Task<ModelDto> SetActiveEmbeddingModelAsync(
+        this GraphPlatformApiFactory factory,
+        string accessToken,
+        string organizationId
+    )
+    {
+        using var created = await factory.CreateModelAsync(accessToken, organizationId, EmbeddingModel());
+        created.EnsureSuccessStatusCode();
+        var model = (await created.Content.ReadFromJsonAsync<ModelDto>(Json))!;
+
+        using var client = factory.AuthedClient(accessToken);
+        using var setActive = await client.PutAsJsonAsync(
+            $"/api/organizations/{organizationId}/embedding-model",
+            new SetActiveEmbeddingModelRequest { ModelId = model.Id },
+            Json
+        );
+        setActive.EnsureSuccessStatusCode();
+        return model;
+    }
+
     /// <summary>Creates a Knowledge Base in an organization.</summary>
     /// <param name="factory">The test host factory.</param>
     /// <param name="accessToken">Token of the caller.</param>

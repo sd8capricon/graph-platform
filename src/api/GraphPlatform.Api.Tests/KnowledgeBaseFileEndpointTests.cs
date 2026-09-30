@@ -172,6 +172,7 @@ public class KnowledgeBaseFileEndpointTests(GraphPlatformApiFactory factory)
         var (admin, organization, knowledgeBase) = await CreateDraftAsync();
         using var client = factory.AuthedClient(admin.AccessToken);
         var file = await UploadCreatedAsync(client, organization.Id, knowledgeBase.Id);
+        await factory.SetActiveEmbeddingModelAsync(admin.AccessToken, organization.Id);
 
         using var publish = await client.PostAsync(
             $"/api/organizations/{organization.Id}/knowledge-bases/{knowledgeBase.Id}/publish",
