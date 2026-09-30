@@ -14,6 +14,7 @@ schemas, ORM reads, repository and `EmbeddingService` come from `common`.
 """
 
 import asyncio
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -29,9 +30,12 @@ from common.schemas.knowledge_base import KnowledgeBase
 from common.schemas.model import Model, ModelType
 from common.services.knowledge_base_service import KnowledgeBaseService
 
+from ingestion_worker.config import configure_worker_logging
 from ingestion_worker.pipeline import ingest_knowledge_base
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Placeholder until the Organization entity (ADR-0002) exists: every write/read
 # path now requires an organization_id, and this demo has exactly one org.
@@ -57,6 +61,9 @@ async def create_knowledge_base(
     SQLAlchemy session, which the pipeline deliberately leaves to its caller.
     """
     knowledge_base = KnowledgeBase.from_json_file(DEMO_KNOWLEDGE_BASE_PATH)
+    logger.info(
+        "ingesting knowledge base %s into graph %s", knowledge_base.id, DEMO_GRAPH_NAME
+    )
     await KnowledgeBaseService(repository).create_graph(DEMO_GRAPH_NAME)
     await ingest_knowledge_base(
         session,
@@ -67,6 +74,7 @@ async def create_knowledge_base(
         model=embedding_model(),
     )
     await session.commit()
+    logger.info("ingested knowledge base %s", knowledge_base.id)
 
 
 async def run() -> None:
@@ -105,6 +113,7 @@ async def run() -> None:
 
 def main() -> None:
     """Load environment/config and run one ingestion pass."""
+    configure_worker_logging(DEMO_CONFIG_PATH)
     load_config(DEMO_CONFIG_PATH)
     asyncio.run(run())
 

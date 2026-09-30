@@ -18,10 +18,10 @@ the `reconciler` module's periodic Beat task redelivers those orphaned jobs.
 
 import os
 
-from celery import Celery
+from celery import Celery, signals
 from kombu import Exchange, Queue
 
-from ingestion_worker.config import rabbitmq_url
+from ingestion_worker.config import configure_worker_logging, rabbitmq_url
 
 INGESTION_EXCHANGE = Exchange("ingestion", type="topic")
 
@@ -144,4 +144,15 @@ app.conf.update(
 )
 
 
-__all__ = ["app", "INGESTION_EXCHANGE", "STAGES", "build_task_queues"]
+@signals.setup_logging.connect
+def setup_worker_logging(**_kwargs) -> None:
+    """Configure logging from `ingestion_worker.logging` in the YAML config.
+
+    Connecting this receiver makes Celery skip its own logging setup for both
+    `worker` and `beat`, so the YAML - not `--loglevel` - is authoritative.
+    Prefork pool children inherit the configuration.
+    """
+    configure_worker_logging()
+
+
+__all__ = ["app", "INGESTION_EXCHANGE", "STAGES", "build_task_queues", "setup_worker_logging"]

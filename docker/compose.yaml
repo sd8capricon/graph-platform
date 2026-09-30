@@ -87,7 +87,6 @@ services:
       - -A
       - ingestion_worker.celery_app
       - worker
-      - --loglevel=info
     environment:
       PGHOST: ${PGHOST:-postgres}
       PGPORT: ${PGPORT:-5432}
@@ -123,7 +122,6 @@ services:
       - -A
       - ingestion_worker.celery_app
       - beat
-      - --loglevel=info
       - --schedule=/tmp/celerybeat-schedule
     environment:
       PGHOST: ${PGHOST:-postgres}

@@ -181,6 +181,11 @@ persist in bind mounts under `data/volumes/` (`postgres/`, `rabbitmq/`,
 `storage/`). Beat's schedule is kept in `/tmp` and is recreated with its
 container.
 
+Worker and Beat logging comes from `ingestion_worker.logging` in
+`configs/local.yaml`, not Celery's `--loglevel` flag. Keep `log_output: stdout`
+in containers so `docker compose logs` works; `log_output: file` needs a
+`log_file_path` on a writable mounted volume.
+
 Useful commands:
 
 ```sh

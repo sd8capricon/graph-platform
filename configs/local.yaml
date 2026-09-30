@@ -38,3 +38,16 @@ storage:
 # is secret and must only be supplied by the named environment variable.
 redis:
   connection_string_env: REDIS_CONNECTION_STRING
+
+# Per-service settings: each Python service reads only its own section.
+# Blank values fall back to the defaults; unknown keys or invalid values fail at startup.
+ingestion_worker:
+  logging:
+    log_level: "" # DEBUG, INFO, WARNING, ERROR, CRITICAL (case-insensitive); default - INFO
+    log_output: "" #stdout, file; default - stdout
+    log_file_path: "" # required when log_output is file, e.g. data/logs/ingestion-worker.log
+
+agent_runtime:
+  logging:
+    log_level: ""
+    log_output: ""
